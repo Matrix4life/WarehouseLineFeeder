@@ -46,7 +46,7 @@
      * 3) Paste your URL + anon key, set ENABLE_SUPABASE=true
      *
      * ---- Supabase SQL (run in SQL Editor) -------------------------------
-     * create table if not exists delivery_requests (
+     * create table if not exists warehouse_requests (
      *   id bigint primary key,
      *   item text not null,
      *   room text not null,
@@ -69,13 +69,13 @@
      *   last_updated_at timestamptz not null default now()
      * );
      *
-     * -- Realtime (Database -> Replication -> enable for delivery_requests)
+     * -- Realtime (Database -> Replication -> enable for warehouse_requests)
      *
      * -- RLS + policies (simple starter; tighten later)
-     * alter table delivery_requests enable row level security;
-     * create policy "read all" on delivery_requests for select using (true);
-     * create policy "insert all" on delivery_requests for insert with check (true);
-     * create policy "update all" on delivery_requests for update using (true);
+     * alter table warehouse_requests enable row level security;
+     * create policy "read all" on warehouse_requests for select using (true);
+     * create policy "insert all" on warehouse_requests for insert with check (true);
+     * create policy "update all" on warehouse_requests for update using (true);
      * -------------------------------------------------------------------
      **********************************************************************/
     const CONFIG = {
@@ -227,7 +227,7 @@
           if (useSupabase) {
             // Realtime subscription
             const channel = supabaseClient.channel("warehouse-delivery-requests")
-              .on("postgres_changes", { event:"*", schema:"public", table:"delivery_requests" }, () => onRemoteChange?.())
+              .on("postgres_changes", { event:"*", schema:"public", table:"warehouse_requests" }, () => onRemoteChange?.())
               .subscribe();
             unsub = ()=> supabaseClient.removeChannel(channel);
           } else {
@@ -244,7 +244,7 @@
         async loadAll() {
           if (!useSupabase) return await localLoad();
           const { data, error } = await supabaseClient
-            .from("delivery_requests")
+            .from("warehouse_requests")
             .select("*")
             .order("submitted_at", { ascending: true });
           if (error) throw error;
@@ -258,7 +258,7 @@
             return await localSave(next);
           }
           const payload = supaDenormalize(row);
-          const { error } = await supabaseClient.from("delivery_requests").upsert(payload);
+          const { error } = await supabaseClient.from("warehouse_requests").upsert(payload);
           if (error) throw error;
           return true;
         },
@@ -273,7 +273,7 @@
             return await localSave(next);
           }
           // For Supabase: load current row, then write back with version bump
-          const { data, error } = await supabaseClient.from("delivery_requests").select("*").eq("id", id).maybeSingle();
+          const { data, error } = await supabaseClient.from("warehouse_requests").select("*").eq("id", id).maybeSingle();
           if (error) throw error;
           if (!data) return true;
           const current = supaNormalize(data);
@@ -287,7 +287,7 @@
             const rows = await localLoad();
             return await localSave(rows.filter(r => r.status !== "completed"));
           }
-          const { error } = await supabaseClient.from("delivery_requests").delete().eq("status", "completed");
+          const { error } = await supabaseClient.from("warehouse_requests").delete().eq("status", "completed");
           if (error) throw error;
           return true;
         },
@@ -295,7 +295,7 @@
           if (!useSupabase) {
             return await localSave([]);
           }
-          const { error } = await supabaseClient.from("delivery_requests").delete().neq("id", -1);
+          const { error } = await supabaseClient.from("warehouse_requests").delete().neq("id", -1);
           if (error) throw error;
           return true;
         }
@@ -320,6 +320,7 @@
       const [errors, setErrors] = useState({});
       const [successMsg, setSuccessMsg] = useState("");
       const [notificationsEnabled, setNotificationsEnabled] = useState(false);
+      const [connectionMode, setConnectionMode] = useState("local"); // "local" or "supabase"
 
       const [editingId, setEditingId] = useState(null);
       const [editQty, setEditQty] = useState(0);
@@ -379,6 +380,7 @@
             setNotificationsEnabled(await requestNotifyPermission());
             const adapter = createAdapter({ onRemoteChange: loadAll });
             adapterRef.current = adapter;
+            setConnectionMode(adapter.kind); // Update connection mode state
             await adapter.init();
             await loadAll();
 
@@ -877,7 +879,7 @@
           <div style={{ minHeight:'100vh', ...bg, padding:'1.25rem', position:'relative', overflow:'hidden' }}>
             <div style={gridOverlay} />
             <div style={{ maxWidth:'1600px', margin:'0 auto', position:'relative', zIndex:1 }}>
-              <TopBar title="Live Board" subtitle={`👤 ${userName} (${userRole}) • ${adapterRef.current?.kind === "supabase" ? "Realtime" : "Local"}`} />
+              <TopBar title="Live Board" subtitle={`👤 ${userName} (${userRole}) • ${connectionMode === "supabase" ? "Supabase ready • Realtime" : "Local + kiosk mode"}`} />
 
               <div style={{ display:'flex', gap:'0.75rem', flexWrap:'wrap', alignItems:'center', marginBottom:'0.75rem' }}>
                 <div style={{ color:'#00ff88', fontWeight:900, fontSize:'0.8rem' }}>AUTO-UPDATING</div>
@@ -980,7 +982,7 @@
           <div style={{ minHeight:'100vh', ...bg, padding:'1.5rem', position:'relative', overflow:'hidden' }}>
             <div style={gridOverlay} />
             <div style={{ maxWidth:'1200px', margin:'0 auto', position:'relative', zIndex:1 }}>
-              <TopBar title="Dashboard" subtitle={`👤 ${userName} (${userRole}) • Data: ${adapterRef.current?.kind}`} />
+              <TopBar title="Dashboard" subtitle={`👤 ${userName} (${userRole}) • ${connectionMode === "supabase" ? "Supabase ready" : "Local + kiosk mode"}`} />
 
               <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.25rem' }}>
                 <div style={{ color:'#00ff88', fontWeight:900, textTransform:'uppercase', letterSpacing:'0.08em' }}>Supervisor Controls</div>
@@ -1021,7 +1023,7 @@
           <div style={{ minHeight:'100vh', ...bg, padding:'1.5rem', position:'relative', overflow:'hidden' }}>
             <div style={gridOverlay} />
             <div style={{ maxWidth:'1500px', margin:'0 auto', position:'relative', zIndex:1 }}>
-              <TopBar title="Pick List" subtitle={`👤 ${userName} (${userRole}) • ${adapterRef.current?.kind === "supabase" ? "Realtime updates" : "Local sync"}`} />
+              <TopBar title="Pick List" subtitle={`👤 ${userName} (${userRole}) • ${connectionMode === "supabase" ? "Supabase ready • Realtime updates" : "Local + kiosk mode"}`} />
 
               <div style={{ marginBottom:'0.9rem', padding:'0.6rem 0.9rem', background:'rgba(0,255,136,0.1)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'10px', color:'#00ff88', fontSize:'0.75rem', textAlign:'center', letterSpacing:'0.05em' }}>
                 ✅ Claim → Start → Done • Prevents double-picking (multi-user safe)
@@ -1251,7 +1253,7 @@
         <div style={{ minHeight:'100vh', ...bg, padding:'1.5rem', position:'relative', overflow:'hidden' }}>
           <div style={gridOverlay} />
           <div style={{ maxWidth:'780px', margin:'0 auto', position:'relative', zIndex:1 }}>
-            <TopBar title="Delivery Request" subtitle={`👤 ${userName} (${userRole}) • ${adapterRef.current?.kind === "supabase" ? "Realtime" : "Local"}`} />
+            <TopBar title="Delivery Request" subtitle={`👤 ${userName} (${userRole}) • ${connectionMode === "supabase" ? "Supabase ready • Realtime" : "Local + kiosk mode"}`} />
 
             <div style={{ marginBottom:'0.9rem', padding:'0.65rem 0.9rem', background:'rgba(0,255,136,0.1)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'10px', color:'#00ff88', fontSize:'0.75rem', textAlign:'center', letterSpacing:'0.05em' }}>
               ℹ️ Submitting creates a shared request visible instantly
