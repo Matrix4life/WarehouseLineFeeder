@@ -87,7 +87,7 @@
       SLA_MINUTES_WARN: 5,
       SLA_MINUTES_BAD: 10,
       SLA_MINUTES_CRIT: 20,
-      ROOMS: ["Bistro", "Salad", "Film", "Labels", "Boxes"]
+      ROOMS: ["Bistro", "Salad", "Film", "Labels", "Boxes", "Apples"]
     };
 
     // Icons (same style as your original file)
@@ -329,6 +329,7 @@
       const [onlyActive, setOnlyActive] = useState(true);
       const [search, setSearch] = useState("");
       const [sortMode, setSortMode] = useState("priority_age"); // priority_age|age|room|item
+      const [timeFilter, setTimeFilter] = useState("today"); // for dashboard analytics
 
       const dropdownRef = useRef(null);
 
@@ -976,17 +977,229 @@
         );
       }
 
-      // DASHBOARD (Supervisor tools)
+      // DASHBOARD (Analytics + Supervisor tools)
       if (screen === "dashboard") {
+        // Filter requests by time
+        const now = new Date();
+        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const thisWeek = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        const thisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+        
+        const filteredReqs = requests.filter(r => {
+          const submitted = new Date(r.submittedAt);
+          if (timeFilter === "today") return submitted >= today;
+          if (timeFilter === "week") return submitted >= thisWeek;
+          if (timeFilter === "month") return submitted >= thisMonth;
+          return true; // all
+        });
+
+        // Calculate stats
+        const total = filteredReqs.length;
+        const completed = filteredReqs.filter(r => r.status === "completed").length;
+        const pending = filteredReqs.filter(r => r.status === "pending").length;
+        const claimed = filteredReqs.filter(r => r.status === "claimed").length;
+        const inProgress = filteredReqs.filter(r => r.status === "in_progress").length;
+        const highPriority = filteredReqs.filter(r => r.priority).length;
+        const active = pending + claimed + inProgress;
+        
+        // Completion rate
+        const completionRate = total > 0 ? Math.round((completed / total) * 100) : 0;
+        
+        // Average completion time (in minutes)
+        const completedReqs = filteredReqs.filter(r => r.status === "completed" && r.submittedAt && r.completedAt);
+        const avgCompletionTime = completedReqs.length > 0 
+          ? Math.round(completedReqs.reduce((sum, r) => {
+              const start = new Date(r.submittedAt);
+              const end = new Date(r.completedAt);
+              return sum + (end - start) / 60000; // minutes
+            }, 0) / completedReqs.length)
+          : 0;
+        
+        // SLA compliance (under 10 minutes)
+        const slaCompliant = completedReqs.filter(r => {
+          const start = new Date(r.submittedAt);
+          const end = new Date(r.completedAt);
+          return (end - start) / 60000 <= CONFIG.SLA_MINUTES_WARN;
+        }).length;
+        const slaRate = completedReqs.length > 0 ? Math.round((slaCompliant / completedReqs.length) * 100) : 0;
+        
+        // Requests by room
+        const byRoom = {};
+        filteredReqs.forEach(r => {
+          byRoom[r.room] = (byRoom[r.room] || 0) + 1;
+        });
+        const topRooms = Object.entries(byRoom).sort((a, b) => b[1] - a[1]).slice(0, 5);
+        const maxRoomCount = topRooms.length > 0 ? topRooms[0][1] : 1;
+        
+        // Staff performance (completed requests)
+        const byStaff = {};
+        completedReqs.forEach(r => {
+          const staff = r.completedBy || r.claimedBy || "Unknown";
+          if (!byStaff[staff]) byStaff[staff] = { count: 0, totalTime: 0 };
+          byStaff[staff].count++;
+          const start = new Date(r.submittedAt);
+          const end = new Date(r.completedAt);
+          byStaff[staff].totalTime += (end - start) / 60000;
+        });
+        const topStaff = Object.entries(byStaff)
+          .map(([name, data]) => ({
+            name,
+            count: data.count,
+            avgTime: Math.round(data.totalTime / data.count)
+          }))
+          .sort((a, b) => b.count - a.count)
+          .slice(0, 5);
+        
+        // Requests by status for chart
+        const statusData = [
+          { label: "Completed", count: completed, color: "#00ff88" },
+          { label: "In Progress", count: inProgress, color: "#a78bfa" },
+          { label: "Claimed", count: claimed, color: "#38bdf8" },
+          { label: "Pending", count: pending, color: "#fbbf24" }
+        ].filter(s => s.count > 0);
+        const maxStatusCount = Math.max(...statusData.map(s => s.count), 1);
+
         return (
           <div style={{ minHeight:'100vh', ...bg, padding:'1.5rem', position:'relative', overflow:'hidden' }}>
             <div style={gridOverlay} />
-            <div style={{ maxWidth:'1200px', margin:'0 auto', position:'relative', zIndex:1 }}>
-              <TopBar title="Dashboard" subtitle={`👤 ${userName} (${userRole}) • ${connectionMode === "supabase" ? "Supabase ready" : "Local + kiosk mode"}`} />
+            <div style={{ maxWidth:'1400px', margin:'0 auto', position:'relative', zIndex:1 }}>
+              <TopBar title="Analytics Dashboard" subtitle={`👤 ${userName} (${userRole}) • ${connectionMode === "supabase" ? "Supabase ready" : "Local + kiosk mode"}`} />
 
+              {/* Time Filter */}
+              <div style={{ marginBottom:'1.5rem', display:'flex', gap:'0.75rem', flexWrap:'wrap' }}>
+                {["today", "week", "month", "all"].map(filter => (
+                  <button key={filter} onClick={() => setTimeFilter(filter)}
+                    style={{
+                      padding:'0.6rem 1.2rem', borderRadius:'10px',
+                      background: timeFilter === filter ? 'linear-gradient(135deg, #00ff88 0%, #00cc6f 100%)' : 'rgba(15,23,42,0.85)',
+                      border: timeFilter === filter ? 'none' : '1px solid #334155',
+                      color: timeFilter === filter ? '#0a0e1a' : '#8b9dc3',
+                      fontWeight:900, cursor:'pointer', textTransform:'uppercase', fontSize:'0.8rem'
+                    }}>
+                    {filter === "all" ? "All Time" : filter === "week" ? "This Week" : filter === "month" ? "This Month" : "Today"}
+                  </button>
+                ))}
+              </div>
+
+              {/* Stats Cards */}
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(200px, 1fr))', gap:'1rem', marginBottom:'1.5rem' }}>
+                <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
+                  <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>Total Requests</div>
+                  <div style={{ color:'#00ff88', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{total}</div>
+                </div>
+                
+                <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
+                  <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>Completed</div>
+                  <div style={{ color:'#00ff88', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{completed}</div>
+                  <div style={{ color:'#64748b', fontSize:'0.8rem', marginTop:'0.3rem' }}>{completionRate}% completion rate</div>
+                </div>
+                
+                <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
+                  <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>Active Now</div>
+                  <div style={{ color:'#fbbf24', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{active}</div>
+                  <div style={{ color:'#64748b', fontSize:'0.8rem', marginTop:'0.3rem' }}>{pending} pending, {claimed + inProgress} in work</div>
+                </div>
+                
+                <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
+                  <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>Avg Complete Time</div>
+                  <div style={{ color:'#00ff88', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{avgCompletionTime}<span style={{ fontSize:'1.2rem', color:'#8b9dc3' }}>min</span></div>
+                </div>
+                
+                <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
+                  <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>High Priority</div>
+                  <div style={{ color:'#ff4444', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{highPriority}</div>
+                </div>
+                
+                <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
+                  <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>SLA Compliance</div>
+                  <div style={{ color: slaRate >= 90 ? '#00ff88' : slaRate >= 75 ? '#fbbf24' : '#ff4444', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{slaRate}%</div>
+                  <div style={{ color:'#64748b', fontSize:'0.8rem', marginTop:'0.3rem' }}>{slaCompliant} of {completedReqs.length} under {CONFIG.SLA_MINUTES_WARN}min</div>
+                </div>
+              </div>
+
+              {/* Charts Row */}
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(350px, 1fr))', gap:'1.5rem', marginBottom:'1.5rem' }}>
+                
+                {/* Requests by Status */}
+                <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
+                  <div style={{ color:'#00ff88', fontWeight:900, fontSize:'1.1rem', marginBottom:'1.5rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>Requests by Status</div>
+                  {statusData.length === 0 ? (
+                    <div style={{ color:'#64748b', textAlign:'center', padding:'2rem' }}>No data</div>
+                  ) : (
+                    <div style={{ display:'flex', flexDirection:'column', gap:'1rem' }}>
+                      {statusData.map(stat => (
+                        <div key={stat.label}>
+                          <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'0.4rem' }}>
+                            <span style={{ color:'#e2e8f0', fontSize:'0.9rem' }}>{stat.label}</span>
+                            <span style={{ color:'#8b9dc3', fontSize:'0.9rem', fontWeight:900 }}>{stat.count}</span>
+                          </div>
+                          <div style={{ background:'#1e293b', height:'24px', borderRadius:'8px', overflow:'hidden' }}>
+                            <div style={{ background: stat.color, height:'100%', width:`${(stat.count / maxStatusCount) * 100}%`, transition:'width 0.3s ease', display:'flex', alignItems:'center', justifyContent:'flex-end', paddingRight:'0.5rem' }}>
+                              <span style={{ color:'#0a0e1a', fontSize:'0.75rem', fontWeight:900 }}>{Math.round((stat.count / total) * 100)}%</span>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Top Rooms */}
+                <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
+                  <div style={{ color:'#00ff88', fontWeight:900, fontSize:'1.1rem', marginBottom:'1.5rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>Top Rooms</div>
+                  {topRooms.length === 0 ? (
+                    <div style={{ color:'#64748b', textAlign:'center', padding:'2rem' }}>No data</div>
+                  ) : (
+                    <div style={{ display:'flex', flexDirection:'column', gap:'1rem' }}>
+                      {topRooms.map(([room, count], idx) => (
+                        <div key={room}>
+                          <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'0.4rem' }}>
+                            <span style={{ color:'#e2e8f0', fontSize:'0.9rem' }}>
+                              {idx === 0 && '🥇 '}{idx === 1 && '🥈 '}{idx === 2 && '🥉 '}
+                              {room}
+                            </span>
+                            <span style={{ color:'#8b9dc3', fontSize:'0.9rem', fontWeight:900 }}>{count}</span>
+                          </div>
+                          <div style={{ background:'#1e293b', height:'24px', borderRadius:'8px', overflow:'hidden' }}>
+                            <div style={{ background: 'linear-gradient(90deg, #00ff88, #00cc6f)', height:'100%', width:`${(count / maxRoomCount) * 100}%`, transition:'width 0.3s ease' }} />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Staff Performance */}
+              {topStaff.length > 0 && (
+                <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem', marginBottom:'1.5rem' }}>
+                  <div style={{ color:'#00ff88', fontWeight:900, fontSize:'1.1rem', marginBottom:'1.5rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>🏆 Staff Performance</div>
+                  <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(250px, 1fr))', gap:'1rem' }}>
+                    {topStaff.map((staff, idx) => (
+                      <div key={staff.name} style={{ background:'rgba(0,255,136,0.05)', border:'1px solid rgba(0,255,136,0.15)', borderRadius:'10px', padding:'1rem' }}>
+                        <div style={{ display:'flex', alignItems:'center', gap:'0.75rem', marginBottom:'0.75rem' }}>
+                          <span style={{ fontSize:'1.5rem' }}>{idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : '👤'}</span>
+                          <div>
+                            <div style={{ color:'#e2e8f0', fontWeight:900, fontSize:'1rem' }}>{staff.name}</div>
+                            <div style={{ color:'#8b9dc3', fontSize:'0.8rem' }}>{staff.count} completed</div>
+                          </div>
+                        </div>
+                        <div style={{ display:'flex', gap:'1rem' }}>
+                          <div>
+                            <div style={{ color:'#64748b', fontSize:'0.75rem' }}>Avg Time</div>
+                            <div style={{ color:'#00ff88', fontSize:'1.3rem', fontWeight:900 }}>{staff.avgTime}<span style={{ fontSize:'0.8rem' }}>min</span></div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Supervisor Controls */}
               <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.25rem' }}>
-                <div style={{ color:'#00ff88', fontWeight:900, textTransform:'uppercase', letterSpacing:'0.08em' }}>Supervisor Controls</div>
-                <div style={{ marginTop:'0.75rem', display:'flex', gap:'0.75rem', flexWrap:'wrap' }}>
+                <div style={{ color:'#00ff88', fontWeight:900, textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:'1rem' }}>Supervisor Controls</div>
+                <div style={{ display:'flex', gap:'0.75rem', flexWrap:'wrap' }}>
                   <button disabled={!canSupervisor} onClick={clearCompleted}
                     style={{ opacity: canSupervisor ? 1 : 0.5, padding:'0.7rem 1rem', borderRadius:'10px', border:'1px solid rgba(0,255,136,0.35)', background:'transparent', color:'#00ff88', fontWeight:900, cursor: canSupervisor ? 'pointer' : 'not-allowed' }}>
                     Clear Completed
@@ -997,7 +1210,7 @@
                   </button>
                   <button onClick={loadAll}
                     style={{ padding:'0.7rem 1rem', borderRadius:'10px', border:'1px solid #334155', background:'transparent', color:'#8b9dc3', fontWeight:900, cursor:'pointer' }}>
-                    Refresh
+                    Refresh Data
                   </button>
                 </div>
 
@@ -1006,11 +1219,6 @@
                     Supervisor role required for destructive actions.
                   </div>
                 )}
-
-                <div style={{ marginTop:'1.25rem', color:'#8b9dc3', fontSize:'0.85rem', lineHeight:1.5 }}>
-                  <div><b>Multi-user note:</b> For true concurrent users across devices, enable Supabase in CONFIG at the top of this file.</div>
-                  <div><b>Kiosk note:</b> Use <b>#board</b> for a full-screen live board on a TV.</div>
-                </div>
               </div>
             </div>
           </div>
