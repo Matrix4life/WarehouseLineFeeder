@@ -5,7 +5,7 @@
   "scope": "./",
   "display": "fullscreen",
   "display_override": ["fullscreen", "standalone", "minimal-ui"],
-  "orientation": "portrait",
+  "orientation": "any",
   "background_color": "#0a0e1a",
   "theme_color": "#00ff88",
   "description": "Multi-user warehouse delivery request tracking system with real-time updates",
