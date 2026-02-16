@@ -2,7 +2,7 @@
 // NOTE: This does NOT cache Supabase/API data to avoid conflicts.
 // Works on https or localhost.
 
-const CACHE_NAME = 'warehouse-pwa-v4';
+const CACHE_NAME = 'warehouse-pwa-v8';
 const APP_SHELL = [
   './',
   './index.html',
