@@ -245,7 +245,7 @@
           const { data, error } = await supabaseClient
             .from("delivery_requests")
             .select("*")
-            .order("submitted_at", { ascending: true });
+            .order("submitted_at", { ascending: false });
           if (error) throw error;
           return (data || []).map(supaNormalize);
         },
