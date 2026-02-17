@@ -158,9 +158,9 @@
       SLA_MINUTES_BAD: 10,
       SLA_MINUTES_CRIT: 20,
       ROOMS: ["Bistro", "Salad", "Apple", "MasterPack", "Boxes", "Film/Labels", "Other", "******", "Loading", "Putaway" ],
-
-ROOM_COLORS: {
-  "Bistro": "#38bdf8",         // Blue
+      // 🎨 ROOM COLORS - Edit these to change room header colors!
+      ROOM_COLORS: {
+       "Bistro": "#38bdf8",         // Blue
   "Salad": "#00ff88",          // Green
   "Apple": "#ff4444",          // Red
   "MasterPack": "#a78bfa",     // Purple
@@ -168,10 +168,10 @@ ROOM_COLORS: {
   "Film/Labels": "#fbbf24",    // Yellow
   "Other": "#8b9dc3",          // Gray
   "*******": "#ff6b9d",        // Pink
-  "loading": "#00cc6f",        // Dark Green
+  "Loading": "#00cc6f",        // Dark Green
   "Putaway": "#0ea5e9"         // Dark Blue
-}    
-};
+      }
+    };
 
     // Icons (same style as your original file)
     const Icon = ({ children, size=24, color="currentColor" }) => (
@@ -1229,11 +1229,13 @@ ROOM_COLORS: {
                 </div>
               ) : (
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(360px, 1fr))', gap:'1rem' }}>
-                  {grouped.keys.map(k => (
-                    <div key={k} style={{ background:'rgba(15,23,42,0.8)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', overflow:'hidden' }}>
-                      <div style={{ padding:'0.9rem 1rem', background:'linear-gradient(135deg, rgba(0,255,136,0.15) 0%, rgba(0,255,136,0.04) 100%)', borderBottom:'2px solid #00ff88', display:'flex', alignItems:'center', gap:'0.6rem' }}>
-                        <MapPin size={18} color="#00ff88" />
-                        <div style={{ color:'#00ff88', fontWeight:900, textTransform:'uppercase', letterSpacing:'0.08em' }}>{k}</div>
+                  {grouped.keys.map(k => {
+                    const roomColor = CONFIG.ROOM_COLORS[k] || '#00ff88';
+                    return (
+                    <div key={k} style={{ background:'rgba(15,23,42,0.8)', border:`1px solid ${roomColor}33`, borderRadius:'14px', overflow:'hidden' }}>
+                      <div style={{ padding:'0.9rem 1rem', background:`linear-gradient(135deg, ${roomColor}22 0%, ${roomColor}08 100%)`, borderBottom:`2px solid ${roomColor}`, display:'flex', alignItems:'center', gap:'0.6rem' }}>
+                        <MapPin size={18} color={roomColor} />
+                        <div style={{ color:'#ffffff', fontWeight:900, textTransform:'uppercase', letterSpacing:'0.08em' }}>{k}</div>
                         <div style={{ marginLeft:'auto', color:'#8b9dc3', fontSize:'0.8rem' }}>{grouped.map[k].length}</div>
                       </div>
                       <div style={{ padding:'0.75rem' }}>
@@ -1282,7 +1284,8 @@ ROOM_COLORS: {
                         )}
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -1464,7 +1467,9 @@ ROOM_COLORS: {
                     <div style={{ color:'#64748b', textAlign:'center', padding:'2rem' }}>No data</div>
                   ) : (
                     <div style={{ display:'flex', flexDirection:'column', gap:'1rem' }}>
-                      {topRooms.map(([room, count], idx) => (
+                      {topRooms.map(([room, count], idx) => {
+                        const roomColor = CONFIG.ROOM_COLORS[room] || '#00ff88';
+                        return (
                         <div key={room}>
                           <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'0.4rem' }}>
                             <span style={{ color:'#e2e8f0', fontSize:'0.9rem' }}>
@@ -1474,10 +1479,11 @@ ROOM_COLORS: {
                             <span style={{ color:'#8b9dc3', fontSize:'0.9rem', fontWeight:900 }}>{count}</span>
                           </div>
                           <div style={{ background:'#1e293b', height:'24px', borderRadius:'8px', overflow:'hidden' }}>
-                            <div style={{ background: 'linear-gradient(90deg, #00ff88, #00cc6f)', height:'100%', width:`${(count / maxRoomCount) * 100}%`, transition:'width 0.3s ease' }} />
+                            <div style={{ background: roomColor, height:'100%', width:`${(count / maxRoomCount) * 100}%`, transition:'width 0.3s ease' }} />
                           </div>
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
                 </div>
@@ -1704,7 +1710,7 @@ ROOM_COLORS: {
                               </td>
                               <td style={cellStyle}>
                                 <div style={{ display:'flex', alignItems:'center', gap:'0.4rem' }}>
-                                  <MapPin size={14} color="#8b9dc3" />
+                                  <MapPin size={14} color={CONFIG.ROOM_COLORS[req.room] || "#8b9dc3"} />
                                   {req.room}
                                 </div>
                               </td>
@@ -2426,11 +2432,11 @@ ROOM_COLORS: {
               ) : (
                 <div style={{ display:'flex', flexDirection:'column', gap:'1rem' }}>
                   {grouped.keys.map(groupKey => {
-  const roomColor = CONFIG.ROOM_COLORS[groupKey] || '#00ff88';
-  return (
-  <div key={groupKey} style={{ background:'rgba(15,23,42,0.85)', border:`1px solid ${roomColor}33`, borderRadius:'14px', overflow:'hidden' }}>
-    <div style={{ padding:'0.9rem 1.2rem', background:`linear-gradient(135deg, ${roomColor}22 0%, ${roomColor}08 100%)`, borderBottom:`2px solid ${roomColor}`, display:'flex', alignItems:'center', gap:'0.75rem' }}>
-      <MapPin size={20} color={roomColor} />
+                    const roomColor = CONFIG.ROOM_COLORS[groupKey] || '#00ff88'; // Fallback to green if room not in config
+                    return (
+                    <div key={groupKey} style={{ background:'rgba(15,23,42,0.85)', border:`1px solid ${roomColor}33`, borderRadius:'14px', overflow:'hidden' }}>
+                      <div style={{ padding:'0.9rem 1.2rem', background:`linear-gradient(135deg, ${roomColor}22 0%, ${roomColor}08 100%)`, borderBottom:`2px solid ${roomColor}`, display:'flex', alignItems:'center', gap:'0.75rem' }}>
+                        <MapPin size={20} color={roomColor} />
                         <div style={{ color:'#ffffff', fontWeight:900, textTransform:'uppercase', letterSpacing:'0.09em' }}>{groupKey}</div>
                         <div style={{ marginLeft:'auto', color:'#8b9dc3', fontSize:'0.85rem' }}>{grouped.map[groupKey].length}</div>
                       </div>
@@ -2549,8 +2555,8 @@ ROOM_COLORS: {
                             })}
                           </div>
                     </div>
-                  );
-})}
+                    );
+                  })}
                 </div>
               )}
             </div>
