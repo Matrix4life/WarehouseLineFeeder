@@ -2423,23 +2423,7 @@
                         <div style={{ marginLeft:'auto', color:'#8b9dc3', fontSize:'0.85rem' }}>{grouped.map[groupKey].length}</div>
                       </div>
 
-                      <div style={{ overflowX:'auto' }}>
-                        <table style={{ width:'100%', borderCollapse:'collapse', minWidth:'1050px' }}>
-                          <thead>
-                            <tr style={{ background:'rgba(0,255,136,0.05)' }}>
-                              <th style={headerStyle}>SLA</th>
-                              <th style={headerStyle}>Item</th>
-                              <th style={headerStyle}>Room</th>
-                              <th style={headerStyle}>Req / Adj</th>
-                              <th style={headerStyle}>Submitted</th>
-                              <th style={headerStyle}>Claimed</th>
-                              <th style={headerStyle}>Priority</th>
-                              <th style={headerStyle}>Comments</th>
-                              <th style={headerStyle}>Status</th>
-                              <th style={headerStyle}>Actions</th>
-                            </tr>
-                          </thead>
-                          <tbody>
+                      <div style={{ display:'flex', flexDirection:'column', gap:'0' }}>
                             {grouped.map[groupKey].map((req, idx) => {
                               const sla = slaBadge(req);
                               const statusColor =
@@ -2453,141 +2437,105 @@
                               const canActThis = canWarehouseAct && !lockedByOther && req.status !== "completed" && req.status !== "cancelled";
 
                               return (
-                                <tr key={req.id} style={{ borderBottom: idx < grouped.map[groupKey].length-1 ? '1px solid #334155' : 'none', opacity: req.status==="completed" ? 0.65 : 1 }}>
-                                  <td style={cellStyle}>
-                                    <span style={{ display:'inline-block', padding:'0.25rem 0.6rem', borderRadius:'10px', background:sla.bg, color:sla.fg, fontWeight:900, fontSize:'0.75rem' }}>
+                                <div key={req.id} style={{
+                                  padding:'0.85rem 1rem',
+                                  borderBottom: idx < grouped.map[groupKey].length-1 ? '1px solid #1e293b' : 'none',
+                                  opacity: req.status==="completed" ? 0.65 : 1,
+                                  background: idx%2===0 ? 'transparent' : 'rgba(0,255,136,0.015)'
+                                }}>
+                                  {/* Row 1: SLA + Item + Priority badge + Status */}
+                                  <div style={{ display:'flex', alignItems:'center', gap:'0.5rem', marginBottom:'0.5rem', flexWrap:'wrap' }}>
+                                    <span style={{ padding:'0.2rem 0.5rem', borderRadius:'8px', background:sla.bg, color:sla.fg, fontWeight:900, fontSize:'0.72rem', flexShrink:0 }}>
                                       {sla.label}
                                     </span>
-                                  </td>
-
-                                  <td style={cellStyle}>
-                                    <div style={{ display:'flex', alignItems:'center', gap:'0.5rem' }}>
-                                      <Package size={16} color="#00ff88" />
-                                      <span style={{ fontWeight:900 }}>{req.item}</span>
-                                    </div>
-                                  </td>
-
-                                  <td style={cellStyle}>
-                                    <span style={{ color:'#00ff88', fontWeight:900 }}>{req.room}</span>
-                                  </td>
-
-                                  <td style={cellStyle}>
-                                    <span style={{ padding:'0.2rem 0.55rem', background:'#1e293b', borderRadius:'10px', fontWeight:900, color:'#00ff88' }}>{req.qty}</span>
-                                    <span style={{ color:'#64748b', margin:'0 0.4rem' }}>/</span>
-                                    {editingId === req.id ? (
-                                      <span style={{ display:'inline-flex', gap:'0.4rem', alignItems:'center' }}>
-                                        <input type="number" value={editQty} onChange={(e)=> setEditQty(parseInt(e.target.value)||0)}
-                                          style={{ width:'80px', padding:'0.35rem', background:'#1e293b', border:'2px solid #00ff88', borderRadius:'8px', color:'#e2e8f0', fontWeight:900 }} />
-                                        <button disabled={!canActThis} onClick={()=> adjustQty(req.id, editQty)}
-                                          style={{ opacity: canActThis ? 1 : 0.5, padding:'0.35rem 0.55rem', background:'#00ff88', border:'none', borderRadius:'8px', cursor: canActThis ? 'pointer' : 'not-allowed' }}>
-                                          <Save size={16} color="#0a0e1a" />
-                                        </button>
-                                      </span>
-                                    ) : (
-                                      <span style={{ display:'inline-flex', gap:'0.4rem', alignItems:'center' }}>
-                                        <span style={{
-                                          padding:'0.2rem 0.55rem',
-                                          background: (req.adjQty && req.adjQty>0) ? '#fbbf24' : '#334155',
-                                          borderRadius:'10px',
-                                          fontWeight:900,
-                                          color: (req.adjQty && req.adjQty>0) ? '#0a0e1a' : '#64748b'
-                                        }}>
-                                          {req.adjQty && req.adjQty>0 ? req.adjQty : '-'}
-                                        </span>
-                                        {canActThis && (
-                                          <button onClick={() => { setEditingId(req.id); setEditQty(req.adjQty || req.qty); }}
-                                            style={{ padding:'0.25rem', background:'transparent', border:'1px solid #334155', borderRadius:'8px', cursor:'pointer' }}>
-                                            <Edit2 size={14} color="#64748b" />
-                                          </button>
-                                        )}
-                                      </span>
+                                    <span style={{ display:'flex', alignItems:'center', gap:'0.35rem', fontWeight:900, color:'#e2e8f0', fontSize:'0.95rem', flex:1, minWidth:0 }}>
+                                      <Package size={14} color="#00ff88" />
+                                      {req.item}
+                                    </span>
+                                    {req.priority && (
+                                      <span style={{ padding:'0.15rem 0.45rem', background:'#ff4444', borderRadius:'8px', color:'#fff', fontWeight:900, fontSize:'0.68rem', flexShrink:0 }}>HIGH</span>
                                     )}
-                                  </td>
-
-                                  <td style={cellStyle}>
-                                    <div style={{ fontSize:'0.78rem', color:'#8b9dc3' }}>
-                                      <div style={{ display:'flex', alignItems:'center', gap:'0.35rem' }}>
-                                        <Clock size={14} color="#64748b" />
-                                        <span>{niceTime(req.submittedAt)}</span>
-                                      </div>
-                                      <div style={{ marginTop:'0.25rem', color:'#00ff88', fontWeight:900 }}>{req.submittedBy || "?"}</div>
-                                    </div>
-                                  </td>
-
-                                  <td style={cellStyle}>
-                                    {req.claimedBy ? (
-                                      <div style={{ fontSize:'0.78rem' }}>
-                                        <div style={{ color: lockedByOther ? '#fbbf24' : '#38bdf8', fontWeight:900 }}>
-                                          {req.claimedBy}{lockedByOther ? " 🔒" : ""}
-                                        </div>
-                                        <div style={{ color:'#64748b' }}>{req.claimedAt ? niceTime(req.claimedAt) : ""}</div>
-                                      </div>
-                                    ) : (
-                                      <span style={{ color:'#475569' }}>—</span>
-                                    )}
-                                  </td>
-
-                                  <td style={cellStyle}>
-                                    {req.priority ? (
-                                      <span style={{ padding:'0.25rem 0.6rem', background:'#ff4444', borderRadius:'10px', color:'#fff', fontWeight:900, fontSize:'0.75rem' }}>HIGH</span>
-                                    ) : (
-                                      <span style={{ color:'#64748b', fontSize:'0.85rem' }}>Normal</span>
-                                    )}
-                                  </td>
-
-                                  <td style={cellStyle}>
-                                    {req.comments ? (
-                                      <span title={req.comments} style={{ color:'#8b9dc3', maxWidth:'240px', display:'inline-block', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                                        {req.comments}
-                                      </span>
-                                    ) : <span style={{ color:'#475569' }}>—</span>}
-                                  </td>
-
-                                  <td style={cellStyle}>
-                                    <span style={{ display:'inline-flex', gap:'0.4rem', alignItems:'center', padding:'0.25rem 0.6rem', borderRadius:'10px', background:statusColor, color:'#0a0e1a', fontWeight:900, fontSize:'0.75rem', textTransform:'uppercase' }}>
+                                    <span style={{ padding:'0.2rem 0.5rem', borderRadius:'8px', background:statusColor, color:'#0a0e1a', fontWeight:900, fontSize:'0.68rem', textTransform:'uppercase', flexShrink:0 }}>
                                       {req.status.replace("_"," ")}
                                     </span>
-                                    {req.status === "completed" && req.completedAt && (
-                                      <div style={{ marginTop:'0.35rem', color:'#00ff88', fontSize:'0.75rem', fontWeight:900 }}>
-                                        ✓ {niceTime(req.completedAt)}{req.completedBy ? ` by ${req.completedBy}` : ""}
-                                      </div>
-                                    )}
-                                  </td>
+                                  </div>
 
-                                  <td style={cellStyle}>
-                                    <div style={{ display:'flex', gap:'0.4rem', flexWrap:'wrap' }}>
-                                      {req.status === "pending" && (
-                                        <button disabled={!canActThis} onClick={()=> claimRequest(req.id)}
-                                          style={{ opacity: canActThis ? 1 : 0.45, padding:'0.45rem 0.7rem', background:'#38bdf8', border:'none', borderRadius:'10px', fontWeight:900, cursor: canActThis ? 'pointer' : 'not-allowed' }}>
-                                          Claim
-                                        </button>
+                                  {/* Row 2: Qty + Submitted + Claimed */}
+                                  <div style={{ display:'flex', alignItems:'center', gap:'0.75rem', marginBottom:'0.5rem', flexWrap:'wrap', fontSize:'0.78rem', color:'#8b9dc3' }}>
+                                    <span>
+                                      Qty: <span style={{ color:'#00ff88', fontWeight:900 }}>{req.qty}</span>
+                                      {req.adjQty > 0 && <span style={{ color:'#fbbf24', fontWeight:900 }}> → {req.adjQty}</span>}
+                                      {canActThis && (
+                                        editingId === req.id ? (
+                                          <span style={{ display:'inline-flex', gap:'0.3rem', alignItems:'center', marginLeft:'0.4rem' }}>
+                                            <input type="number" value={editQty} onChange={(e)=> setEditQty(parseInt(e.target.value)||0)}
+                                              style={{ width:'55px', padding:'0.2rem 0.3rem', background:'#1e293b', border:'2px solid #00ff88', borderRadius:'6px', color:'#e2e8f0', fontWeight:900, fontSize:'0.78rem' }} />
+                                            <button onClick={()=> adjustQty(req.id, editQty)}
+                                              style={{ padding:'0.2rem 0.4rem', background:'#00ff88', border:'none', borderRadius:'6px', cursor:'pointer' }}>
+                                              <Save size={12} color="#0a0e1a" />
+                                            </button>
+                                          </span>
+                                        ) : (
+                                          <button onClick={() => { setEditingId(req.id); setEditQty(req.adjQty || req.qty); }}
+                                            style={{ marginLeft:'0.3rem', padding:'0.15rem 0.35rem', background:'transparent', border:'1px solid #334155', borderRadius:'6px', cursor:'pointer' }}>
+                                            <Edit2 size={11} color="#64748b" />
+                                          </button>
+                                        )
                                       )}
-                                      {(req.status === "claimed" || req.status === "pending") && (
-                                        <button disabled={!canActThis} onClick={()=> startRequest(req.id)}
-                                          style={{ opacity: canActThis ? 1 : 0.45, padding:'0.45rem 0.7rem', background:'#a78bfa', border:'none', borderRadius:'10px', fontWeight:900, cursor: canActThis ? 'pointer' : 'not-allowed' }}>
-                                          Start
-                                        </button>
-                                      )}
-                                      {(req.status === "in_progress" || req.status === "claimed") && (
-                                        <button disabled={!canActThis} onClick={()=> completeRequest(req.id)}
-                                          style={{ opacity: canActThis ? 1 : 0.45, padding:'0.45rem 0.7rem', background:'linear-gradient(135deg, #00ff88 0%, #00cc6f 100%)', border:'none', borderRadius:'10px', fontWeight:900, cursor: canActThis ? 'pointer' : 'not-allowed', display:'inline-flex', alignItems:'center', gap:'0.25rem' }}>
-                                          <CheckCircle size={14} color="#0a0e1a" /> Done
-                                        </button>
-                                      )}
-                                      {req.status !== "completed" && req.status !== "cancelled" && (
-                                        <button disabled={!canActThis} onClick={()=> cancelRequest(req.id)}
-                                          style={{ opacity: canActThis ? 1 : 0.45, padding:'0.45rem 0.55rem', background:'transparent', border:'1px solid #ff4444', borderRadius:'10px', cursor: canActThis ? 'pointer' : 'not-allowed' }}>
-                                          <XCircle size={14} color={canActThis ? "#ff4444" : "#64748b"} />
-                                        </button>
-                                      )}
-                                    </div>
-                                  </td>
-                                </tr>
+                                    </span>
+                                    <span style={{ display:'flex', alignItems:'center', gap:'0.25rem' }}>
+                                      <Clock size={11} color="#64748b" />
+                                      {niceTime(req.submittedAt)}
+                                    </span>
+                                    <span style={{ color:'#00ff88', fontWeight:700 }}>{req.submittedBy || "?"}</span>
+                                    {req.claimedBy && (
+                                      <span style={{ color: lockedByOther ? '#fbbf24' : '#38bdf8', fontWeight:700 }}>
+                                        🔒 {req.claimedBy}
+                                      </span>
+                                    )}
+                                    {req.comments && (
+                                      <span style={{ color:'#64748b', fontStyle:'italic', maxWidth:'180px', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                                        💬 {req.comments}
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  {/* Row 3: Action buttons */}
+                                  <div style={{ display:'flex', gap:'0.4rem', flexWrap:'wrap' }}>
+                                    {req.status === "pending" && (
+                                      <button disabled={!canActThis} onClick={()=> claimRequest(req.id)}
+                                        style={{ opacity: canActThis ? 1 : 0.45, padding:'0.45rem 0.9rem', background:'#38bdf8', border:'none', borderRadius:'8px', fontWeight:900, cursor: canActThis ? 'pointer' : 'not-allowed', fontSize:'0.85rem', color:'#0a0e1a' }}>
+                                        Claim
+                                      </button>
+                                    )}
+                                    {(req.status === "claimed" || req.status === "pending") && (
+                                      <button disabled={!canActThis} onClick={()=> startRequest(req.id)}
+                                        style={{ opacity: canActThis ? 1 : 0.45, padding:'0.45rem 0.9rem', background:'#a78bfa', border:'none', borderRadius:'8px', fontWeight:900, cursor: canActThis ? 'pointer' : 'not-allowed', fontSize:'0.85rem', color:'#0a0e1a' }}>
+                                        Start
+                                      </button>
+                                    )}
+                                    {(req.status === "in_progress" || req.status === "claimed") && (
+                                      <button disabled={!canActThis} onClick={()=> completeRequest(req.id)}
+                                        style={{ opacity: canActThis ? 1 : 0.45, padding:'0.45rem 0.9rem', background:'linear-gradient(135deg,#00ff88,#00cc6f)', border:'none', borderRadius:'8px', fontWeight:900, cursor: canActThis ? 'pointer' : 'not-allowed', fontSize:'0.85rem', color:'#0a0e1a', display:'inline-flex', alignItems:'center', gap:'0.25rem' }}>
+                                        <CheckCircle size={14} color="#0a0e1a" /> Done
+                                      </button>
+                                    )}
+                                    {req.status !== "completed" && req.status !== "cancelled" && (
+                                      <button disabled={!canActThis} onClick={()=> cancelRequest(req.id)}
+                                        style={{ opacity: canActThis ? 1 : 0.45, padding:'0.45rem 0.6rem', background:'transparent', border:'1px solid #ff444466', borderRadius:'8px', cursor: canActThis ? 'pointer' : 'not-allowed' }}>
+                                        <XCircle size={14} color={canActThis ? "#ff4444" : "#64748b"} />
+                                      </button>
+                                    )}
+                                    {req.status === "completed" && req.completedAt && (
+                                      <span style={{ color:'#00ff88', fontSize:'0.75rem', fontWeight:900, alignSelf:'center' }}>
+                                        ✓ {niceTime(req.completedAt)}{req.completedBy ? ` by ${req.completedBy}` : ""}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
                               );
                             })}
-                          </tbody>
-                        </table>
-                      </div>
+                          </div>
                     </div>
                   ))}
                 </div>
