@@ -112,7 +112,7 @@
      * -------------------------------------------------------------------
      **********************************************************************/
     const CONFIG = {
-      ENABLE_SUPABASE: false, // <- set true for real multi-user across devices
+      ENABLE_SUPABASE: true, // <- set true for real multi-user across devices
       SUPABASE_URL: "https://vryxhveadpvhgvhyyary.supabase.co",
       SUPABASE_ANON_KEY: "sb_publishable_vKIZKhITzYfAJqfg-O-Zbw_4UXI1U8e",
       STORAGE_KEY: "warehouse-requests-v3",
@@ -120,7 +120,7 @@
       SLA_MINUTES_WARN: 5,
       SLA_MINUTES_BAD: 10,
       SLA_MINUTES_CRIT: 20,
-      ROOMS: ["Bistro", "Salad", "Film", "Labels", "Boxes"]
+      ROOMS: ["Bistro", "Salad", "Film/Labels", "MasterPacks", "Boxes", "Apples", "Loading"]
     };
 
     // Icons (same style as your original file)
@@ -808,34 +808,32 @@
         verticalAlign: 'top'
       };
 
-      // LOGIN
+      // LOGIN - Name only. Role is pre-assigned by Admin. No user picks their own role.
       if (screen === "login") {
         const noUsers = users.length === 0;
         const matchedUser = users.find(u => u.name.toLowerCase().trim() === tempName.toLowerCase().trim());
+        const roleEmoji = { admin:'🔧', supervisor:'🧭', warehouse:'📦', room:'🍽️' };
+        const roleColor = { admin:'#ff4444', supervisor:'#a78bfa', warehouse:'#fbbf24', room:'#8b9dc3' };
 
         const handleSignIn = () => {
           setLoginError("");
           const name = tempName.trim();
           if (!name) { setLoginError("Please enter your name."); return; }
 
-          // First-time setup: no users exist yet
+          // First-time: no users yet → auto-create first Admin
           if (noUsers) {
-            if (!tempRole) { setLoginError("Select a role."); return; }
-            // Bootstrap first admin
-            const firstAdmin = { id: genId(), name, role: tempRole, createdAt: new Date().toISOString(), createdBy: "system" };
+            const firstAdmin = { id: genId(), name, role: "admin", createdAt: new Date().toISOString(), createdBy: "system" };
             saveUsers([firstAdmin]);
-            setUserName(name); setUserRole(tempRole);
+            setUserName(name); setUserRole("admin");
             localStorage.setItem("wd_userName", name);
-            localStorage.setItem("wd_userRole", tempRole);
-            if (tempRole === "admin") setRoute("admin");
-            else if (tempRole === "room") setRoute("form");
-            else setRoute("picklist");
+            localStorage.setItem("wd_userRole", "admin");
+            setRoute("admin");
             return;
           }
 
-          // Normal login: must be in users list
+          // Normal login: name must exist, role loads automatically
           if (!matchedUser) {
-            setLoginError("You are not registered. Please contact your Admin to be added.");
+            setLoginError("Name not found. Ask your Admin to add you to the system.");
             return;
           }
 
@@ -852,102 +850,89 @@
           <div style={{ minHeight:'100vh', ...bg, padding:'2rem', position:'relative', overflow:'hidden', display:'flex', alignItems:'center', justifyContent:'center' }}>
             <div style={gridOverlay} />
             <div style={{
-              maxWidth:'520px', width:'100%',
-              background:'rgba(15, 23, 42, 0.8)', backdropFilter:'blur(10px)',
-              border:'1px solid rgba(0, 255, 136, 0.2)', borderRadius:'12px',
-              padding:'3rem', boxShadow:'0 8px 32px rgba(0,0,0,0.3)', position:'relative', zIndex:1
+              maxWidth:'460px', width:'100%',
+              background:'rgba(15,23,42,0.9)', backdropFilter:'blur(10px)',
+              border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px',
+              padding:'3rem', boxShadow:'0 8px 32px rgba(0,0,0,0.4)', position:'relative', zIndex:1
             }}>
-              <div style={{ textAlign:'center', marginBottom:'2rem' }}>
-                <div style={{ display:'inline-flex', alignItems:'center', gap:'1rem', marginBottom:'1rem', padding:'0.75rem 1.5rem', background:'rgba(0,255,136,0.1)', border:'2px solid #00ff88', borderRadius:'8px', boxShadow:'0 0 20px rgba(0,255,136,0.3)' }}>
+
+              {/* Logo */}
+              <div style={{ textAlign:'center', marginBottom:'2.5rem' }}>
+                <div style={{ display:'inline-flex', alignItems:'center', gap:'1rem', padding:'0.75rem 1.5rem', background:'rgba(0,255,136,0.1)', border:'2px solid #00ff88', borderRadius:'10px', boxShadow:'0 0 20px rgba(0,255,136,0.25)' }}>
                   <Package size={32} color="#00ff88" />
-                  <h1 style={{ margin:0, fontSize:'1.6rem', fontWeight:800, color:'#00ff88', textTransform:'uppercase', letterSpacing:'0.1em' }}>
+                  <h1 style={{ margin:0, fontSize:'1.6rem', fontWeight:900, color:'#00ff88', textTransform:'uppercase', letterSpacing:'0.1em' }}>
                     Warehouse System
                   </h1>
                 </div>
-                <p style={{ color:'#8b9dc3', margin:0, fontSize:'0.9rem', letterSpacing:'0.04em' }}>
-                  {noUsers ? "⚙️ First Time Setup — Create Admin Account" : "Sign in to continue"}
+                <p style={{ color:'#64748b', margin:'0.75rem 0 0 0', fontSize:'0.85rem' }}>
+                  {noUsers ? "⚙️ First time setup" : "Enter your name to sign in"}
                 </p>
               </div>
 
+              {/* First-time notice */}
               {noUsers && (
-                <div style={{ marginBottom:'1.5rem', padding:'1rem', background:'rgba(251,191,36,0.1)', border:'1px solid #fbbf24', borderRadius:'8px', color:'#fbbf24', fontSize:'0.85rem' }}>
-                  ⚠️ No users exist yet. Create the first account below. This person will be able to manage all other users.
+                <div style={{ marginBottom:'1.5rem', padding:'1rem 1.25rem', background:'rgba(255,68,68,0.08)', border:'1px solid rgba(255,68,68,0.4)', borderRadius:'10px' }}>
+                  <div style={{ color:'#ff4444', fontWeight:900, fontSize:'0.9rem', marginBottom:'0.35rem' }}>🔧 Creating First Admin Account</div>
+                  <div style={{ color:'#ff4444', fontSize:'0.82rem', lineHeight:1.6, opacity:0.85 }}>
+                    No users exist yet. Enter your name — you'll be created as <strong>Admin</strong> and can then add the rest of your team.
+                  </div>
                 </div>
               )}
 
-              <label style={{ display:'block', color:'#e2e8f0', fontSize:'0.85rem', fontWeight:700, marginBottom:'0.5rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>
-                Your Name <span style={{ color:'#00ff88' }}>*</span>
+              {/* Name input */}
+              <label style={{ display:'block', color:'#8b9dc3', fontSize:'0.8rem', fontWeight:700, marginBottom:'0.5rem', textTransform:'uppercase', letterSpacing:'0.06em' }}>
+                Your Name
               </label>
               <input
                 value={tempName}
                 onChange={(e) => { setTempName(e.target.value); setLoginError(""); }}
                 onKeyDown={(e) => e.key === "Enter" && handleSignIn()}
-                placeholder="Enter your name"
-                style={{ width:'100%', padding:'0.875rem', background:'#1e293b', border:'2px solid #334155', borderRadius:'6px', color:'#e2e8f0', fontSize:'1rem', outline:'none' }}
+                placeholder="Enter your name..."
+                autoFocus
+                style={{ width:'100%', padding:'0.9rem 1rem', background:'#1e293b', border:`2px solid ${matchedUser ? '#00ff88' : '#334155'}`, borderRadius:'8px', color:'#e2e8f0', fontSize:'1rem', outline:'none', transition:'border-color 0.2s' }}
               />
 
-              {/* Show matched user's role (if found) */}
-              {!noUsers && matchedUser && (
-                <div style={{ marginTop:'0.75rem', padding:'0.75rem 1rem', background:'rgba(0,255,136,0.1)', border:'1px solid rgba(0,255,136,0.3)', borderRadius:'8px', color:'#00ff88', fontSize:'0.9rem', fontWeight:700 }}>
-                  ✅ Found: {matchedUser.name} · Role: <span style={{ textTransform:'uppercase' }}>{matchedUser.role}</span>
+              {/* Role preview — shows automatically once name matches */}
+              {matchedUser && (
+                <div style={{ marginTop:'0.75rem', padding:'0.9rem 1.1rem', background:`${roleColor[matchedUser.role]}11`, border:`1px solid ${roleColor[matchedUser.role]}44`, borderRadius:'10px', display:'flex', alignItems:'center', gap:'0.85rem' }}>
+                  <span style={{ fontSize:'1.6rem' }}>{roleEmoji[matchedUser.role]}</span>
+                  <div>
+                    <div style={{ color:'#e2e8f0', fontWeight:900, fontSize:'1rem' }}>{matchedUser.name}</div>
+                    <div style={{ color: roleColor[matchedUser.role], fontSize:'0.82rem', fontWeight:700, textTransform:'uppercase', letterSpacing:'0.06em', marginTop:'0.15rem' }}>{matchedUser.role}</div>
+                  </div>
+                  <div style={{ marginLeft:'auto', color: roleColor[matchedUser.role], fontSize:'1.2rem' }}>✓</div>
                 </div>
               )}
 
-              {/* First-time setup: show role selector */}
-              {noUsers && (
-                <>
-                  <div style={{ height:'1rem' }} />
-                  <label style={{ display:'block', color:'#e2e8f0', fontSize:'0.85rem', fontWeight:700, marginBottom:'0.5rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>
-                    Role <span style={{ color:'#00ff88' }}>*</span>
-                  </label>
-                  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0.75rem', marginBottom:'1rem' }}>
-                    {[
-                      { key:"admin", label:"🔧 Admin" },
-                      { key:"supervisor", label:"🧭 Supervisor" },
-                      { key:"warehouse", label:"📦 Warehouse" },
-                      { key:"room", label:"🍽️ Room" }
-                    ].map(r => (
-                      <button key={r.key} type="button" onClick={() => setTempRole(r.key)}
-                        style={{
-                          padding:'1rem', borderRadius:'8px', cursor:'pointer', fontWeight:800,
-                          border: tempRole===r.key ? '2px solid #00ff88' : '2px solid #334155',
-                          background: tempRole===r.key ? 'linear-gradient(135deg, #00ff88 0%, #00cc6f 100%)' : '#1e293b',
-                          color: tempRole===r.key ? '#0a0e1a' : '#e2e8f0',
-                          textTransform:'uppercase', letterSpacing:'0.04em'
-                        }}>
-                        {r.label}
-                      </button>
-                    ))}
-                  </div>
-                </>
+              {/* Not found hint */}
+              {!noUsers && tempName.trim().length > 1 && !matchedUser && (
+                <div style={{ marginTop:'0.6rem', color:'#64748b', fontSize:'0.8rem' }}>
+                  Not found — check spelling or ask your Admin to add you.
+                </div>
               )}
 
+              {/* Error */}
               {loginError && (
                 <div style={{ marginTop:'0.75rem', padding:'0.75rem 1rem', background:'rgba(255,68,68,0.1)', border:'1px solid #ff4444', borderRadius:'8px', color:'#ff4444', fontSize:'0.85rem', fontWeight:700 }}>
                   ❌ {loginError}
                 </div>
               )}
 
-              <div style={{ height:'1.25rem' }} />
+              <div style={{ height:'1.5rem' }} />
 
               <button onClick={handleSignIn}
-                style={{ width:'100%', padding:'1.1rem', background:'linear-gradient(135deg, #00ff88 0%, #00cc6f 100%)', border:'none', borderRadius:'10px', color:'#0a0e1a', fontSize:'1.05rem', fontWeight:900, cursor:'pointer', textTransform:'uppercase', letterSpacing:'0.08em', boxShadow:'0 4px 16px rgba(0,255,136,0.35)' }}>
-                {noUsers ? "Create Account & Sign In" : "Sign In"}
+                style={{ width:'100%', padding:'1.1rem', background:'linear-gradient(135deg,#00ff88,#00cc6f)', border:'none', borderRadius:'10px', color:'#0a0e1a', fontSize:'1.05rem', fontWeight:900, cursor:'pointer', textTransform:'uppercase', letterSpacing:'0.08em', boxShadow:'0 4px 16px rgba(0,255,136,0.3)' }}>
+                {noUsers ? "🔧 Create Admin Account" : "Sign In →"}
               </button>
 
-              <div style={{ marginTop:'1rem', padding:'0.75rem', background:'rgba(0,255,136,0.08)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'8px', color:'#00ff88', fontSize:'0.8rem', textAlign:'center' }}>
-                🔔 Notifications: {notificationsEnabled ? "Enabled" : "Not enabled"}
+              <div style={{ marginTop:'1.25rem', textAlign:'center', color:'#4b5563', fontSize:'0.78rem' }}>
+                {noUsers ? "Your role will be set to Admin automatically" : "Your role is assigned by your Admin"}
               </div>
-
-              {!noUsers && (
-                <div style={{ marginTop:'1rem', color:'#64748b', fontSize:'0.75rem', textAlign:'center' }}>
-                  Not registered? Contact your Admin to be added to the system.
-                </div>
-              )}
             </div>
           </div>
         );
       }
+
 
       // HEADER BAR (shared)
       const TopBar = ({ title, subtitle }) => (
