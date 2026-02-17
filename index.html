@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-  <title>White Glove Logistics Suite</title>
+  <title>Warehouse Delivery Request System (Multi-User)</title>
 
   <!-- React (UMD) -->
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
@@ -20,7 +20,7 @@
       width: 100%;
       height: 100%;
       overflow-x: hidden;
-      font-family: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      font-family: 'Space Mono','Courier New',monospace;
       /* Prevent text size adjustment on orientation change */
       -webkit-text-size-adjust: 100%;
       -moz-text-size-adjust: 100%;
@@ -46,31 +46,19 @@
       min-height: 100vh;
       width: 100%;
     }
-  
-    /* Hide number input spinners (Chrome/Safari/Edge) */
-    input[type=number]::-webkit-outer-spin-button,
-    input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
-    /* Hide number input spinners (Firefox) */
-    input[type=number] { -moz-appearance: textfield; }
-    
     /* Prevent zoom on input focus */
     input, select, textarea {
       font-size: 16px !important;
     }
-
   </style>
 
   <!-- PWA -->
   <link rel="manifest" href="./manifest.json">
   <link rel="icon" type="image/svg+xml" href="./favicon.svg">
-  <meta name="theme-color" content="#1f2937">
+  <meta name="theme-color" content="#00ff88">
   <link rel="apple-touch-icon" href="./icon-192.png">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&display=swap" rel="stylesheet">
 
 </head>
 <body>
@@ -78,24 +66,6 @@
 
   <script type="text/babel">
     const { useEffect, useMemo, useRef, useState } = React;
-
-
-// --- White Glove: show a visible error overlay instead of a blank screen ---
-(function(){
-  const show = (msg)=> {
-    try {
-      const el = document.getElementById('root') || document.body;
-      el.innerHTML = '<div style="padding:16px;font-family:Inter,system-ui,Arial;color:#fff;background:#111827;min-height:100vh">' +
-        '<h2 style="margin:0 0 10px 0;color:#ef4444">App Error</h2>' +
-        '<pre style="white-space:pre-wrap;word-break:break-word;background:#0b1220;padding:12px;border-radius:12px;border:1px solid rgba(255,255,255,0.12)">' +
-        String(msg) + '</pre>' +
-        '<div style="margin-top:10px;color:#9ca3af">Open DevTools Console for full details.</div>' +
-      '</div>';
-    } catch {}
-  };
-  window.addEventListener('error', (e)=> show(e?.error?.stack || e?.message || 'Unknown error'));
-  window.addEventListener('unhandledrejection', (e)=> show(e?.reason?.stack || e?.reason || 'Unhandled promise rejection'));
-})();
 
     /**********************************************************************
      * CONFIG (Multi-user)
@@ -142,39 +112,15 @@
      * -------------------------------------------------------------------
      **********************************************************************/
     const CONFIG = {
-      // White Glove internal deployment settings
-      BRAND_NAME: "White Glove Logistics",
-      PRODUCT_NAME: "White Glove Logistics Suite",
-      THEME_ACCENT: "#16a34a", // subtle enterprise green
-      THEME_BG_TOP: "#0b1220",
-      THEME_BG_BOTTOM: "#111827",
-      ENABLE_SUPABASE: true, // true = real multi-user across devices
+      ENABLE_SUPABASE: false, // <- set true for real multi-user across devices
       SUPABASE_URL: "https://vryxhveadpvhgvhyyary.supabase.co",
       SUPABASE_ANON_KEY: "sb_publishable_vKIZKhITzYfAJqfg-O-Zbw_4UXI1U8e",
-
-      // Local storage keys (internal mode still works without Supabase)
-      STORAGE_KEY: "wgl-requests-v4",
-      ACTIVITY_KEY: "wgl-activity-v1",
-      STAFF_KEY: "wgl-staff-roster-v1",
-      ALERTS_KEY: "wgl-alerts-v1",
-      ROOM_ASSIGN_KEY: "wgl-room-assignments-v1",
-
-      // Refresh / SLA
+      STORAGE_KEY: "warehouse-requests-v3",
       REFRESH_MS: 2500, // polling fallback; realtime will override
       SLA_MINUTES_WARN: 5,
       SLA_MINUTES_BAD: 10,
       SLA_MINUTES_CRIT: 20,
-
-      // Escalation behavior
-      ESCALATE_BAD_NOTIFY: true,
-      ESCALATE_CRIT_NOTIFY: true,
-
-      // Rooms
-      ROOMS: ["Bistro", "Salad", "Film", "Labels", "Boxes", "Apples"],
-
-      // Shift-based operations (recommended)
-      SHIFTS: ["Shift 1", "Shift 2", "Shift 3"]
-    
+      ROOMS: ["Bistro", "Salad", "Film", "Labels", "Boxes"]
     };
 
     // Icons (same style as your original file)
@@ -241,59 +187,6 @@
       return p === 'granted';
     };
 
-// White-glove internal features: activity log + staff roster + escalation tracking
-const loadActivity = ()=> safeJsonParse(localStorage.getItem(CONFIG.ACTIVITY_KEY), []);
-const saveActivity = (rows)=> localStorage.setItem(CONFIG.ACTIVITY_KEY, JSON.stringify(rows.slice(0, 500))); // cap
-const appendActivity = (entry)=> {
-  const rows = loadActivity();
-  rows.unshift({ id: Date.now() + Math.random(), at: nowIso(), ...entry });
-  saveActivity(rows);
-  bc?.postMessage({ type:"activity_updated" });
-};
-
-const loadStaff = ()=> {
-  const v = safeJsonParse(localStorage.getItem(CONFIG.STAFF_KEY), null);
-  if (Array.isArray(v) && v.length) return v;
-  // sensible default roster (edit in Dashboard as Supervisor)
-  return [{ name: "Warehouse 1", enabled: true }, { name: "Warehouse 2", enabled: true }];
-};
-const saveStaff = (rows)=> localStorage.setItem(CONFIG.STAFF_KEY, JSON.stringify(rows));
-
-const loadAlerts = ()=> safeJsonParse(localStorage.getItem(CONFIG.ALERTS_KEY), {});
-const saveAlerts = (obj)=> localStorage.setItem(CONFIG.ALERTS_KEY, JSON.stringify(obj));
-
-    const loadRoomAssignments = ()=> safeJsonParse(localStorage.getItem(CONFIG.ROOM_ASSIGN_KEY), {});
-    const saveRoomAssignments = (obj)=> localStorage.setItem(CONFIG.ROOM_ASSIGN_KEY, JSON.stringify(obj));
-
-const getRosterKey = (shift)=> `wgl-staff-roster-${shift}`;
-const getAssignKey = (shift)=> `wgl-room-assignments-${shift}`;
-const getActiveShift = ()=> (safeJsonParse(localStorage.getItem("wgl_activeShift"), null) || CONFIG.SHIFTS?.[0] || "Shift 1");
-const setActiveShiftStorage = (shift)=> localStorage.setItem("wgl_activeShift", JSON.stringify(shift));
-
-const loadShiftRoster = (shift)=> {
-  const v = safeJsonParse(localStorage.getItem(getRosterKey(shift)), null);
-  if (Array.isArray(v) && v.length) return v;
-  // default roster per shift
-  return [{ name: "Warehouse 1", enabled: true }, { name: "Warehouse 2", enabled: true }];
-};
-const saveShiftRoster = (shift, rows)=> localStorage.setItem(getRosterKey(shift), JSON.stringify(rows));
-
-const loadShiftAssignments = (shift)=> safeJsonParse(localStorage.getItem(getAssignKey(shift)), {});
-const saveShiftAssignments = (shift, obj)=> localStorage.setItem(getAssignKey(shift), JSON.stringify(obj));
-
-const parseNames = (text)=> {
-  const raw = String(text || "")
-    .replace(/\r/g, "\n")
-    .split(/\n|,|;|\t/)
-    .map(s => s.trim())
-    .filter(Boolean);
-  // unique, preserve order
-  const seen = new Set();
-  const out = [];
-  raw.forEach(n => { const k=n.toLowerCase(); if (!seen.has(k)) { seen.add(k); out.push(n); } });
-  return out;
-};
-
     // Local multi-tab sync channel (works on same device)
     const bc = ("BroadcastChannel" in window) ? new BroadcastChannel("warehouse-req-sync") : null;
 
@@ -301,24 +194,6 @@ const parseNames = (text)=> {
     function createAdapter({ onRemoteChange }) {
       const useSupabase = CONFIG.ENABLE_SUPABASE && CONFIG.SUPABASE_URL && CONFIG.SUPABASE_ANON_KEY && window.supabase;
       const supabaseClient = useSupabase ? window.supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY) : null;
-
-
-const logToSupabase = async (entry)=> {
-  if (!useSupabase) return;
-  // Optional: create table warehouse_activity_log if you want server-side audit.
-  // If table doesn't exist, this fails silently.
-  try {
-    await supabaseClient.from("warehouse_activity_log").insert({
-      id: Date.now(),
-      at: entry.at,
-      action: entry.action,
-      performed_by: entry.performedBy || "",
-      role: entry.role || "",
-      request_id: entry.requestId || null,
-      details: entry.details || null
-    });
-  } catch {}
-};
 
       let unsub = null;
 
@@ -392,7 +267,6 @@ const logToSupabase = async (entry)=> {
             // Same-device multi-tab sync
             bc?.addEventListener("message", (e)=> {
               if (e?.data?.type === "updated") onRemoteChange?.();
-              if (e?.data?.type === "activity_updated") onRemoteChange?.();
             });
             window.addEventListener("storage", (e)=> {
               if (e.key === CONFIG.STORAGE_KEY) onRemoteChange?.();
@@ -450,11 +324,6 @@ const logToSupabase = async (entry)=> {
           if (error) throw error;
           return true;
         },
-        async logActivity(entry){
-          appendActivity(entry);
-          await logToSupabase(entry);
-          return true;
-        },
         async clearAll() {
           if (!useSupabase) {
             return await localSave([]);
@@ -486,15 +355,6 @@ const logToSupabase = async (entry)=> {
       const [notificationsEnabled, setNotificationsEnabled] = useState(false);
       const [connectionMode, setConnectionMode] = useState("local"); // "local" or "supabase"
 
-
-const [activity, setActivity] = useState(() => loadActivity());
-const [activeShift, setActiveShift] = useState(() => getActiveShift());
-      const [staffRoster, setStaffRoster] = useState(() => loadShiftRoster(getActiveShift()));
-const [autoAssignEnabled, setAutoAssignEnabled] = useState(() => safeJsonParse(localStorage.getItem("wgl_autoAssignEnabled"), false));
-      const [roomAssignments, setRoomAssignments] = useState(() => loadShiftAssignments(getActiveShift()));
-      const [onlyMyRooms, setOnlyMyRooms] = useState(false); // picklist toggle
-
-
       const [editingId, setEditingId] = useState(null);
       const [editQty, setEditQty] = useState(0);
 
@@ -503,13 +363,57 @@ const [autoAssignEnabled, setAutoAssignEnabled] = useState(() => safeJsonParse(l
       const [search, setSearch] = useState("");
       const [sortMode, setSortMode] = useState("priority_age"); // priority_age|age|room|item
       const [timeFilter, setTimeFilter] = useState("today"); // for dashboard analytics
+      const [adminTimeFilter, setAdminTimeFilter] = useState("day"); // for admin panel
+
+      // Users & Assignments
+      const [users, setUsers] = useState(() => {
+        try { return JSON.parse(localStorage.getItem("wd_users_v1") || "[]"); } catch { return []; }
+      });
+      const [assignments, setAssignments] = useState(() => {
+        try { return JSON.parse(localStorage.getItem("wd_assignments_v1") || "[]"); } catch { return []; }
+      });
+      // User management form state
+      const [newUserName, setNewUserName] = useState("");
+      const [newUserRole, setNewUserRole] = useState("room");
+      const [editUserId, setEditUserId] = useState(null);
+      const [editUserName, setEditUserName] = useState("");
+      const [editUserRole, setEditUserRole] = useState("");
+      // Assignment form state
+      const [assignPerson, setAssignPerson] = useState("");
+      const [assignRoom, setAssignRoom] = useState("");
+      const [assignDuration, setAssignDuration] = useState("day");
+      // Login error
+      const [loginError, setLoginError] = useState("");
+
+      const saveUsers = (updated) => {
+        setUsers(updated);
+        localStorage.setItem("wd_users_v1", JSON.stringify(updated));
+      };
+
+      const saveAssignments = (updated) => {
+        setAssignments(updated);
+        localStorage.setItem("wd_assignments_v1", JSON.stringify(updated));
+      };
+
+      const genId = () => Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
+
+      const expiryDate = (duration) => {
+        const d = new Date();
+        if (duration === "day") d.setDate(d.getDate() + 1);
+        else if (duration === "week") d.setDate(d.getDate() + 7);
+        else if (duration === "month") d.setMonth(d.getMonth() + 1);
+        else if (duration === "year") d.setFullYear(d.getFullYear() + 1);
+        return d.toISOString();
+      };
+
+      // Active assignments (not expired)
+      const activeAssignments = assignments.filter(a => new Date(a.expiresAt) > new Date());
 
       const dropdownRef = useRef(null);
 
       const rooms = CONFIG.ROOMS;
 
       const adapterRef = useRef(null);
-      const requestsRef = useRef([]);
 
       // Keep hash in sync (TV board can be loaded via #board)
       useEffect(() => {
@@ -525,13 +429,6 @@ const [autoAssignEnabled, setAutoAssignEnabled] = useState(() => safeJsonParse(l
         setScreen(s);
         location.hash = s;
       };
-
-      
-const audit = async ({ action, requestId=null, details=null }) => {
-  const entry = { action, requestId, details, performedBy: userName, role: userRole, at: nowIso() };
-  try { await adapterRef.current?.logActivity?.(entry); } catch { appendActivity(entry); }
-  setActivity(loadActivity());
-};
 
       const showNotification = (title, body) => {
         if (!notificationsEnabled || !canNotify()) return;
@@ -568,33 +465,7 @@ const audit = async ({ action, requestId=null, details=null }) => {
 
             // polling fallback (supabase realtime already calls onRemoteChange)
             const t = setInterval(() => loadAll().catch(console.error), CONFIG.REFRESH_MS);
-
-// Escalation engine (white-glove): notify once per threshold per request
-const esc = setInterval(() => {
-  try {
-    const alerts = loadAlerts();
-    const active = (adapterRef.current ? requestsRef.current : []).filter(r => r.status !== "completed" && r.status !== "cancelled");
-    active.forEach(r => {
-      const submittedAt = r.submittedAt || r.submitted_at || nowIso();
-      const mins = msToMins(Date.now() - new Date(submittedAt).getTime());
-      const key = String(r.id);
-      alerts[key] = alerts[key] || { bad:false, crit:false };
-      if (CONFIG.ESCALATE_BAD_NOTIFY && mins >= CONFIG.SLA_MINUTES_BAD && !alerts[key].bad) {
-        alerts[key].bad = true;
-        showNotification("⚠️ SLA Warning", `${r.room}: ${r.qty}× ${r.item} is aging (${mins} min)`);
-        audit({ action:"sla_warning", requestId: r.id, details:{ mins } });
-      }
-      if (CONFIG.ESCALATE_CRIT_NOTIFY && mins >= CONFIG.SLA_MINUTES_CRIT && !alerts[key].crit) {
-        alerts[key].crit = true;
-        showNotification("🚨 SLA Critical", `${r.room}: ${r.qty}× ${r.item} is CRITICAL (${mins} min)`);
-        audit({ action:"sla_critical", requestId: r.id, details:{ mins } });
-      }
-    });
-    saveAlerts(alerts);
-  } catch {}
-}, 15000);
-
-return () => { clearInterval(t); clearInterval(esc); adapter.destroy(); };
+            return () => { clearInterval(t); adapter.destroy(); };
           } catch (error) {
             console.error("Failed to initialize app:", error);
             setLoading(false);
@@ -603,23 +474,7 @@ return () => { clearInterval(t); clearInterval(esc); adapter.destroy(); };
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, []);
 
-      
-// Keep activity + roster synced (internal)
-useEffect(() => { setActivity(loadActivity()); }, [requests]);
-useEffect(() => { localStorage.setItem("wgl_autoAssignEnabled", JSON.stringify(!!autoAssignEnabled)); }, [autoAssignEnabled]);
-useEffect(() => { saveShiftRoster(activeShift, staffRoster); }, [activeShift, staffRoster]);
-      useEffect(() => { saveShiftAssignments(activeShift, roomAssignments); }, [activeShift, roomAssignments]);
-      useEffect(() => { setActiveShiftStorage(activeShift); }, [activeShift]);
-      useEffect(() => {
-        // when shift changes, load that shift's roster + assignments
-        setStaffRoster(loadShiftRoster(activeShift));
-        setRoomAssignments(loadShiftAssignments(activeShift));
-      }, [activeShift]);
-      
-
       // Store user identity
-      useEffect(() => { requestsRef.current = requests; }, [requests]);
-
       useEffect(() => {
         localStorage.setItem("wd_userName", userName || "");
         localStorage.setItem("wd_userRole", userRole || "");
@@ -631,10 +486,6 @@ useEffect(() => { saveShiftRoster(activeShift, staffRoster); }, [activeShift, st
         let rows = [...requests];
 
         if (onlyActive) rows = rows.filter(r => r.status !== "completed" && r.status !== "cancelled");
-        if (onlyMyRooms && userRole === "warehouse") {
-          const myRooms = CONFIG.ROOMS.filter(room => (roomAssignments[room] || "") === userName);
-          if (myRooms.length) rows = rows.filter(r => myRooms.includes(r.room));
-        }
         if (q) {
           rows = rows.filter(r =>
             (r.item||"").toLowerCase().includes(q) ||
@@ -691,59 +542,9 @@ useEffect(() => { saveShiftRoster(activeShift, staffRoster); }, [activeShift, st
         return { total, pending, claimed, inprog, completed, cancelled };
       }, [requests]);
 
-      const canWarehouseAct = userRole === "warehouse" || userRole === "supervisor";
-      const canSupervisor = userRole === "supervisor";
-
-      
-const getActiveStaffLoad = ()=> {
-  const load = {};
-  staffRoster.filter(s => s.enabled).forEach(s => load[s.name] = 0);
-  requests.forEach(r => {
-    if (r.status !== "completed" && r.status !== "cancelled" && r.claimedBy && load[r.claimedBy] !== undefined) {
-      load[r.claimedBy] += 1;
-    }
-  });
-  return load;
-};
-
-useEffect(() => {
-  if (!autoAssignEnabled) return;
-  if (!(userRole === "supervisor")) return; // supervisor orchestrates auto-assign
-  const enabledStaff = staffRoster.filter(s => s.enabled);
-  if (!enabledStaff.length) return;
-
-  // Claim any new pending requests that are unclaimed
-  const pendingUnclaimed = requests.filter(r => r.status === "pending" && !r.claimedBy);
-  if (!pendingUnclaimed.length) return;
-
-  const load = getActiveStaffLoad();
-  pendingUnclaimed.slice(0, 3).forEach(async (r) => {
-    // Choose least loaded staff
-    const owner = (roomAssignments[r.room] || "").trim();
-const ownerEnabled = !!owner && enabledStaff.some(s => s.name === owner);
-
-const pick = ownerEnabled
-  ? owner
-  : enabledStaff
-      .map(s => ({ name: s.name, n: load[s.name] ?? 0 }))
-      .sort((a,b)=> a.n - b.n)[0]?.name;
-
-    if (!pick) return;
-
-    try {
-      await adapterRef.current.updatePartial(r.id, (row)=> {
-        if (row.status !== "pending") return row;
-        row.status = "claimed";
-        row.claimedBy = pick;
-        row.claimedAt = nowIso();
-        row.lastUpdatedAt = nowIso();
-        return row;
-      });
-      await audit({ action:"auto_assigned", requestId: r.id, details:{ assignedTo: pick } });
-      await loadAll();
-    } catch {}
-  });
-}, [autoAssignEnabled, requests, staffRoster, roomAssignments, userRole]);
+      const canWarehouseAct = userRole === "warehouse" || userRole === "supervisor" || userRole === "admin";
+      const canSupervisor = userRole === "supervisor" || userRole === "admin";
+      const canAdmin = userRole === "admin";
 
       const slaBadge = (req)=> {
         const submittedAt = req.submittedAt || req.submitted_at || nowIso();
@@ -822,7 +623,6 @@ const pick = ownerEnabled
           };
 
           await adapterRef.current.upsert(req);
-          await audit({ action: "request_submitted", requestId: req.id, details: { item: req.item, room: req.room, qty: req.qty, priority: req.priority } });
           await loadAll();
 
           // Notify warehouse users (best-effort — will show on their devices if enabled)
@@ -853,9 +653,8 @@ const pick = ownerEnabled
             r.lastUpdatedAt = nowIso();
             return r;
           });
-          await audit({ action: "request_claimed", requestId: id });
           await loadAll();
-          } catch (error) {
+        } catch (error) {
           console.error("Failed to claim request:", error);
         }
       };
@@ -873,8 +672,7 @@ const pick = ownerEnabled
             r.lastUpdatedAt = nowIso();
             return r;
           });
-                    await audit({ action: "request_started", requestId: id });
-await loadAll();
+          await loadAll();
         } catch (error) {
           console.error("Failed to start request:", error);
         }
@@ -894,7 +692,6 @@ await loadAll();
             completedRow = r;
             return r;
           });
-          await audit({ action: "request_completed", requestId: id });
           await loadAll();
           if (completedRow) showNotification("✅ Completed", `${completedRow.item} delivered to ${completedRow.room} by ${userName}`);
         } catch (error) {
@@ -914,8 +711,7 @@ await loadAll();
             r.lastUpdatedAt = nowIso();
             return r;
           });
-                    await audit({ action: "request_cancelled", requestId: id });
-await loadAll();
+          await loadAll();
         } catch (error) {
           console.error("Failed to cancel request:", error);
         }
@@ -932,7 +728,6 @@ await loadAll();
             return r;
           });
           setEditingId(null);
-          await audit({ action: "qty_adjusted", requestId: id, details: { adjQty: Number(newQty)||0 } });
           await loadAll();
         } catch (error) {
           console.error("Failed to adjust quantity:", error);
@@ -945,7 +740,6 @@ await loadAll();
         if (!confirm("Clear all completed requests? This cannot be undone.")) return;
         try {
           await adapterRef.current.clearCompleted();
-          await audit({ action: "clear_completed" });
           await loadAll();
         } catch (error) {
           console.error("Failed to clear completed requests:", error);
@@ -957,15 +751,34 @@ await loadAll();
         if (!confirm("DANGER: Clear ALL requests? This cannot be undone.")) return;
         try {
           await adapterRef.current.clearAll();
-          await audit({ action: "clear_all" });
           await loadAll();
         } catch (error) {
           console.error("Failed to clear all requests:", error);
         }
       };
 
+      const deleteRequest = async (id) => {
+        if (!canAdmin) return;
+        if (!confirm("Delete this request permanently? This cannot be undone.")) return;
+        try {
+          const adapter = adapterRef.current;
+          if (adapter.kind === "supabase") {
+            const { error } = await adapter.client.from('warehouse_requests').delete().eq('id', id);
+            if (error) throw error;
+          } else {
+            localStorage.setItem(CONFIG.LOCAL_STORAGE_KEY, JSON.stringify(requests.filter(r => r.id !== id)));
+          }
+          await loadAll();
+          setSuccessMsg("Request deleted!");
+          setTimeout(() => setSuccessMsg(""), 3000);
+        } catch (error) {
+          console.error("Failed to delete:", error);
+          alert("Failed to delete request");
+        }
+      };
+
       // UI theme bits
-      const bg = { background:`linear-gradient(135deg, ${CONFIG.THEME_BG_TOP} 0%, ${CONFIG.THEME_BG_BOTTOM} 100%)` };
+      const bg = { background:'linear-gradient(135deg, #0a0e1a 0%, #1a1f2e 100%)' };
       const gridOverlay = {
         position:'absolute', top:0, left:0, right:0, bottom:0,
         backgroundImage: `
@@ -997,6 +810,44 @@ await loadAll();
 
       // LOGIN
       if (screen === "login") {
+        const noUsers = users.length === 0;
+        const matchedUser = users.find(u => u.name.toLowerCase().trim() === tempName.toLowerCase().trim());
+
+        const handleSignIn = () => {
+          setLoginError("");
+          const name = tempName.trim();
+          if (!name) { setLoginError("Please enter your name."); return; }
+
+          // First-time setup: no users exist yet
+          if (noUsers) {
+            if (!tempRole) { setLoginError("Select a role."); return; }
+            // Bootstrap first admin
+            const firstAdmin = { id: genId(), name, role: tempRole, createdAt: new Date().toISOString(), createdBy: "system" };
+            saveUsers([firstAdmin]);
+            setUserName(name); setUserRole(tempRole);
+            localStorage.setItem("wd_userName", name);
+            localStorage.setItem("wd_userRole", tempRole);
+            if (tempRole === "admin") setRoute("admin");
+            else if (tempRole === "room") setRoute("form");
+            else setRoute("picklist");
+            return;
+          }
+
+          // Normal login: must be in users list
+          if (!matchedUser) {
+            setLoginError("You are not registered. Please contact your Admin to be added.");
+            return;
+          }
+
+          setUserName(matchedUser.name);
+          setUserRole(matchedUser.role);
+          localStorage.setItem("wd_userName", matchedUser.name);
+          localStorage.setItem("wd_userRole", matchedUser.role);
+          if (matchedUser.role === "admin") setRoute("admin");
+          else if (matchedUser.role === "room") setRoute("form");
+          else setRoute("picklist");
+        };
+
         return (
           <div style={{ minHeight:'100vh', ...bg, padding:'2rem', position:'relative', overflow:'hidden', display:'flex', alignItems:'center', justifyContent:'center' }}>
             <div style={gridOverlay} />
@@ -1007,74 +858,92 @@ await loadAll();
               padding:'3rem', boxShadow:'0 8px 32px rgba(0,0,0,0.3)', position:'relative', zIndex:1
             }}>
               <div style={{ textAlign:'center', marginBottom:'2rem' }}>
-                <div style={{ display:'inline-flex', alignItems:'center', gap:'1rem', marginBottom:'1rem', padding:'0.75rem 1.5rem', background:'rgba(0,255,136,0.1)', border:`2px solid ${CONFIG.THEME_ACCENT}`, borderRadius:'8px', boxShadow:'0 0 18px rgba(22,163,74,0.18)' }}>
-                  <Package size={32} color={CONFIG.THEME_ACCENT} />
-                  <h1 style={{ margin:0, fontSize:'1.6rem', fontWeight:800, color:CONFIG.THEME_ACCENT, textTransform:'uppercase', letterSpacing:'0.1em' }}>
-                    {CONFIG.BRAND_NAME}
+                <div style={{ display:'inline-flex', alignItems:'center', gap:'1rem', marginBottom:'1rem', padding:'0.75rem 1.5rem', background:'rgba(0,255,136,0.1)', border:'2px solid #00ff88', borderRadius:'8px', boxShadow:'0 0 20px rgba(0,255,136,0.3)' }}>
+                  <Package size={32} color="#00ff88" />
+                  <h1 style={{ margin:0, fontSize:'1.6rem', fontWeight:800, color:'#00ff88', textTransform:'uppercase', letterSpacing:'0.1em' }}>
+                    Warehouse System
                   </h1>
                 </div>
                 <p style={{ color:'#8b9dc3', margin:0, fontSize:'0.9rem', letterSpacing:'0.04em' }}>
-                  Secure operations • Live updates • Audit-ready
+                  {noUsers ? "⚙️ First Time Setup — Create Admin Account" : "Sign in to continue"}
                 </p>
               </div>
 
+              {noUsers && (
+                <div style={{ marginBottom:'1.5rem', padding:'1rem', background:'rgba(251,191,36,0.1)', border:'1px solid #fbbf24', borderRadius:'8px', color:'#fbbf24', fontSize:'0.85rem' }}>
+                  ⚠️ No users exist yet. Create the first account below. This person will be able to manage all other users.
+                </div>
+              )}
+
               <label style={{ display:'block', color:'#e2e8f0', fontSize:'0.85rem', fontWeight:700, marginBottom:'0.5rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>
-                Your Name <span style={{ color:CONFIG.THEME_ACCENT }}>*</span>
+                Your Name <span style={{ color:'#00ff88' }}>*</span>
               </label>
               <input
                 value={tempName}
-                onChange={(e)=> setTempName(e.target.value)}
+                onChange={(e) => { setTempName(e.target.value); setLoginError(""); }}
+                onKeyDown={(e) => e.key === "Enter" && handleSignIn()}
                 placeholder="Enter your name"
                 style={{ width:'100%', padding:'0.875rem', background:'#1e293b', border:'2px solid #334155', borderRadius:'6px', color:'#e2e8f0', fontSize:'1rem', outline:'none' }}
               />
 
-              <div style={{ height:'1rem' }} />
+              {/* Show matched user's role (if found) */}
+              {!noUsers && matchedUser && (
+                <div style={{ marginTop:'0.75rem', padding:'0.75rem 1rem', background:'rgba(0,255,136,0.1)', border:'1px solid rgba(0,255,136,0.3)', borderRadius:'8px', color:'#00ff88', fontSize:'0.9rem', fontWeight:700 }}>
+                  ✅ Found: {matchedUser.name} · Role: <span style={{ textTransform:'uppercase' }}>{matchedUser.role}</span>
+                </div>
+              )}
 
-              <label style={{ display:'block', color:'#e2e8f0', fontSize:'0.85rem', fontWeight:700, marginBottom:'0.5rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>
-                Role <span style={{ color:CONFIG.THEME_ACCENT }}>*</span>
-              </label>
+              {/* First-time setup: show role selector */}
+              {noUsers && (
+                <>
+                  <div style={{ height:'1rem' }} />
+                  <label style={{ display:'block', color:'#e2e8f0', fontSize:'0.85rem', fontWeight:700, marginBottom:'0.5rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>
+                    Role <span style={{ color:'#00ff88' }}>*</span>
+                  </label>
+                  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0.75rem', marginBottom:'1rem' }}>
+                    {[
+                      { key:"admin", label:"🔧 Admin" },
+                      { key:"supervisor", label:"🧭 Supervisor" },
+                      { key:"warehouse", label:"📦 Warehouse" },
+                      { key:"room", label:"🍽️ Room" }
+                    ].map(r => (
+                      <button key={r.key} type="button" onClick={() => setTempRole(r.key)}
+                        style={{
+                          padding:'1rem', borderRadius:'8px', cursor:'pointer', fontWeight:800,
+                          border: tempRole===r.key ? '2px solid #00ff88' : '2px solid #334155',
+                          background: tempRole===r.key ? 'linear-gradient(135deg, #00ff88 0%, #00cc6f 100%)' : '#1e293b',
+                          color: tempRole===r.key ? '#0a0e1a' : '#e2e8f0',
+                          textTransform:'uppercase', letterSpacing:'0.04em'
+                        }}>
+                        {r.label}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
 
-              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'0.75rem', marginBottom:'1.5rem' }}>
-                {[
-                  { key:"room", label:"🍽️ Room" },
-                  { key:"warehouse", label:"📦 Warehouse" },
-                  { key:"supervisor", label:"🧭 Supervisor" }
-                ].map(r => (
-                  <button key={r.key} type="button"
-                    onClick={()=> setTempRole(r.key)}
-                    style={{
-                      padding:'1rem', borderRadius:'8px', cursor:'pointer', fontWeight:800,
-                      border: tempRole===r.key ? '2px solid #00ff88' : '2px solid #334155',
-                      background: tempRole===r.key ? 'linear-gradient(135deg, #16a34a 0%, #15803d 100%)' : '#1e293b',
-                      color: tempRole===r.key ? '#0a0e1a' : '#e2e8f0',
-                      textTransform:'uppercase', letterSpacing:'0.04em'
-                    }}
-                  >
-                    {r.label}
-                  </button>
-                ))}
-              </div>
+              {loginError && (
+                <div style={{ marginTop:'0.75rem', padding:'0.75rem 1rem', background:'rgba(255,68,68,0.1)', border:'1px solid #ff4444', borderRadius:'8px', color:'#ff4444', fontSize:'0.85rem', fontWeight:700 }}>
+                  ❌ {loginError}
+                </div>
+              )}
 
-              <button
-                onClick={()=>{
-                  if (!tempName.trim() || !tempRole) return alert("Enter name + role");
-                  setUserName(tempName.trim());
-                  setUserRole(tempRole);
-                  if (tempRole === "room") setRoute("form");
-                  else setRoute("picklist");
-                }}
-                style={{ width:'100%', padding:'1.1rem', background:'linear-gradient(135deg, #16a34a 0%, #15803d 100%)', border:'none', borderRadius:'10px', color:'#0a0e1a', fontSize:'1.05rem', fontWeight:900, cursor:'pointer', textTransform:'uppercase', letterSpacing:'0.08em', boxShadow:'0 4px 16px rgba(0,255,136,0.35)' }}
-              >
-                Sign In
+              <div style={{ height:'1.25rem' }} />
+
+              <button onClick={handleSignIn}
+                style={{ width:'100%', padding:'1.1rem', background:'linear-gradient(135deg, #00ff88 0%, #00cc6f 100%)', border:'none', borderRadius:'10px', color:'#0a0e1a', fontSize:'1.05rem', fontWeight:900, cursor:'pointer', textTransform:'uppercase', letterSpacing:'0.08em', boxShadow:'0 4px 16px rgba(0,255,136,0.35)' }}>
+                {noUsers ? "Create Account & Sign In" : "Sign In"}
               </button>
 
-              <div style={{ marginTop:'1rem', padding:'0.75rem', background:'rgba(0,255,136,0.08)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'8px', color:CONFIG.THEME_ACCENT, fontSize:'0.8rem', textAlign:'center' }}>
+              <div style={{ marginTop:'1rem', padding:'0.75rem', background:'rgba(0,255,136,0.08)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'8px', color:'#00ff88', fontSize:'0.8rem', textAlign:'center' }}>
                 🔔 Notifications: {notificationsEnabled ? "Enabled" : "Not enabled"}
               </div>
 
-              <div style={{ marginTop:'1rem', color:'#64748b', fontSize:'0.75rem', lineHeight:1.4 }}>
-                Tip: For a TV board, open this page and add <b>#board</b> to the URL.
-              </div>
+              {!noUsers && (
+                <div style={{ marginTop:'1rem', color:'#64748b', fontSize:'0.75rem', textAlign:'center' }}>
+                  Not registered? Contact your Admin to be added to the system.
+                </div>
+              )}
             </div>
           </div>
         );
@@ -1091,10 +960,10 @@ await loadAll();
           gap:'0.75rem'
         }}>
           <div style={{ display:'flex', alignItems:'center', gap:'0.85rem' }}>
-            <div style={{ display:'inline-flex', alignItems:'center', gap:'0.85rem', padding:'0.7rem 1.25rem', background:'rgba(0,255,136,0.1)', border:`2px solid ${CONFIG.THEME_ACCENT}`, borderRadius:'10px', boxShadow:'0 0 18px rgba(0,255,136,0.25)' }}>
-              <Truck size={28} color={CONFIG.THEME_ACCENT} />
+            <div style={{ display:'inline-flex', alignItems:'center', gap:'0.85rem', padding:'0.7rem 1.25rem', background:'rgba(0,255,136,0.1)', border:'2px solid #00ff88', borderRadius:'10px', boxShadow:'0 0 18px rgba(0,255,136,0.25)' }}>
+              <Truck size={28} color="#00ff88" />
               <div>
-                <div style={{ margin:0, fontSize:'1.4rem', fontWeight:900, color:CONFIG.THEME_ACCENT, textTransform:'uppercase', letterSpacing:'0.09em' }}>
+                <div style={{ margin:0, fontSize:'1.4rem', fontWeight:900, color:'#00ff88', textTransform:'uppercase', letterSpacing:'0.09em' }}>
                   {title}
                 </div>
                 <div style={{ margin:0, fontSize:'0.75rem', color:'#8b9dc3', letterSpacing:'0.04em' }}>
@@ -1120,12 +989,12 @@ await loadAll();
 
           <div style={{ display:'flex', gap:'0.6rem', flexWrap:'wrap', alignItems:'center' }}>
             <button onClick={()=> setRoute("form")}
-              style={{ padding:'0.7rem 1.1rem', background:'linear-gradient(135deg, #16a34a 0%, #15803d 100%)', border:'none', borderRadius:'10px', color:'#0a0e1a', fontWeight:900, cursor:'pointer', textTransform:'uppercase', letterSpacing:'0.04em' }}>
+              style={{ padding:'0.7rem 1.1rem', background:'linear-gradient(135deg, #00ff88 0%, #00cc6f 100%)', border:'none', borderRadius:'10px', color:'#0a0e1a', fontWeight:900, cursor:'pointer', textTransform:'uppercase', letterSpacing:'0.04em' }}>
               + New
             </button>
 
             <button onClick={()=> setRoute("picklist")}
-              style={{ padding:'0.7rem 1.1rem', background:'transparent', border:'1px solid rgba(0,255,136,0.4)', borderRadius:'10px', color:CONFIG.THEME_ACCENT, fontWeight:800, cursor:'pointer', textTransform:'uppercase', letterSpacing:'0.04em' }}>
+              style={{ padding:'0.7rem 1.1rem', background:'transparent', border:'1px solid rgba(0,255,136,0.4)', borderRadius:'10px', color:'#00ff88', fontWeight:800, cursor:'pointer', textTransform:'uppercase', letterSpacing:'0.04em' }}>
               Pick List
             </button>
 
@@ -1140,8 +1009,20 @@ await loadAll();
             </button>
 
             <button onClick={()=> setRoute("completed")}
-              style={{ padding:'0.7rem 1.1rem', background:'transparent', border:'1px solid rgba(0,255,136,0.25)', borderRadius:'10px', color: canWarehouseAct ? CONFIG.THEME_ACCENT : '#64748b', fontWeight:800, cursor:'pointer', textTransform:'uppercase', letterSpacing:'0.04em' }}>
+              style={{ padding:'0.7rem 1.1rem', background:'transparent', border:'1px solid rgba(0,255,136,0.25)', borderRadius:'10px', color: canWarehouseAct ? '#00ff88' : '#64748b', fontWeight:800, cursor:'pointer', textTransform:'uppercase', letterSpacing:'0.04em' }}>
               Completed
+            </button>
+
+            {canSupervisor && (
+              <button onClick={()=> setRoute("assignments")}
+                style={{ padding:'0.7rem 1.1rem', background:'transparent', border:'1px solid rgba(56,189,248,0.35)', borderRadius:'10px', color:'#38bdf8', fontWeight:800, cursor:'pointer', textTransform:'uppercase', letterSpacing:'0.04em' }}>
+                Assignments
+              </button>
+            )}
+
+            <button onClick={()=> setRoute("admin")}
+              style={{ padding:'0.7rem 1.1rem', background:'transparent', border:'1px solid rgba(255,68,68,0.25)', borderRadius:'10px', color: canAdmin ? '#ff4444' : '#64748b', fontWeight:800, cursor:'pointer', textTransform:'uppercase', letterSpacing:'0.04em' }}>
+              Admin
             </button>
 
             <button onClick={()=>{
@@ -1159,9 +1040,8 @@ await loadAll();
         return (
           <div style={{ minHeight:'100vh', ...bg, display:'flex', alignItems:'center', justifyContent:'center', flexDirection:'column', gap:'1rem' }}>
             <div style={{ width:'60px', height:'60px', border:'4px solid #334155', borderTop:'4px solid #00ff88', borderRadius:'50%', animation:'spin 1s linear infinite' }} />
-            <p style={{ color:CONFIG.THEME_ACCENT, fontSize:'1rem', fontWeight:800, letterSpacing:'0.1em' }}>LOADING…</p>
-            <style>{`@keyframes spin { 0%{transform:rotate(0deg)} 100%{transform:rotate(360deg)} }`}
-  </style>
+            <p style={{ color:'#00ff88', fontSize:'1rem', fontWeight:800, letterSpacing:'0.1em' }}>LOADING…</p>
+            <style>{`@keyframes spin { 0%{transform:rotate(0deg)} 100%{transform:rotate(360deg)} }`}</style>
           </div>
         );
       }
@@ -1175,7 +1055,7 @@ await loadAll();
               <TopBar title="Live Board" subtitle={`👤 ${userName} (${userRole}) • ${connectionMode === "supabase" ? "Supabase ready • Realtime" : "Local + kiosk mode"}`} />
 
               <div style={{ display:'flex', gap:'0.75rem', flexWrap:'wrap', alignItems:'center', marginBottom:'0.75rem' }}>
-                <div style={{ color:CONFIG.THEME_ACCENT, fontWeight:900, fontSize:'0.8rem' }}>AUTO-UPDATING</div>
+                <div style={{ color:'#00ff88', fontWeight:900, fontSize:'0.8rem' }}>AUTO-UPDATING</div>
                 <div style={{ color:'#64748b', fontSize:'0.75rem' }}>Group:</div>
                 <select value={viewGroup} onChange={(e)=> setViewGroup(e.target.value)}
                   style={{ background:'#1e293b', border:'1px solid #334155', color:'#e2e8f0', padding:'0.45rem 0.6rem', borderRadius:'8px' }}>
@@ -1210,9 +1090,9 @@ await loadAll();
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(360px, 1fr))', gap:'1rem' }}>
                   {grouped.keys.map(k => (
                     <div key={k} style={{ background:'rgba(15,23,42,0.8)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', overflow:'hidden' }}>
-                      <div style={{ padding:'0.9rem 1rem', background:'linear-gradient(135deg, rgba(0,255,136,0.15) 0%, rgba(0,255,136,0.04) 100%)', borderBottom:`2px solid ${CONFIG.THEME_ACCENT}`, display:'flex', alignItems:'center', gap:'0.6rem' }}>
-                        <MapPin size={18} color={CONFIG.THEME_ACCENT} />
-                        <div style={{ color:CONFIG.THEME_ACCENT, fontWeight:900, textTransform:'uppercase', letterSpacing:'0.08em' }}>{k}</div>
+                      <div style={{ padding:'0.9rem 1rem', background:'linear-gradient(135deg, rgba(0,255,136,0.15) 0%, rgba(0,255,136,0.04) 100%)', borderBottom:'2px solid #00ff88', display:'flex', alignItems:'center', gap:'0.6rem' }}>
+                        <MapPin size={18} color="#00ff88" />
+                        <div style={{ color:'#00ff88', fontWeight:900, textTransform:'uppercase', letterSpacing:'0.08em' }}>{k}</div>
                         <div style={{ marginLeft:'auto', color:'#8b9dc3', fontSize:'0.8rem' }}>{grouped.map[k].length}</div>
                       </div>
                       <div style={{ padding:'0.75rem' }}>
@@ -1363,7 +1243,7 @@ await loadAll();
                   <button key={filter} onClick={() => setTimeFilter(filter)}
                     style={{
                       padding:'0.6rem 1.2rem', borderRadius:'10px',
-                      background: timeFilter === filter ? 'linear-gradient(135deg, #16a34a 0%, #15803d 100%)' : 'rgba(15,23,42,0.85)',
+                      background: timeFilter === filter ? 'linear-gradient(135deg, #00ff88 0%, #00cc6f 100%)' : 'rgba(15,23,42,0.85)',
                       border: timeFilter === filter ? 'none' : '1px solid #334155',
                       color: timeFilter === filter ? '#0a0e1a' : '#8b9dc3',
                       fontWeight:900, cursor:'pointer', textTransform:'uppercase', fontSize:'0.8rem'
@@ -1371,120 +1251,18 @@ await loadAll();
                     {filter === "all" ? "All Time" : filter === "week" ? "This Week" : filter === "month" ? "This Month" : "Today"}
                   </button>
                 ))}
-
-{/* Supervisor: Room → Picker Assignments */}
-{canSupervisor && (
-  <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(255,255,255,0.08)', borderRadius:'14px', padding:'1.25rem', marginBottom:'1.5rem' }}>
-    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'1rem', flexWrap:'wrap' }}>
-                    <div style={{ display:'flex', alignItems:'center', gap:'0.6rem', flexWrap:'wrap' }}>
-                      <div style={{ color:'#8b9dc3', fontWeight:900 }}>Active Shift</div>
-                      <select value={activeShift} onChange={(e)=> setActiveShift(e.target.value)}
-                        style={{ background:'#111827', border:'1px solid #334155', color:'#e2e8f0', padding:'0.55rem 0.7rem', borderRadius:'10px' }}>
-                        {CONFIG.SHIFTS.map(s => <option key={s} value={s}>{s}</option>)}
-                      </select>
-                    </div>
-      <div>
-        <div style={{ color:'#e2e8f0', fontWeight:900, letterSpacing:'0.02em' }}>Room → Picker Assignments</div>
-        <div style={{ color:'#64748b', fontSize:'0.85rem', marginTop:'0.2rem' }}>
-          Assign each room to a picker. Auto-assign will prefer the room owner when enabled.
-        </div>
-      </div>
-      <div style={{ color:'#8b9dc3', fontSize:'0.85rem' }}>
-        Picker names should match the roster & login name.
-      </div>
-    </div>
-
-    <div style={{ marginTop:'1rem', display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(260px, 1fr))', gap:'0.75rem' }}>
-      {CONFIG.ROOMS.map(room => (
-        <div key={room} style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0.6rem', alignItems:'center', background:'rgba(2,6,23,0.35)', border:'1px solid rgba(255,255,255,0.06)', borderRadius:'12px', padding:'0.85rem 0.9rem' }}>
-          <div style={{ color:'#8b9dc3', fontWeight:900 }}>{room}</div>
-          <select
-            value={roomAssignments[room] || ""}
-            onChange={(e)=> {
-              const assignedTo = e.target.value;
-              const next = { ...roomAssignments, [room]: assignedTo };
-              setRoomAssignments(next);
-              audit({ action:"room_assignment_updated", details:{ room, assignedTo: assignedTo || null } });
-            }}
-            style={{ background:'#111827', border:'1px solid #334155', color:'#e2e8f0', padding:'0.55rem 0.7rem', borderRadius:'10px' }}
-          >
-            <option value="">Unassigned</option>
-            {staffRoster.filter(s=>s.enabled).map(s => (
-              <option key={s.name} value={s.name}>{s.name}</option>
-            ))}
-          </select>
-        </div>
-      ))}
-    </div>
-  </div>
-
-
-
-<div style={{ marginTop:'1rem', background:'rgba(2,6,23,0.25)', border:'1px solid rgba(255,255,255,0.06)', borderRadius:'12px', padding:'1rem' }}>
-  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'1rem', flexWrap:'wrap' }}>
-    <div>
-      <div style={{ color:'#e2e8f0', fontWeight:900 }}>Shift Picker Names</div>
-      <div style={{ color:'#64748b', fontSize:'0.85rem', marginTop:'0.2rem' }}>
-        Upload a .txt/.csv or paste names (one per line). This updates the roster for <b>{activeShift}</b>.
-      </div>
-    </div>
-
-    <label style={{ display:'inline-flex', alignItems:'center', gap:'0.6rem', cursor:'pointer' }}>
-      <input
-        type="file"
-        accept=".txt,.csv"
-        style={{ display:'none' }}
-        onChange={(e)=> {
-          const f = e.target.files?.[0];
-          if (!f) return;
-          const reader = new FileReader();
-          reader.onload = ()=> {
-            const names = parseNames(reader.result);
-            const next = names.map(n => ({ name:n, enabled:true }));
-            setStaffRoster(next.length ? next : [{ name:"Warehouse 1", enabled:true }]);
-            audit({ action:"shift_roster_uploaded", details:{ shift: activeShift, count: names.length } });
-          };
-          reader.readAsText(f);
-          e.target.value = "";
-        }}
-      />
-      <span style={{ padding:'0.6rem 0.9rem', borderRadius:'12px', border:'1px solid rgba(22,163,74,0.35)', background:'rgba(22,163,74,0.08)', color:'#16a34a', fontWeight:900 }}>
-        Upload file
-      </span>
-    </label>
-  </div>
-
-  <div style={{ marginTop:'0.8rem', display:'grid', gridTemplateColumns:'1fr', gap:'0.6rem' }}>
-    <textarea
-      placeholder={"Paste names here...\nExample:\nJohn\nMaria\nSam"}
-      rows={5}
-      defaultValue={staffRoster.map(s=>s.name).join("\n")}
-      onBlur={(e)=> {
-        const names = parseNames(e.target.value);
-        const next = names.map(n => ({ name:n, enabled:true }));
-        setStaffRoster(next.length ? next : [{ name:"Warehouse 1", enabled:true }]);
-        audit({ action:"shift_roster_pasted", details:{ shift: activeShift, count: names.length } });
-      }}
-      style={{ width:'100%', resize:'vertical', background:'#0b1220', border:'1px solid rgba(255,255,255,0.08)', color:'#e2e8f0', borderRadius:'12px', padding:'0.75rem' }}
-    />
-    <div style={{ color:'#8b9dc3', fontSize:'0.8rem' }}>
-      Tip: after editing the box, click outside it to save.
-    </div>
-  </div>
-</div>
-)}
               </div>
 
               {/* Stats Cards */}
               <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(200px, 1fr))', gap:'1rem', marginBottom:'1.5rem' }}>
                 <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
                   <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>Total Requests</div>
-                  <div style={{ color:CONFIG.THEME_ACCENT, fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{total}</div>
+                  <div style={{ color:'#00ff88', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{total}</div>
                 </div>
                 
                 <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
                   <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>Completed</div>
-                  <div style={{ color:CONFIG.THEME_ACCENT, fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{completed}</div>
+                  <div style={{ color:'#00ff88', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{completed}</div>
                   <div style={{ color:'#64748b', fontSize:'0.8rem', marginTop:'0.3rem' }}>{completionRate}% completion rate</div>
                 </div>
                 
@@ -1496,7 +1274,7 @@ await loadAll();
                 
                 <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
                   <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>Avg Complete Time</div>
-                  <div style={{ color:CONFIG.THEME_ACCENT, fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{avgCompletionTime}<span style={{ fontSize:'1.2rem', color:'#8b9dc3' }}>min</span></div>
+                  <div style={{ color:'#00ff88', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{avgCompletionTime}<span style={{ fontSize:'1.2rem', color:'#8b9dc3' }}>min</span></div>
                 </div>
                 
                 <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
@@ -1516,7 +1294,7 @@ await loadAll();
                 
                 {/* Requests by Status */}
                 <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
-                  <div style={{ color:CONFIG.THEME_ACCENT, fontWeight:900, fontSize:'1.1rem', marginBottom:'1.5rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>Requests by Status</div>
+                  <div style={{ color:'#00ff88', fontWeight:900, fontSize:'1.1rem', marginBottom:'1.5rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>Requests by Status</div>
                   {statusData.length === 0 ? (
                     <div style={{ color:'#64748b', textAlign:'center', padding:'2rem' }}>No data</div>
                   ) : (
@@ -1540,7 +1318,7 @@ await loadAll();
 
                 {/* Top Rooms */}
                 <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
-                  <div style={{ color:CONFIG.THEME_ACCENT, fontWeight:900, fontSize:'1.1rem', marginBottom:'1.5rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>Top Rooms</div>
+                  <div style={{ color:'#00ff88', fontWeight:900, fontSize:'1.1rem', marginBottom:'1.5rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>Top Rooms</div>
                   {topRooms.length === 0 ? (
                     <div style={{ color:'#64748b', textAlign:'center', padding:'2rem' }}>No data</div>
                   ) : (
@@ -1567,7 +1345,7 @@ await loadAll();
               {/* Staff Performance */}
               {topStaff.length > 0 && (
                 <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem', marginBottom:'1.5rem' }}>
-                  <div style={{ color:CONFIG.THEME_ACCENT, fontWeight:900, fontSize:'1.1rem', marginBottom:'1.5rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>🏆 Staff Performance</div>
+                  <div style={{ color:'#00ff88', fontWeight:900, fontSize:'1.1rem', marginBottom:'1.5rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>🏆 Staff Performance</div>
                   <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(250px, 1fr))', gap:'1rem' }}>
                     {topStaff.map((staff, idx) => (
                       <div key={staff.name} style={{ background:'rgba(0,255,136,0.05)', border:'1px solid rgba(0,255,136,0.15)', borderRadius:'10px', padding:'1rem' }}>
@@ -1581,7 +1359,7 @@ await loadAll();
                         <div style={{ display:'flex', gap:'1rem' }}>
                           <div>
                             <div style={{ color:'#64748b', fontSize:'0.75rem' }}>Avg Time</div>
-                            <div style={{ color:CONFIG.THEME_ACCENT, fontSize:'1.3rem', fontWeight:900 }}>{staff.avgTime}<span style={{ fontSize:'0.8rem' }}>min</span></div>
+                            <div style={{ color:'#00ff88', fontSize:'1.3rem', fontWeight:900 }}>{staff.avgTime}<span style={{ fontSize:'0.8rem' }}>min</span></div>
                           </div>
                         </div>
                       </div>
@@ -1592,10 +1370,10 @@ await loadAll();
 
               {/* Supervisor Controls */}
               <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.25rem' }}>
-                <div style={{ color:CONFIG.THEME_ACCENT, fontWeight:900, textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:'1rem' }}>Supervisor Controls</div>
+                <div style={{ color:'#00ff88', fontWeight:900, textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:'1rem' }}>Supervisor Controls</div>
                 <div style={{ display:'flex', gap:'0.75rem', flexWrap:'wrap' }}>
                   <button disabled={!canSupervisor} onClick={clearCompleted}
-                    style={{ opacity: canSupervisor ? 1 : 0.5, padding:'0.7rem 1rem', borderRadius:'10px', border:'1px solid rgba(0,255,136,0.35)', background:'transparent', color:CONFIG.THEME_ACCENT, fontWeight:900, cursor: canSupervisor ? 'pointer' : 'not-allowed' }}>
+                    style={{ opacity: canSupervisor ? 1 : 0.5, padding:'0.7rem 1rem', borderRadius:'10px', border:'1px solid rgba(0,255,136,0.35)', background:'transparent', color:'#00ff88', fontWeight:900, cursor: canSupervisor ? 'pointer' : 'not-allowed' }}>
                     Clear Completed
                   </button>
                   <button disabled={!canSupervisor} onClick={clearAll}
@@ -1706,9 +1484,9 @@ await loadAll();
                     <button key={filter} onClick={() => setTimeFilter(filter)}
                       style={{
                         padding:'0.6rem 1.2rem', borderRadius:'10px',
-                        background: timeFilter === filter ? `linear-gradient(135deg, ${CONFIG.THEME_ACCENT} 0%, #15803d 100%)` : 'rgba(15,23,42,0.85)',
+                        background: timeFilter === filter ? 'linear-gradient(135deg, #00ff88 0%, #00cc6f 100%)' : 'rgba(15,23,42,0.85)',
                         border: timeFilter === filter ? 'none' : '1px solid #334155',
-                        color: timeFilter === filter ? '#fff' : '#8b9dc3',
+                        color: timeFilter === filter ? '#0a0e1a' : '#8b9dc3',
                         fontWeight:900, cursor:'pointer', textTransform:'uppercase', fontSize:'0.8rem'
                       }}>
                       {filter === "all" ? "All Time" : filter === "week" ? "This Week" : filter === "month" ? "This Month" : "Today"}
@@ -1730,21 +1508,21 @@ await loadAll();
 
               {/* Stats Cards */}
               <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(250px, 1fr))', gap:'1rem', marginBottom:'1.5rem' }}>
-                <div style={{ background:'rgba(15,23,42,0.85)', border:`1px solid ${CONFIG.THEME_ACCENT}40`, borderRadius:'14px', padding:'1.5rem' }}>
+                <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
                   <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>Total Completed</div>
-                  <div style={{ color:CONFIG.THEME_ACCENT, fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{totalCompleted}</div>
+                  <div style={{ color:'#00ff88', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{totalCompleted}</div>
                 </div>
                 
-                <div style={{ background:'rgba(15,23,42,0.85)', border:`1px solid ${CONFIG.THEME_ACCENT}40`, borderRadius:'14px', padding:'1.5rem' }}>
+                <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
                   <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>Avg Complete Time</div>
-                  <div style={{ color:CONFIG.THEME_ACCENT, fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{avgTime}<span style={{ fontSize:'1.2rem', color:'#8b9dc3' }}>min</span></div>
+                  <div style={{ color:'#00ff88', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{avgTime}<span style={{ fontSize:'1.2rem', color:'#8b9dc3' }}>min</span></div>
                 </div>
               </div>
 
               {/* Completed Requests List */}
-              <div style={{ background:'rgba(15,23,42,0.85)', border:`1px solid ${CONFIG.THEME_ACCENT}40`, borderRadius:'14px', overflow:'hidden' }}>
-                <div style={{ padding:'1.2rem 1.5rem', background:`linear-gradient(135deg, ${CONFIG.THEME_ACCENT}30 0%, ${CONFIG.THEME_ACCENT}10 100%)`, borderBottom:`2px solid ${CONFIG.THEME_ACCENT}` }}>
-                  <div style={{ color:CONFIG.THEME_ACCENT, fontWeight:900, fontSize:'1.1rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>
+              <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', overflow:'hidden' }}>
+                <div style={{ padding:'1.2rem 1.5rem', background:'linear-gradient(135deg, rgba(0,255,136,0.15) 0%, rgba(0,255,136,0.04) 100%)', borderBottom:'2px solid #00ff88' }}>
+                  <div style={{ color:'#00ff88', fontWeight:900, fontSize:'1.1rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>
                     ✅ Completed Requests {timeFilter !== "all" && `(${timeFilter === "today" ? "Today" : timeFilter === "week" ? "This Week" : "This Month"})`}
                   </div>
                 </div>
@@ -1759,7 +1537,7 @@ await loadAll();
                   <div style={{ overflowX:'auto' }}>
                     <table style={{ width:'100%', borderCollapse:'collapse', minWidth:'1100px' }}>
                       <thead>
-                        <tr style={{ background:`${CONFIG.THEME_ACCENT}10` }}>
+                        <tr style={{ background:'rgba(0,255,136,0.05)' }}>
                           <th style={headerStyle}>Item</th>
                           <th style={headerStyle}>Room</th>
                           <th style={headerStyle}>Qty</th>
@@ -1776,10 +1554,10 @@ await loadAll();
                           const start = new Date(req.submittedAt);
                           const end = new Date(req.completedAt);
                           const timeMin = Math.round((end - start) / 60000);
-                          const timeColor = timeMin <= CONFIG.SLA_MINUTES_WARN ? CONFIG.THEME_ACCENT : timeMin <= CONFIG.SLA_MINUTES_BAD ? '#fbbf24' : '#ff4444';
+                          const timeColor = timeMin <= 5 ? '#00ff88' : timeMin <= 10 ? '#fbbf24' : '#ff4444';
 
                           return (
-                            <tr key={req.id} style={{ borderBottom: idx < sortedCompleted.length - 1 ? '1px solid #334155' : 'none', background: idx % 2 === 0 ? 'transparent' : `${CONFIG.THEME_ACCENT}05` }}>
+                            <tr key={req.id} style={{ borderBottom: idx < sortedCompleted.length - 1 ? '1px solid #334155' : 'none', background: idx % 2 === 0 ? 'transparent' : 'rgba(0,255,136,0.02)' }}>
                               <td style={cellStyle}>
                                 <div style={{ fontWeight:900 }}>{req.item}</div>
                               </td>
@@ -1802,7 +1580,7 @@ await loadAll();
                               </td>
                               <td style={cellStyle}>
                                 <div style={{ fontSize:'0.85rem' }}>{niceTime(req.completedAt)}</div>
-                                <div style={{ fontSize:'0.75rem', color:CONFIG.THEME_ACCENT }}>{req.completedBy}</div>
+                                <div style={{ fontSize:'0.75rem', color:'#00ff88' }}>{req.completedBy}</div>
                               </td>
                               <td style={cellStyle}>
                                 <div style={{ fontWeight:900, color: timeColor, fontSize:'1.1rem' }}>
@@ -1830,6 +1608,499 @@ await loadAll();
         );
       }
 
+      // ADMIN PANEL (Admin-only: user management + room analytics)
+      if (screen === "admin") {
+        if (!canAdmin) {
+          return (
+            <div style={{ minHeight:'100vh', ...bg, padding:'1.5rem', display:'flex', alignItems:'center', justifyContent:'center' }}>
+              <div style={{ textAlign:'center', color:'#ff4444' }}>
+                <h2>⚠️ Admin Access Required</h2>
+                <p>You must be signed in as Admin to access this page.</p>
+                <button onClick={()=> setRoute("login")} style={{ padding:'0.7rem 1.5rem', background:'#ff4444', border:'none', borderRadius:'8px', color:'#fff', fontWeight:900, cursor:'pointer', marginTop:'1rem' }}>Go to Login</button>
+              </div>
+            </div>
+          );
+        }
+
+        // Room stats helpers
+        const now = new Date();
+        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const thisWeek = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        const thisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+        const thisYear = new Date(now.getFullYear(), 0, 1);
+
+        const getRoomStats = (filterFn) => {
+          const filtered = requests.filter(filterFn);
+          const byRoom = {};
+          filtered.forEach(r => {
+            if (!byRoom[r.room]) byRoom[r.room] = { total:0, completed:0, pending:0, inProgress:0, times:[] };
+            byRoom[r.room].total++;
+            if (r.status === 'completed') {
+              byRoom[r.room].completed++;
+              if (r.submittedAt && r.completedAt)
+                byRoom[r.room].times.push((new Date(r.completedAt) - new Date(r.submittedAt)) / 60000);
+            }
+            if (r.status === 'pending') byRoom[r.room].pending++;
+            if (r.status === 'in_progress' || r.status === 'claimed') byRoom[r.room].inProgress++;
+          });
+          return Object.entries(byRoom).map(([room, s]) => ({
+            room, ...s,
+            avgTime: s.times.length > 0 ? Math.round(s.times.reduce((a,b)=>a+b,0)/s.times.length) : 0
+          })).sort((a,b) => b.total - a.total);
+        };
+
+        const roomStats = getRoomStats(r => {
+          const submitted = new Date(r.submittedAt);
+          if (adminTimeFilter === "day") return submitted >= today;
+          if (adminTimeFilter === "week") return submitted >= thisWeek;
+          if (adminTimeFilter === "month") return submitted >= thisMonth;
+          if (adminTimeFilter === "year") return submitted >= thisYear;
+          return true;
+        });
+        const maxRoomTotal = roomStats.length > 0 ? roomStats[0].total : 1;
+
+        const handleCreateUser = () => {
+          const name = newUserName.trim();
+          if (!name) { alert("Enter a name"); return; }
+          if (users.find(u => u.name.toLowerCase() === name.toLowerCase())) { alert("A user with that name already exists!"); return; }
+          saveUsers([...users, { id: genId(), name, role: newUserRole, createdAt: new Date().toISOString(), createdBy: userName }]);
+          setNewUserName(""); setNewUserRole("room");
+          setSuccessMsg(`User "${name}" created successfully!`);
+          setTimeout(() => setSuccessMsg(""), 3000);
+        };
+
+        const handleDeleteUser = (id, name) => {
+          if (!confirm(`Delete user "${name}"? They will no longer be able to sign in.`)) return;
+          saveUsers(users.filter(u => u.id !== id));
+          setSuccessMsg(`User "${name}" deleted.`);
+          setTimeout(() => setSuccessMsg(""), 3000);
+        };
+
+        const handleUpdateUser = (id) => {
+          const name = editUserName.trim();
+          if (!name) { alert("Name cannot be empty"); return; }
+          saveUsers(users.map(u => u.id === id ? { ...u, name, role: editUserRole } : u));
+          setEditUserId(null);
+          setSuccessMsg("User updated!");
+          setTimeout(() => setSuccessMsg(""), 3000);
+        };
+
+        const exportRoomCSV = () => {
+          const headers = ["Room","Total","Completed","Pending","In Progress","Avg Time (min)","Completion %"];
+          const rows = roomStats.map(r => [r.room, r.total, r.completed, r.pending, r.inProgress, r.avgTime,
+            r.total > 0 ? Math.round((r.completed/r.total)*100) : 0]);
+          const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+          const blob = new Blob([csv], { type:'text/csv' });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = `room-stats-${adminTimeFilter}-${new Date().toISOString().split('T')[0]}.csv`;
+          a.click();
+        };
+
+        const roleColors = { room:'#8b9dc3', warehouse:'#fbbf24', supervisor:'#a78bfa', admin:'#ff4444' };
+        const roleEmojis = { room:'🍽️', warehouse:'📦', supervisor:'🧭', admin:'🔧' };
+
+        return (
+          <div style={{ minHeight:'100vh', ...bg, padding:'1.5rem', position:'relative', overflow:'hidden' }}>
+            <div style={gridOverlay} />
+            <div style={{ maxWidth:'1600px', margin:'0 auto', position:'relative', zIndex:1 }}>
+              <TopBar title="Admin Panel" subtitle={`👤 ${userName} (${userRole}) • ${connectionMode === "supabase" ? "Supabase ready" : "Local + kiosk mode"}`} />
+
+              {successMsg && (
+                <div style={{ padding:'1rem', background:'rgba(0,255,136,0.15)', border:'1px solid #00ff88', borderRadius:'10px', color:'#00ff88', marginBottom:'1rem', fontWeight:900 }}>✅ {successMsg}</div>
+              )}
+
+              {/* ═══ USER MANAGEMENT ═══ */}
+              <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(255,68,68,0.3)', borderRadius:'14px', padding:'1.5rem', marginBottom:'1.5rem' }}>
+                <div style={{ color:'#ff4444', fontWeight:900, fontSize:'1.3rem', textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:'1.5rem' }}>👥 User Management</div>
+
+                {/* Create New User */}
+                <div style={{ background:'rgba(255,68,68,0.06)', border:'1px solid rgba(255,68,68,0.2)', borderRadius:'10px', padding:'1.25rem', marginBottom:'1.5rem' }}>
+                  <div style={{ color:'#ff4444', fontWeight:800, fontSize:'0.9rem', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:'1rem' }}>➕ Create New User</div>
+                  <div style={{ display:'flex', gap:'0.75rem', flexWrap:'wrap', alignItems:'flex-end' }}>
+                    <div style={{ flex:'1 1 220px' }}>
+                      <div style={{ color:'#8b9dc3', fontSize:'0.75rem', fontWeight:700, marginBottom:'0.4rem', textTransform:'uppercase' }}>Name</div>
+                      <input value={newUserName} onChange={e => setNewUserName(e.target.value)}
+                        onKeyDown={e => e.key === "Enter" && handleCreateUser()}
+                        placeholder="Enter full name..."
+                        style={{ width:'100%', padding:'0.75rem', background:'#1e293b', border:'1px solid #334155', borderRadius:'8px', color:'#e2e8f0', fontSize:'0.95rem' }} />
+                    </div>
+                    <div style={{ flex:'1 1 200px' }}>
+                      <div style={{ color:'#8b9dc3', fontSize:'0.75rem', fontWeight:700, marginBottom:'0.4rem', textTransform:'uppercase' }}>Role</div>
+                      <div style={{ display:'flex', gap:'0.5rem' }}>
+                        {["room","warehouse","supervisor","admin"].map(r => (
+                          <button key={r} onClick={() => setNewUserRole(r)}
+                            style={{ flex:1, padding:'0.6rem 0.3rem', borderRadius:'6px', border: newUserRole===r ? `2px solid ${roleColors[r]}` : '2px solid #334155',
+                              background: newUserRole===r ? `${roleColors[r]}22` : '#1e293b',
+                              color: newUserRole===r ? roleColors[r] : '#64748b',
+                              fontWeight:900, cursor:'pointer', fontSize:'0.7rem', textTransform:'uppercase' }}>
+                            {roleEmojis[r]}
+                          </button>
+                        ))}
+                      </div>
+                      <div style={{ color: roleColors[newUserRole], fontSize:'0.75rem', marginTop:'0.3rem', fontWeight:700, textTransform:'uppercase' }}>
+                        {roleEmojis[newUserRole]} {newUserRole}
+                      </div>
+                    </div>
+                    <button onClick={handleCreateUser}
+                      style={{ padding:'0.75rem 1.5rem', background:'linear-gradient(135deg, #ff4444 0%, #cc3333 100%)', border:'none', borderRadius:'8px', color:'#fff', fontWeight:900, cursor:'pointer', textTransform:'uppercase', whiteSpace:'nowrap' }}>
+                      ➕ Add User
+                    </button>
+                  </div>
+                </div>
+
+                {/* Users List */}
+                <div style={{ color:'#8b9dc3', fontSize:'0.8rem', fontWeight:700, marginBottom:'0.75rem', textTransform:'uppercase' }}>
+                  Registered Users ({users.length})
+                </div>
+                {users.length === 0 ? (
+                  <div style={{ padding:'2rem', textAlign:'center', color:'#64748b' }}>No users yet. Create one above.</div>
+                ) : (
+                  <div style={{ display:'flex', flexDirection:'column', gap:'0.5rem' }}>
+                    {users.map(u => (
+                      <div key={u.id} style={{ padding:'1rem', background:'rgba(255,68,68,0.04)', border:'1px solid rgba(255,68,68,0.12)', borderRadius:'10px', display:'flex', alignItems:'center', gap:'1rem', flexWrap:'wrap' }}>
+                        {editUserId === u.id ? (
+                          <>
+                            <input value={editUserName} onChange={e => setEditUserName(e.target.value)}
+                              style={{ flex:'1 1 180px', padding:'0.5rem', background:'#1e293b', border:'1px solid #334155', borderRadius:'6px', color:'#e2e8f0', fontSize:'0.9rem' }} />
+                            <div style={{ display:'flex', gap:'0.4rem' }}>
+                              {["room","warehouse","supervisor","admin"].map(r => (
+                                <button key={r} onClick={() => setEditUserRole(r)}
+                                  style={{ padding:'0.4rem 0.6rem', borderRadius:'6px', border: editUserRole===r ? `2px solid ${roleColors[r]}` : '2px solid #334155',
+                                    background: editUserRole===r ? `${roleColors[r]}22` : '#1e293b',
+                                    color: editUserRole===r ? roleColors[r] : '#64748b',
+                                    fontWeight:900, cursor:'pointer', fontSize:'0.7rem' }}>
+                                  {roleEmojis[r]} {r}
+                                </button>
+                              ))}
+                            </div>
+                            <div style={{ display:'flex', gap:'0.5rem' }}>
+                              <button onClick={() => handleUpdateUser(u.id)}
+                                style={{ padding:'0.5rem 1rem', background:'#00ff88', border:'none', borderRadius:'6px', color:'#0a0e1a', fontWeight:900, cursor:'pointer', fontSize:'0.8rem' }}>Save</button>
+                              <button onClick={() => setEditUserId(null)}
+                                style={{ padding:'0.5rem 1rem', background:'#334155', border:'none', borderRadius:'6px', color:'#e2e8f0', fontWeight:900, cursor:'pointer', fontSize:'0.8rem' }}>Cancel</button>
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <div style={{ flex:'1 1 200px' }}>
+                              <div style={{ fontWeight:900, color:'#e2e8f0', fontSize:'1rem' }}>{u.name}</div>
+                              <div style={{ fontSize:'0.8rem', marginTop:'0.2rem' }}>
+                                <span style={{ color: roleColors[u.role], fontWeight:700 }}>{roleEmojis[u.role]} {u.role}</span>
+                                <span style={{ color:'#4b5563', marginLeft:'0.75rem' }}>Added {new Date(u.createdAt).toLocaleDateString()}</span>
+                                {u.createdBy !== "system" && <span style={{ color:'#4b5563' }}> by {u.createdBy}</span>}
+                              </div>
+                            </div>
+                            <div style={{ display:'flex', gap:'0.5rem' }}>
+                              <button onClick={() => { setEditUserId(u.id); setEditUserName(u.name); setEditUserRole(u.role); }}
+                                style={{ padding:'0.5rem 1rem', background:'rgba(56,189,248,0.15)', border:'1px solid #38bdf8', borderRadius:'6px', color:'#38bdf8', fontWeight:900, cursor:'pointer', fontSize:'0.8rem' }}>
+                                ✏️ Edit
+                              </button>
+                              {u.name !== userName && (
+                                <button onClick={() => handleDeleteUser(u.id, u.name)}
+                                  style={{ padding:'0.5rem 1rem', background:'rgba(255,68,68,0.1)', border:'1px solid #ff4444', borderRadius:'6px', color:'#ff4444', fontWeight:900, cursor:'pointer', fontSize:'0.8rem' }}>
+                                  🗑️ Delete
+                                </button>
+                              )}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* ═══ ROOM ANALYTICS ═══ */}
+              <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(255,68,68,0.2)', borderRadius:'14px', padding:'1.5rem', marginBottom:'1.5rem' }}>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'1.25rem', flexWrap:'wrap', gap:'1rem' }}>
+                  <div style={{ color:'#ff4444', fontWeight:900, fontSize:'1.3rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>📊 Room Analytics</div>
+                  <button onClick={exportRoomCSV} disabled={roomStats.length === 0}
+                    style={{ padding:'0.6rem 1.2rem', borderRadius:'8px', background: roomStats.length > 0 ? 'linear-gradient(135deg,#ff4444,#cc3333)' : '#334155', border:'none', color:'#fff', fontWeight:900, cursor: roomStats.length > 0 ? 'pointer' : 'not-allowed', textTransform:'uppercase', fontSize:'0.8rem' }}>
+                    📥 Export CSV
+                  </button>
+                </div>
+                <div style={{ display:'flex', gap:'0.6rem', flexWrap:'wrap', marginBottom:'1.25rem' }}>
+                  {["day","week","month","year","all"].map(f => (
+                    <button key={f} onClick={() => setAdminTimeFilter(f)}
+                      style={{ padding:'0.5rem 1rem', borderRadius:'8px', background: adminTimeFilter===f ? 'linear-gradient(135deg,#ff4444,#cc3333)' : 'rgba(15,23,42,0.85)',
+                        border: adminTimeFilter===f ? 'none' : '1px solid #334155', color: adminTimeFilter===f ? '#fff' : '#8b9dc3',
+                        fontWeight:900, cursor:'pointer', textTransform:'uppercase', fontSize:'0.78rem' }}>
+                      {f==="all"?"All Time":f==="day"?"Today":f==="week"?"This Week":f==="month"?"This Month":"This Year"}
+                    </button>
+                  ))}
+                </div>
+                {roomStats.length === 0 ? (
+                  <div style={{ padding:'2rem', textAlign:'center', color:'#64748b' }}>No data for this period</div>
+                ) : (
+                  <div style={{ overflowX:'auto' }}>
+                    <table style={{ width:'100%', borderCollapse:'collapse' }}>
+                      <thead>
+                        <tr style={{ background:'rgba(255,68,68,0.1)' }}>
+                          {["Room","Total","Completed","Pending","In Progress","Avg Time","Rate","Activity"].map(h => (
+                            <th key={h} style={headerStyle}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {roomStats.map((room, idx) => {
+                          const rate = room.total > 0 ? Math.round((room.completed/room.total)*100) : 0;
+                          const tColor = room.avgTime <= 5 ? '#00ff88' : room.avgTime <= 10 ? '#fbbf24' : '#ff4444';
+                          const rColor = rate >= 80 ? '#00ff88' : rate >= 50 ? '#fbbf24' : '#ff4444';
+                          return (
+                            <tr key={room.room} style={{ borderBottom: idx < roomStats.length-1 ? '1px solid #334155' : 'none', background: idx%2===0 ? 'transparent' : 'rgba(255,68,68,0.02)' }}>
+                              <td style={cellStyle}><div style={{ fontWeight:900, display:'flex', alignItems:'center', gap:'0.4rem' }}><MapPin size={14} color="#ff4444" />{room.room}</div></td>
+                              <td style={cellStyle}><div style={{ fontWeight:900, color:'#ff4444', fontSize:'1.1rem' }}>{room.total}</div></td>
+                              <td style={cellStyle}><div style={{ color:'#00ff88', fontWeight:700 }}>{room.completed}</div></td>
+                              <td style={cellStyle}><div style={{ color:'#fbbf24', fontWeight:700 }}>{room.pending}</div></td>
+                              <td style={cellStyle}><div style={{ color:'#38bdf8', fontWeight:700 }}>{room.inProgress}</div></td>
+                              <td style={cellStyle}><div style={{ fontWeight:900, color:tColor }}>{room.avgTime > 0 ? `${room.avgTime}min` : '—'}</div></td>
+                              <td style={cellStyle}><div style={{ fontWeight:900, color:rColor }}>{rate}%</div></td>
+                              <td style={cellStyle}>
+                                <div style={{ background:'#1e293b', height:'8px', borderRadius:'4px', overflow:'hidden', width:'100px' }}>
+                                  <div style={{ background:'linear-gradient(90deg,#ff4444,#ff6666)', height:'100%', width:`${(room.total/maxRoomTotal)*100}%` }} />
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              {/* ═══ REQUEST MANAGEMENT ═══ */}
+              <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(255,68,68,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
+                <div style={{ color:'#ff4444', fontWeight:900, fontSize:'1.3rem', textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:'1rem' }}>🔧 Request Management</div>
+                <div style={{ display:'flex', gap:'0.75rem', flexWrap:'wrap', marginBottom:'1rem' }}>
+                  <button onClick={clearCompleted} style={{ padding:'0.7rem 1.2rem', borderRadius:'10px', border:'1px solid rgba(255,68,68,0.35)', background:'transparent', color:'#ff4444', fontWeight:900, cursor:'pointer', textTransform:'uppercase' }}>Clear Completed</button>
+                  <button onClick={clearAll} style={{ padding:'0.7rem 1.2rem', borderRadius:'10px', border:'1px solid #ff4444', background:'rgba(255,68,68,0.1)', color:'#ff4444', fontWeight:900, cursor:'pointer', textTransform:'uppercase' }}>⚠️ Clear ALL</button>
+                  <button onClick={loadAll} style={{ padding:'0.7rem 1.2rem', borderRadius:'10px', border:'1px solid #334155', background:'transparent', color:'#8b9dc3', fontWeight:900, cursor:'pointer', textTransform:'uppercase' }}>🔄 Refresh</button>
+                </div>
+                {requests.slice(0,10).map(req => (
+                  <div key={req.id} style={{ padding:'0.85rem', background:'rgba(255,68,68,0.04)', border:'1px solid rgba(255,68,68,0.12)', borderRadius:'8px', display:'flex', justifyContent:'space-between', alignItems:'center', gap:'1rem', flexWrap:'wrap', marginBottom:'0.5rem' }}>
+                    <div>
+                      <div style={{ fontWeight:900, color:'#e2e8f0' }}>{req.qty}× {req.item}</div>
+                      <div style={{ fontSize:'0.8rem', color:'#8b9dc3' }}>{req.room} • {req.status} • by {req.submittedBy}
+                        {req.priority && <span style={{ marginLeft:'0.5rem', padding:'0.15rem 0.4rem', background:'#ff4444', borderRadius:'4px', color:'#fff', fontSize:'0.65rem' }}>HIGH</span>}
+                      </div>
+                    </div>
+                    <button onClick={() => deleteRequest(req.id)}
+                      style={{ padding:'0.45rem 0.9rem', background:'linear-gradient(135deg,#ff4444,#cc3333)', border:'none', borderRadius:'6px', color:'#fff', fontWeight:900, cursor:'pointer', fontSize:'0.8rem' }}>
+                      🗑️ Delete
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      // ASSIGNMENTS (Supervisor + Admin: assign people to rooms)
+      if (screen === "assignments") {
+        if (!canSupervisor) {
+          return (
+            <div style={{ minHeight:'100vh', ...bg, display:'flex', alignItems:'center', justifyContent:'center' }}>
+              <div style={{ textAlign:'center', color:'#fbbf24' }}>
+                <h2>⚠️ Supervisor Access Required</h2>
+                <button onClick={()=> setRoute("picklist")} style={{ padding:'0.7rem 1.5rem', background:'#fbbf24', border:'none', borderRadius:'8px', color:'#0a0e1a', fontWeight:900, cursor:'pointer', marginTop:'1rem' }}>Go Back</button>
+              </div>
+            </div>
+          );
+        }
+
+        const durationOptions = [
+          { key:"day", label:"📅 Day", desc:"Expires tomorrow" },
+          { key:"week", label:"📅 Week", desc:"Expires in 7 days" },
+          { key:"month", label:"📅 Month", desc:"Expires in 1 month" },
+          { key:"year", label:"📅 Year", desc:"Expires in 1 year" }
+        ];
+
+        const handleAssign = () => {
+          if (!assignPerson) { alert("Select a person"); return; }
+          if (!assignRoom) { alert("Select a room"); return; }
+          const person = users.find(u => u.id === assignPerson);
+          if (!person) return;
+          // Check if already assigned to this room
+          const existing = activeAssignments.find(a => a.userId === assignPerson && a.room === assignRoom);
+          if (existing) {
+            if (!confirm(`${person.name} is already assigned to ${assignRoom}. Replace the assignment?`)) return;
+            saveAssignments(assignments.filter(a => !(a.userId === assignPerson && a.room === assignRoom)));
+          }
+          const newAssignment = {
+            id: genId(), userId: person.id, userName: person.name, userRole: person.role,
+            room: assignRoom, duration: assignDuration,
+            startDate: new Date().toISOString(), expiresAt: expiryDate(assignDuration),
+            assignedBy: userName, assignedAt: new Date().toISOString()
+          };
+          saveAssignments([...assignments.filter(a => !(a.userId === assignPerson && a.room === assignRoom)), newAssignment]);
+          setSuccessMsg(`${person.name} assigned to ${assignRoom} for 1 ${assignDuration}!`);
+          setTimeout(() => setSuccessMsg(""), 3000);
+          setAssignPerson(""); setAssignRoom("");
+        };
+
+        const removeAssignment = (id, name, room) => {
+          if (!confirm(`Remove ${name}'s assignment from ${room}?`)) return;
+          saveAssignments(assignments.filter(a => a.id !== id));
+        };
+
+        const durationColor = { day:'#38bdf8', week:'#a78bfa', month:'#fbbf24', year:'#00ff88' };
+        const roleColors2 = { room:'#8b9dc3', warehouse:'#fbbf24', supervisor:'#a78bfa', admin:'#ff4444' };
+
+        // Group active assignments by room
+        const byRoom = {};
+        activeAssignments.forEach(a => {
+          if (!byRoom[a.room]) byRoom[a.room] = [];
+          byRoom[a.room].push(a);
+        });
+
+        return (
+          <div style={{ minHeight:'100vh', ...bg, padding:'1.5rem', position:'relative', overflow:'hidden' }}>
+            <div style={gridOverlay} />
+            <div style={{ maxWidth:'1400px', margin:'0 auto', position:'relative', zIndex:1 }}>
+              <TopBar title="Room Assignments" subtitle={`👤 ${userName} (${userRole}) • ${connectionMode === "supabase" ? "Supabase ready" : "Local + kiosk mode"}`} />
+
+              {successMsg && (
+                <div style={{ padding:'1rem', background:'rgba(0,255,136,0.15)', border:'1px solid #00ff88', borderRadius:'10px', color:'#00ff88', marginBottom:'1rem', fontWeight:900 }}>✅ {successMsg}</div>
+              )}
+
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(380px, 1fr))', gap:'1.5rem', marginBottom:'1.5rem' }}>
+
+                {/* Assign Form */}
+                <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(56,189,248,0.3)', borderRadius:'14px', padding:'1.5rem' }}>
+                  <div style={{ color:'#38bdf8', fontWeight:900, fontSize:'1.2rem', textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:'1.25rem' }}>➕ Assign Person to Room</div>
+
+                  <div style={{ marginBottom:'1rem' }}>
+                    <div style={{ color:'#8b9dc3', fontSize:'0.78rem', fontWeight:700, textTransform:'uppercase', marginBottom:'0.5rem' }}>Select Person</div>
+                    <select value={assignPerson} onChange={e => setAssignPerson(e.target.value)}
+                      style={{ width:'100%', padding:'0.75rem', background:'#1e293b', border:'1px solid #334155', borderRadius:'8px', color:'#e2e8f0', fontSize:'0.95rem' }}>
+                      <option value="">-- Choose person --</option>
+                      {users.filter(u => u.role !== 'admin').map(u => (
+                        <option key={u.id} value={u.id}>{u.name} ({u.role})</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div style={{ marginBottom:'1rem' }}>
+                    <div style={{ color:'#8b9dc3', fontSize:'0.78rem', fontWeight:700, textTransform:'uppercase', marginBottom:'0.5rem' }}>Select Room</div>
+                    <select value={assignRoom} onChange={e => setAssignRoom(e.target.value)}
+                      style={{ width:'100%', padding:'0.75rem', background:'#1e293b', border:'1px solid #334155', borderRadius:'8px', color:'#e2e8f0', fontSize:'0.95rem' }}>
+                      <option value="">-- Choose room --</option>
+                      {rooms.map(r => (
+                        <option key={r} value={r}>{r}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div style={{ marginBottom:'1.25rem' }}>
+                    <div style={{ color:'#8b9dc3', fontSize:'0.78rem', fontWeight:700, textTransform:'uppercase', marginBottom:'0.5rem' }}>Duration</div>
+                    <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1fr', gap:'0.5rem' }}>
+                      {durationOptions.map(d => (
+                        <button key={d.key} onClick={() => setAssignDuration(d.key)}
+                          style={{ padding:'0.75rem 0.4rem', borderRadius:'8px', textAlign:'center',
+                            border: assignDuration===d.key ? `2px solid ${durationColor[d.key]}` : '2px solid #334155',
+                            background: assignDuration===d.key ? `${durationColor[d.key]}22` : '#1e293b',
+                            color: assignDuration===d.key ? durationColor[d.key] : '#64748b',
+                            fontWeight:900, cursor:'pointer', fontSize:'0.8rem', textTransform:'uppercase' }}>
+                          {d.key.charAt(0).toUpperCase() + d.key.slice(1)}
+                        </button>
+                      ))}
+                    </div>
+                    <div style={{ marginTop:'0.5rem', color:'#64748b', fontSize:'0.78rem' }}>
+                      {durationOptions.find(d => d.key === assignDuration)?.desc}
+                      {' • '}Expires: {new Date(expiryDate(assignDuration)).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}
+                    </div>
+                  </div>
+
+                  <button onClick={handleAssign}
+                    style={{ width:'100%', padding:'1rem', background:'linear-gradient(135deg,#38bdf8,#0ea5e9)', border:'none', borderRadius:'10px', color:'#fff', fontWeight:900, cursor:'pointer', textTransform:'uppercase', fontSize:'1rem', letterSpacing:'0.05em' }}>
+                    ➕ Assign to Room
+                  </button>
+                </div>
+
+                {/* Stats */}
+                <div style={{ display:'flex', flexDirection:'column', gap:'1rem' }}>
+                  <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(56,189,248,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
+                    <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>Active Assignments</div>
+                    <div style={{ color:'#38bdf8', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{activeAssignments.length}</div>
+                  </div>
+                  <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(56,189,248,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
+                    <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>Rooms with Assignments</div>
+                    <div style={{ color:'#38bdf8', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{Object.keys(byRoom).length}</div>
+                  </div>
+                  <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(56,189,248,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
+                    <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>Total Users</div>
+                    <div style={{ color:'#38bdf8', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{users.length}</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Active Assignments Table */}
+              <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(56,189,248,0.2)', borderRadius:'14px', overflow:'hidden' }}>
+                <div style={{ padding:'1.2rem 1.5rem', background:'linear-gradient(135deg,rgba(56,189,248,0.15) 0%,rgba(56,189,248,0.04) 100%)', borderBottom:'2px solid #38bdf8' }}>
+                  <div style={{ color:'#38bdf8', fontWeight:900, fontSize:'1.1rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>
+                    📋 All Active Assignments ({activeAssignments.length})
+                  </div>
+                </div>
+
+                {activeAssignments.length === 0 ? (
+                  <div style={{ padding:'4rem', textAlign:'center', color:'#64748b' }}>
+                    <div style={{ fontSize:'3rem', marginBottom:'1rem' }}>📋</div>
+                    <h3 style={{ margin:'0 0 0.5rem 0' }}>No active assignments</h3>
+                    <p style={{ margin:0, fontSize:'0.9rem' }}>Use the form above to assign people to rooms</p>
+                  </div>
+                ) : (
+                  <div style={{ overflowX:'auto' }}>
+                    <table style={{ width:'100%', borderCollapse:'collapse', minWidth:'750px' }}>
+                      <thead>
+                        <tr style={{ background:'rgba(56,189,248,0.06)' }}>
+                          {["Person","Role","Room","Duration","Assigned By","Expires","Actions"].map(h => (
+                            <th key={h} style={headerStyle}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {activeAssignments.sort((a,b) => a.room.localeCompare(b.room)).map((a, idx) => {
+                          const expires = new Date(a.expiresAt);
+                          const daysLeft = Math.ceil((expires - new Date()) / (1000*60*60*24));
+                          const expiryColor = daysLeft <= 1 ? '#ff4444' : daysLeft <= 3 ? '#fbbf24' : '#00ff88';
+                          return (
+                            <tr key={a.id} style={{ borderBottom: idx < activeAssignments.length-1 ? '1px solid #334155' : 'none', background: idx%2===0 ? 'transparent' : 'rgba(56,189,248,0.02)' }}>
+                              <td style={cellStyle}><div style={{ fontWeight:900 }}>{a.userName}</div></td>
+                              <td style={cellStyle}><span style={{ color: roleColors2[a.userRole], fontWeight:700, textTransform:'uppercase', fontSize:'0.85rem' }}>{a.userRole}</span></td>
+                              <td style={cellStyle}><div style={{ display:'flex', alignItems:'center', gap:'0.4rem' }}><MapPin size={14} color="#38bdf8" />{a.room}</div></td>
+                              <td style={cellStyle}><span style={{ padding:'0.25rem 0.6rem', borderRadius:'6px', background:`${durationColor[a.duration]}22`, color:durationColor[a.duration], fontWeight:900, fontSize:'0.8rem', textTransform:'uppercase' }}>{a.duration}</span></td>
+                              <td style={cellStyle}><div style={{ color:'#8b9dc3', fontSize:'0.85rem' }}>{a.assignedBy}</div></td>
+                              <td style={cellStyle}>
+                                <div style={{ color:expiryColor, fontWeight:700, fontSize:'0.85rem' }}>
+                                  {expires.toLocaleDateString('en-US',{month:'short',day:'numeric'})}
+                                </div>
+                                <div style={{ color: expiryColor, fontSize:'0.75rem' }}>
+                                  {daysLeft <= 0 ? 'Expired' : daysLeft === 1 ? 'Tomorrow' : `${daysLeft} days`}
+                                </div>
+                              </td>
+                              <td style={cellStyle}>
+                                <button onClick={() => removeAssignment(a.id, a.userName, a.room)}
+                                  style={{ padding:'0.4rem 0.8rem', background:'rgba(255,68,68,0.1)', border:'1px solid #ff4444', borderRadius:'6px', color:'#ff4444', fontWeight:900, cursor:'pointer', fontSize:'0.8rem' }}>
+                                  Remove
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+
       // PICKLIST (Main operational screen)
       if (screen === "picklist") {
         return (
@@ -1838,7 +2109,7 @@ await loadAll();
             <div style={{ maxWidth:'1500px', margin:'0 auto', position:'relative', zIndex:1 }}>
               <TopBar title="Pick List" subtitle={`👤 ${userName} (${userRole}) • ${connectionMode === "supabase" ? "Supabase ready • Realtime updates" : "Local + kiosk mode"}`} />
 
-              <div style={{ marginBottom:'0.9rem', padding:'0.6rem 0.9rem', background:'rgba(0,255,136,0.1)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'10px', color:CONFIG.THEME_ACCENT, fontSize:'0.75rem', textAlign:'center', letterSpacing:'0.05em' }}>
+              <div style={{ marginBottom:'0.9rem', padding:'0.6rem 0.9rem', background:'rgba(0,255,136,0.1)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'10px', color:'#00ff88', fontSize:'0.75rem', textAlign:'center', letterSpacing:'0.05em' }}>
                 ✅ Claim → Start → Done • Prevents double-picking (multi-user safe)
               </div>
 
@@ -1868,7 +2139,7 @@ await loadAll();
                 </select>
 
                 <div style={{ color:'#64748b', fontSize:'0.8rem' }}>
-                  Actions: {canWarehouseAct ? <span style={{ color:CONFIG.THEME_ACCENT, fontWeight:900 }}>enabled</span> : <span style={{ color:'#fbbf24', fontWeight:900 }}>read-only</span>}
+                  Actions: {canWarehouseAct ? <span style={{ color:'#00ff88', fontWeight:900 }}>enabled</span> : <span style={{ color:'#fbbf24', fontWeight:900 }}>read-only</span>}
                 </div>
               </div>
 
@@ -1881,9 +2152,9 @@ await loadAll();
                 <div style={{ display:'flex', flexDirection:'column', gap:'1rem' }}>
                   {grouped.keys.map(groupKey => (
                     <div key={groupKey} style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', overflow:'hidden' }}>
-                      <div style={{ padding:'0.9rem 1.2rem', background:'linear-gradient(135deg, rgba(0,255,136,0.15) 0%, rgba(0,255,136,0.04) 100%)', borderBottom:`2px solid ${CONFIG.THEME_ACCENT}`, display:'flex', alignItems:'center', gap:'0.75rem' }}>
-                        <MapPin size={20} color={CONFIG.THEME_ACCENT} />
-                        <div style={{ color:CONFIG.THEME_ACCENT, fontWeight:900, textTransform:'uppercase', letterSpacing:'0.09em' }}>{groupKey}</div>
+                      <div style={{ padding:'0.9rem 1.2rem', background:'linear-gradient(135deg, rgba(0,255,136,0.15) 0%, rgba(0,255,136,0.04) 100%)', borderBottom:'2px solid #00ff88', display:'flex', alignItems:'center', gap:'0.75rem' }}>
+                        <MapPin size={20} color="#00ff88" />
+                        <div style={{ color:'#00ff88', fontWeight:900, textTransform:'uppercase', letterSpacing:'0.09em' }}>{groupKey}</div>
                         <div style={{ marginLeft:'auto', color:'#8b9dc3', fontSize:'0.85rem' }}>{grouped.map[groupKey].length}</div>
                       </div>
 
@@ -1926,25 +2197,22 @@ await loadAll();
 
                                   <td style={cellStyle}>
                                     <div style={{ display:'flex', alignItems:'center', gap:'0.5rem' }}>
-                                      <Package size={16} color={CONFIG.THEME_ACCENT} />
+                                      <Package size={16} color="#00ff88" />
                                       <span style={{ fontWeight:900 }}>{req.item}</span>
                                     </div>
                                   </td>
 
                                   <td style={cellStyle}>
-                                    <span style={{ color:CONFIG.THEME_ACCENT, fontWeight:900 }}>{req.room}</span>
+                                    <span style={{ color:'#00ff88', fontWeight:900 }}>{req.room}</span>
                                   </td>
 
                                   <td style={cellStyle}>
-                                    <span style={{ padding:'0.2rem 0.55rem', background:'#1e293b', borderRadius:'10px', fontWeight:900, color:CONFIG.THEME_ACCENT }}>{req.qty}</span>
+                                    <span style={{ padding:'0.2rem 0.55rem', background:'#1e293b', borderRadius:'10px', fontWeight:900, color:'#00ff88' }}>{req.qty}</span>
                                     <span style={{ color:'#64748b', margin:'0 0.4rem' }}>/</span>
                                     {editingId === req.id ? (
                                       <span style={{ display:'inline-flex', gap:'0.4rem', alignItems:'center' }}>
-                                        <input type="text" inputMode="numeric" pattern="[0-9]*" enterKeyHint="done" value={String(editQty)} onChange={(e)=> {
-                                            const v = e.target.value.replace(/[^0-9]/g, "");
-                                            setEditQty(v === "" ? 0 : parseInt(v, 10));
-                                          }}
-                                          style={{ width:'80px', padding:'0.35rem', background:'#1e293b', border:`2px solid ${CONFIG.THEME_ACCENT}`, borderRadius:'8px', color:'#e2e8f0', fontWeight:900 }} />
+                                        <input type="number" value={editQty} onChange={(e)=> setEditQty(parseInt(e.target.value)||0)}
+                                          style={{ width:'80px', padding:'0.35rem', background:'#1e293b', border:'2px solid #00ff88', borderRadius:'8px', color:'#e2e8f0', fontWeight:900 }} />
                                         <button disabled={!canActThis} onClick={()=> adjustQty(req.id, editQty)}
                                           style={{ opacity: canActThis ? 1 : 0.5, padding:'0.35rem 0.55rem', background:'#00ff88', border:'none', borderRadius:'8px', cursor: canActThis ? 'pointer' : 'not-allowed' }}>
                                           <Save size={16} color="#0a0e1a" />
@@ -1977,7 +2245,7 @@ await loadAll();
                                         <Clock size={14} color="#64748b" />
                                         <span>{niceTime(req.submittedAt)}</span>
                                       </div>
-                                      <div style={{ marginTop:'0.25rem', color:CONFIG.THEME_ACCENT, fontWeight:900 }}>{req.submittedBy || "?"}</div>
+                                      <div style={{ marginTop:'0.25rem', color:'#00ff88', fontWeight:900 }}>{req.submittedBy || "?"}</div>
                                     </div>
                                   </td>
 
@@ -2015,7 +2283,7 @@ await loadAll();
                                       {req.status.replace("_"," ")}
                                     </span>
                                     {req.status === "completed" && req.completedAt && (
-                                      <div style={{ marginTop:'0.35rem', color:CONFIG.THEME_ACCENT, fontSize:'0.75rem', fontWeight:900 }}>
+                                      <div style={{ marginTop:'0.35rem', color:'#00ff88', fontSize:'0.75rem', fontWeight:900 }}>
                                         ✓ {niceTime(req.completedAt)}{req.completedBy ? ` by ${req.completedBy}` : ""}
                                       </div>
                                     )}
@@ -2037,7 +2305,7 @@ await loadAll();
                                       )}
                                       {(req.status === "in_progress" || req.status === "claimed") && (
                                         <button disabled={!canActThis} onClick={()=> completeRequest(req.id)}
-                                          style={{ opacity: canActThis ? 1 : 0.45, padding:'0.45rem 0.7rem', background:'linear-gradient(135deg, #16a34a 0%, #15803d 100%)', border:'none', borderRadius:'10px', fontWeight:900, cursor: canActThis ? 'pointer' : 'not-allowed', display:'inline-flex', alignItems:'center', gap:'0.25rem' }}>
+                                          style={{ opacity: canActThis ? 1 : 0.45, padding:'0.45rem 0.7rem', background:'linear-gradient(135deg, #00ff88 0%, #00cc6f 100%)', border:'none', borderRadius:'10px', fontWeight:900, cursor: canActThis ? 'pointer' : 'not-allowed', display:'inline-flex', alignItems:'center', gap:'0.25rem' }}>
                                           <CheckCircle size={14} color="#0a0e1a" /> Done
                                         </button>
                                       )}
@@ -2071,11 +2339,11 @@ await loadAll();
           <div style={{ maxWidth:'780px', margin:'0 auto', position:'relative', zIndex:1 }}>
             <TopBar title="Delivery Request" subtitle={`👤 ${userName} (${userRole}) • ${connectionMode === "supabase" ? "Supabase ready • Realtime" : "Local + kiosk mode"}`} />
 
-            <div style={{ marginBottom:'0.9rem', padding:'0.65rem 0.9rem', background:'rgba(0,255,136,0.1)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'10px', color:CONFIG.THEME_ACCENT, fontSize:'0.75rem', textAlign:'center', letterSpacing:'0.05em' }}>
+            <div style={{ marginBottom:'0.9rem', padding:'0.65rem 0.9rem', background:'rgba(0,255,136,0.1)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'10px', color:'#00ff88', fontSize:'0.75rem', textAlign:'center', letterSpacing:'0.05em' }}>
               ℹ️ Submitting creates a shared request visible instantly
             
             {successMsg && (
-              <div style={{ marginTop:'0.75rem', padding:'0.75rem 1rem', background:'rgba(0,255,136,0.12)', border:'1px solid rgba(0,255,136,0.25)', borderRadius:'10px', color:CONFIG.THEME_ACCENT, fontSize:'0.85rem', fontWeight:700, letterSpacing:'0.04em', textAlign:'center' }}>
+              <div style={{ marginTop:'0.75rem', padding:'0.75rem 1rem', background:'rgba(0,255,136,0.12)', border:'1px solid rgba(0,255,136,0.25)', borderRadius:'10px', color:'#00ff88', fontSize:'0.85rem', fontWeight:700, letterSpacing:'0.04em', textAlign:'center' }}>
                 {successMsg}
               </div>
             )}
@@ -2084,7 +2352,7 @@ await loadAll();
             <form onSubmit={submitRequest} style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'2rem', boxShadow:'0 8px 32px rgba(0,0,0,0.28)' }}>
               <div style={{ marginBottom:'1.1rem' }}>
                 <label style={{ display:'flex', alignItems:'center', gap:'0.5rem', color:'#e2e8f0', fontSize:'0.85rem', fontWeight:900, marginBottom:'0.5rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>
-                  <Package size={16} color={CONFIG.THEME_ACCENT} /> Item <span style={{ color:CONFIG.THEME_ACCENT }}>*</span>
+                  <Package size={16} color="#00ff88" /> Item <span style={{ color:'#00ff88' }}>*</span>
                 </label>
                 <input
                   value={formData.item}
@@ -2097,18 +2365,18 @@ await loadAll();
 
               <div style={{ marginBottom:'1.1rem', position:'relative' }} ref={dropdownRef}>
                 <label style={{ display:'flex', alignItems:'center', gap:'0.5rem', color:'#e2e8f0', fontSize:'0.85rem', fontWeight:900, marginBottom:'0.5rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>
-                  <MapPin size={16} color={CONFIG.THEME_ACCENT} /> Room <span style={{ color:CONFIG.THEME_ACCENT }}>*</span>
+                  <MapPin size={16} color="#00ff88" /> Room <span style={{ color:'#00ff88' }}>*</span>
                 </label>
 
                 <div onClick={()=> setRoomDropdownOpen(!roomDropdownOpen)}
                   style={{ width:'100%', padding:'0.875rem', background:'#1e293b', border:`2px solid ${errors.room ? '#ff4444' : (formData.room ? '#00ff88' : '#334155')}`, borderRadius:'10px', color: formData.room ? '#e2e8f0' : '#64748b', cursor:'pointer', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
                   <span>{formData.room || "Select room…"}</span>
-                  <span style={{ color:CONFIG.THEME_ACCENT, transform: roomDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition:'transform 0.2s ease' }}>▼</span>
+                  <span style={{ color:'#00ff88', transform: roomDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition:'transform 0.2s ease' }}>▼</span>
                 </div>
                 {errors.room && <div style={{ marginTop:'0.35rem', color:'#ff4444', fontSize:'0.78rem', display:'flex', gap:'0.35rem', alignItems:'center' }}><AlertCircle size={12} /> {errors.room}</div>}
 
                 {roomDropdownOpen && (
-                  <div style={{ position:'absolute', top:'100%', left:0, right:0, marginTop:'0.5rem', background:'#1e293b', border:`2px solid ${CONFIG.THEME_ACCENT}`, borderRadius:'10px', boxShadow:'0 12px 28px rgba(0,255,136,0.15)', zIndex:10, overflow:'hidden' }}>
+                  <div style={{ position:'absolute', top:'100%', left:0, right:0, marginTop:'0.5rem', background:'#1e293b', border:'2px solid #00ff88', borderRadius:'10px', boxShadow:'0 12px 28px rgba(0,255,136,0.15)', zIndex:10, overflow:'hidden' }}>
                     <input value={roomSearch} onChange={(e)=> setRoomSearch(e.target.value)} onClick={(e)=> e.stopPropagation()}
                       placeholder="Search rooms…"
                       style={{ width:'100%', padding:'0.75rem', background:'#0f172a', border:'none', borderBottom:'1px solid #334155', color:'#e2e8f0', outline:'none' }} />
@@ -2128,12 +2396,9 @@ await loadAll();
               <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'1rem', marginBottom:'1.1rem' }}>
                 <div>
                   <label style={{ display:'block', color:'#e2e8f0', fontSize:'0.85rem', fontWeight:900, marginBottom:'0.5rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>
-                    Qty <span style={{ color:CONFIG.THEME_ACCENT }}>*</span>
+                    Qty <span style={{ color:'#00ff88' }}>*</span>
                   </label>
-                  <input type="text" inputMode="numeric" pattern="[0-9]*" enterKeyHint="done" value={String(formData.qty)} onChange={(e)=> {
-                      const v = e.target.value.replace(/[^0-9]/g, "");
-                      setFormData({ ...formData, qty: v === "" ? 0 : parseInt(v, 10) });
-                    }}
+                  <input type="number" value={formData.qty} onChange={(e)=> setFormData({ ...formData, qty: parseInt(e.target.value)||0 })}
                     style={{ width:'100%', padding:'0.875rem', background:'#1e293b', border:`2px solid ${errors.qty ? '#ff4444' : '#334155'}`, borderRadius:'10px', color:'#e2e8f0', fontSize:'1rem', outline:'none' }} />
                   {errors.qty && <div style={{ marginTop:'0.35rem', color:'#ff4444', fontSize:'0.78rem', display:'flex', gap:'0.35rem', alignItems:'center' }}><AlertCircle size={12} /> {errors.qty}</div>}
                 </div>
@@ -2166,7 +2431,7 @@ await loadAll();
 
               <div style={{ marginBottom:'1.1rem' }}>
                 <label style={{ display:'flex', alignItems:'center', gap:'0.5rem', color:'#e2e8f0', fontSize:'0.85rem', fontWeight:900, marginBottom:'0.5rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>
-                  <MessageSquare size={16} color={CONFIG.THEME_ACCENT} /> Comments
+                  <MessageSquare size={16} color="#00ff88" /> Comments
                 </label>
                 <textarea value={formData.comments} onChange={(e)=> setFormData({ ...formData, comments:e.target.value })}
                   rows={4}
@@ -2176,7 +2441,7 @@ await loadAll();
               </div>
 
               <button type="submit"
-                style={{ width:'100%', padding:'1.1rem', background:'linear-gradient(135deg, #16a34a 0%, #15803d 100%)', border:'none', borderRadius:'12px', color:'#0a0e1a', fontSize:'1.05rem', fontWeight:900, cursor:'pointer', textTransform:'uppercase', letterSpacing:'0.08em', boxShadow:'0 4px 18px rgba(0,255,136,0.35)' }}>
+                style={{ width:'100%', padding:'1.1rem', background:'linear-gradient(135deg, #00ff88 0%, #00cc6f 100%)', border:'none', borderRadius:'12px', color:'#0a0e1a', fontSize:'1.05rem', fontWeight:900, cursor:'pointer', textTransform:'uppercase', letterSpacing:'0.08em', boxShadow:'0 4px 18px rgba(0,255,136,0.35)' }}>
                 Submit Request
               </button>
 
