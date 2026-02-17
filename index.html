@@ -87,7 +87,7 @@
      *   adj_qty int not null default 0,
      *   priority boolean not null default false,
      *   comments text,
-     *   status text not null default 'pending', -- pending|claimed|in_progress|completed|cancelled
+     *   status text not null default 'pending',
      *   submitted_at timestamptz not null default now(),
      *   submitted_by text,
      *   submitted_by_role text,
@@ -102,13 +102,50 @@
      *   last_updated_at timestamptz not null default now()
      * );
      *
-     * -- Realtime (Database -> Replication -> enable for warehouse_requests)
+     * create table if not exists warehouse_users (
+     *   id text primary key,
+     *   name text not null,
+     *   role text not null,
+     *   shift text,
+     *   created_at timestamptz not null default now(),
+     *   created_by text
+     * );
      *
-     * -- RLS + policies (simple starter; tighten later)
+     * create table if not exists warehouse_assignments (
+     *   id text primary key,
+     *   user_id text not null,
+     *   user_name text not null,
+     *   user_role text not null,
+     *   room text not null,
+     *   shift text,
+     *   duration text not null,
+     *   start_date timestamptz not null default now(),
+     *   expires_at timestamptz not null,
+     *   assigned_by text,
+     *   assigned_at timestamptz not null default now()
+     * );
+     *
+     * -- Realtime: enable for all three tables in Database -> Replication
+     *
+     * -- RLS policies
      * alter table warehouse_requests enable row level security;
+     * alter table warehouse_users enable row level security;
+     * alter table warehouse_assignments enable row level security;
+     *
      * create policy "read all" on warehouse_requests for select using (true);
      * create policy "insert all" on warehouse_requests for insert with check (true);
      * create policy "update all" on warehouse_requests for update using (true);
+     * create policy "delete all" on warehouse_requests for delete using (true);
+     *
+     * create policy "read all" on warehouse_users for select using (true);
+     * create policy "insert all" on warehouse_users for insert with check (true);
+     * create policy "update all" on warehouse_users for update using (true);
+     * create policy "delete all" on warehouse_users for delete using (true);
+     *
+     * create policy "read all" on warehouse_assignments for select using (true);
+     * create policy "insert all" on warehouse_assignments for insert with check (true);
+     * create policy "update all" on warehouse_assignments for update using (true);
+     * create policy "delete all" on warehouse_assignments for delete using (true);
      * -------------------------------------------------------------------
      **********************************************************************/
     const CONFIG = {
@@ -256,24 +293,28 @@
 
       const adapter = {
         kind: useSupabase ? "supabase" : "local",
+        client: supabaseClient,
         async init() {
           if (useSupabase) {
-            // Realtime subscription
-            const channel = supabaseClient.channel("warehouse-delivery-requests")
+            // Realtime subscriptions for all three tables
+            const channel = supabaseClient.channel("warehouse-all-tables")
               .on("postgres_changes", { event:"*", schema:"public", table:"warehouse_requests" }, () => onRemoteChange?.())
+              .on("postgres_changes", { event:"*", schema:"public", table:"warehouse_users" }, () => onRemoteChange?.())
+              .on("postgres_changes", { event:"*", schema:"public", table:"warehouse_assignments" }, () => onRemoteChange?.())
               .subscribe();
             unsub = ()=> supabaseClient.removeChannel(channel);
           } else {
-            // Same-device multi-tab sync
             bc?.addEventListener("message", (e)=> {
               if (e?.data?.type === "updated") onRemoteChange?.();
             });
             window.addEventListener("storage", (e)=> {
-              if (e.key === CONFIG.STORAGE_KEY) onRemoteChange?.();
+              if (e.key === CONFIG.STORAGE_KEY || e.key === "wd_users_v1" || e.key === "wd_assignments_v1") onRemoteChange?.();
             });
           }
         },
         destroy() { try { unsub?.(); } catch {} },
+
+        // ── REQUESTS ──────────────────────────────────────────────────────
         async loadAll() {
           if (!useSupabase) return await localLoad();
           const { data, error } = await supabaseClient
@@ -300,12 +341,9 @@
             const rows = await localLoad();
             const idx = rows.findIndex(r=>r.id===id);
             if (idx < 0) return rows;
-            const current = rows[idx];
-            const nextRow = patchFn({ ...current });
-            const next = rows.map(r=> r.id===id ? nextRow : r);
-            return await localSave(next);
+            const nextRow = patchFn({ ...rows[idx] });
+            return await localSave(rows.map(r=> r.id===id ? nextRow : r));
           }
-          // For Supabase: load current row, then write back with version bump
           const { data, error } = await supabaseClient.from("warehouse_requests").select("*").eq("id", id).maybeSingle();
           if (error) throw error;
           if (!data) return true;
@@ -325,10 +363,93 @@
           return true;
         },
         async clearAll() {
-          if (!useSupabase) {
-            return await localSave([]);
-          }
+          if (!useSupabase) return await localSave([]);
           const { error } = await supabaseClient.from("warehouse_requests").delete().neq("id", -1);
+          if (error) throw error;
+          return true;
+        },
+
+        // ── USERS ─────────────────────────────────────────────────────────
+        async loadUsers() {
+          if (!useSupabase) {
+            try { return JSON.parse(localStorage.getItem("wd_users_v1") || "[]"); } catch { return []; }
+          }
+          const { data, error } = await supabaseClient.from("warehouse_users").select("*").order("created_at");
+          if (error) throw error;
+          return (data || []).map(u => ({
+            id: u.id, name: u.name, role: u.role, shift: u.shift || null,
+            createdAt: u.created_at, createdBy: u.created_by || "system"
+          }));
+        },
+        async saveUser(user) {
+          if (!useSupabase) {
+            const all = JSON.parse(localStorage.getItem("wd_users_v1") || "[]");
+            const idx = all.findIndex(u => u.id === user.id);
+            const next = idx >= 0 ? all.map(u => u.id===user.id ? user : u) : [...all, user];
+            localStorage.setItem("wd_users_v1", JSON.stringify(next));
+            bc?.postMessage({ type:"updated" });
+            return next;
+          }
+          const { error } = await supabaseClient.from("warehouse_users").upsert({
+            id: user.id, name: user.name, role: user.role, shift: user.shift || null,
+            created_at: user.createdAt, created_by: user.createdBy || "system"
+          });
+          if (error) throw error;
+          return true;
+        },
+        async deleteUser(id) {
+          if (!useSupabase) {
+            const all = JSON.parse(localStorage.getItem("wd_users_v1") || "[]");
+            localStorage.setItem("wd_users_v1", JSON.stringify(all.filter(u => u.id !== id)));
+            bc?.postMessage({ type:"updated" });
+            return true;
+          }
+          const { error } = await supabaseClient.from("warehouse_users").delete().eq("id", id);
+          if (error) throw error;
+          return true;
+        },
+
+        // ── ASSIGNMENTS ───────────────────────────────────────────────────
+        async loadAssignments() {
+          if (!useSupabase) {
+            try { return JSON.parse(localStorage.getItem("wd_assignments_v1") || "[]"); } catch { return []; }
+          }
+          const { data, error } = await supabaseClient.from("warehouse_assignments").select("*").order("assigned_at");
+          if (error) throw error;
+          return (data || []).map(a => ({
+            id: a.id, userId: a.user_id, userName: a.user_name, userRole: a.user_role,
+            room: a.room, shift: a.shift || null, duration: a.duration,
+            startDate: a.start_date, expiresAt: a.expires_at,
+            assignedBy: a.assigned_by, assignedAt: a.assigned_at
+          }));
+        },
+        async saveAssignment(assignment) {
+          if (!useSupabase) {
+            const all = JSON.parse(localStorage.getItem("wd_assignments_v1") || "[]");
+            const idx = all.findIndex(a => a.id === assignment.id);
+            const next = idx >= 0 ? all.map(a => a.id===assignment.id ? assignment : a) : [...all, assignment];
+            localStorage.setItem("wd_assignments_v1", JSON.stringify(next));
+            bc?.postMessage({ type:"updated" });
+            return next;
+          }
+          const { error } = await supabaseClient.from("warehouse_assignments").upsert({
+            id: assignment.id, user_id: assignment.userId, user_name: assignment.userName,
+            user_role: assignment.userRole, room: assignment.room, shift: assignment.shift || null,
+            duration: assignment.duration, start_date: assignment.startDate,
+            expires_at: assignment.expiresAt, assigned_by: assignment.assignedBy,
+            assigned_at: assignment.assignedAt
+          });
+          if (error) throw error;
+          return true;
+        },
+        async deleteAssignment(id) {
+          if (!useSupabase) {
+            const all = JSON.parse(localStorage.getItem("wd_assignments_v1") || "[]");
+            localStorage.setItem("wd_assignments_v1", JSON.stringify(all.filter(a => a.id !== id)));
+            bc?.postMessage({ type:"updated" });
+            return true;
+          }
+          const { error } = await supabaseClient.from("warehouse_assignments").delete().eq("id", id);
           if (error) throw error;
           return true;
         }
@@ -365,13 +486,9 @@
       const [timeFilter, setTimeFilter] = useState("today"); // for dashboard analytics
       const [adminTimeFilter, setAdminTimeFilter] = useState("day"); // for admin panel
 
-      // Users & Assignments
-      const [users, setUsers] = useState(() => {
-        try { return JSON.parse(localStorage.getItem("wd_users_v1") || "[]"); } catch { return []; }
-      });
-      const [assignments, setAssignments] = useState(() => {
-        try { return JSON.parse(localStorage.getItem("wd_assignments_v1") || "[]"); } catch { return []; }
-      });
+      // Users & Assignments — loaded from adapter (Supabase or localStorage)
+      const [users, setUsers] = useState([]);
+      const [assignments, setAssignments] = useState([]);
       // User management form state
       const [newUserName, setNewUserName] = useState("");
       const [newUserRole, setNewUserRole] = useState("room");
@@ -389,14 +506,31 @@
       const [loginError, setLoginError] = useState("");
       const [userSortBy, setUserSortBy] = useState("role"); // role | name | date
 
-      const saveUsers = (updated) => {
+      const saveUsers = async (updated) => {
         setUsers(updated);
-        localStorage.setItem("wd_users_v1", JSON.stringify(updated));
+        // If local mode, write all at once; if Supabase, adapter handles per-record
+        if (adapterRef.current?.kind !== "supabase") {
+          localStorage.setItem("wd_users_v1", JSON.stringify(updated));
+        }
       };
 
-      const saveAssignments = (updated) => {
+      const saveAssignments = async (updated) => {
         setAssignments(updated);
-        localStorage.setItem("wd_assignments_v1", JSON.stringify(updated));
+        if (adapterRef.current?.kind !== "supabase") {
+          localStorage.setItem("wd_assignments_v1", JSON.stringify(updated));
+        }
+      };
+
+      const loadUsersAndAssignments = async () => {
+        try {
+          const adapter = adapterRef.current;
+          if (!adapter) return;
+          const [u, a] = await Promise.all([adapter.loadUsers(), adapter.loadAssignments()]);
+          setUsers(Array.isArray(u) ? u : []);
+          setAssignments(Array.isArray(a) ? a : []);
+        } catch (err) {
+          console.error("Failed to load users/assignments:", err);
+        }
       };
 
       const genId = () => Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
@@ -450,6 +584,12 @@
           if (!adapter) return;
           const data = await adapter.loadAll();
           setRequests(Array.isArray(data) ? data : []);
+          // Also refresh users and assignments so all devices stay in sync
+          if (adapter.loadUsers) {
+            const [u, a] = await Promise.all([adapter.loadUsers(), adapter.loadAssignments()]);
+            setUsers(Array.isArray(u) ? u : []);
+            setAssignments(Array.isArray(a) ? a : []);
+          }
           setLoading(false);
         } catch (error) {
           console.error("Failed to load data:", error);
@@ -463,9 +603,10 @@
             setNotificationsEnabled(await requestNotifyPermission());
             const adapter = createAdapter({ onRemoteChange: loadAll });
             adapterRef.current = adapter;
-            setConnectionMode(adapter.kind); // Update connection mode state
+            setConnectionMode(adapter.kind);
             await adapter.init();
             await loadAll();
+            await loadUsersAndAssignments();
 
             // polling fallback (supabase realtime already calls onRemoteChange)
             const t = setInterval(() => loadAll().catch(console.error), CONFIG.REFRESH_MS);
@@ -826,8 +967,9 @@
 
           // First-time: no users yet → auto-create first Admin
           if (noUsers) {
-            const firstAdmin = { id: genId(), name, role: "admin", createdAt: new Date().toISOString(), createdBy: "system" };
-            saveUsers([firstAdmin]);
+            const firstAdmin = { id: genId(), name, role: "admin", shift: null, createdAt: new Date().toISOString(), createdBy: "system" };
+            adapterRef.current.saveUser(firstAdmin).then(() => loadAll());
+            setUsers([firstAdmin]);
             setUserName(name); setUserRole("admin");
             localStorage.setItem("wd_userName", name);
             localStorage.setItem("wd_userRole", "admin");
@@ -1653,7 +1795,8 @@
           if (!name) { alert("Enter a name"); return; }
           if (users.find(u => u.name.toLowerCase() === name.toLowerCase())) { alert("A user with that name already exists!"); return; }
           const shift = newUserRole === "admin" ? null : newUserShift;
-          saveUsers([...users, { id: genId(), name, role: newUserRole, shift, createdAt: new Date().toISOString(), createdBy: userName }]);
+          const newUser = { id: genId(), name, role: newUserRole, shift, createdAt: new Date().toISOString(), createdBy: userName };
+          adapterRef.current.saveUser(newUser).then(() => loadAll());
           setNewUserName(""); setNewUserRole("room"); setNewUserShift("1st");
           setSuccessMsg(`User "${name}" created!`);
           setTimeout(() => setSuccessMsg(""), 3000);
@@ -1661,7 +1804,7 @@
 
         const handleDeleteUser = (id, name) => {
           if (!confirm(`Delete user "${name}"? They will no longer be able to sign in.`)) return;
-          saveUsers(users.filter(u => u.id !== id));
+          adapterRef.current.deleteUser(id).then(() => loadAll());
           setSuccessMsg(`User "${name}" deleted.`);
           setTimeout(() => setSuccessMsg(""), 3000);
         };
@@ -1669,7 +1812,9 @@
         const handleUpdateUser = (id) => {
           const name = editUserName.trim();
           if (!name) { alert("Name cannot be empty"); return; }
-          saveUsers(users.map(u => u.id === id ? { ...u, name, role: editUserRole } : u));
+          const existing = users.find(u => u.id === id);
+          const updated = { ...existing, name, role: editUserRole };
+          adapterRef.current.saveUser(updated).then(() => loadAll());
           setEditUserId(null);
           setSuccessMsg("User updated!");
           setTimeout(() => setSuccessMsg(""), 3000);
@@ -1978,24 +2123,27 @@
           if (!assignRoom)   { alert("Select a room");   return; }
           const person = users.find(u => u.id === assignPerson);
           if (!person) return;
-          const personShift = person.shift || "1st"; // shift comes from user profile
+          const personShift = person.shift || "1st";
           const existing = activeAssignments.find(a => a.userId === assignPerson && a.room === assignRoom);
-          if (existing && !confirm(`${person.name} is already assigned to ${assignRoom}. Replace?`)) return;
+          if (existing) {
+            if (!confirm(`${person.name} is already assigned to ${assignRoom}. Replace?`)) return;
+            adapterRef.current.deleteAssignment(existing.id);
+          }
           const newA = {
             id: genId(), userId: person.id, userName: person.name, userRole: person.role,
             room: assignRoom, shift: personShift, duration: assignDuration,
             startDate: new Date().toISOString(), expiresAt: expiryDate(assignDuration),
             assignedBy: userName, assignedAt: new Date().toISOString()
           };
-          saveAssignments([...assignments.filter(a => !(a.userId === assignPerson && a.room === assignRoom)), newA]);
+          adapterRef.current.saveAssignment(newA).then(() => loadAll());
           setSuccessMsg(`${person.name} → ${assignRoom} · ${personShift} Shift · ${assignDuration}`);
           setTimeout(() => setSuccessMsg(""), 3000);
           setAssignPerson(""); setAssignRoom("");
         };
 
-        const removeAssignment = (id, name, room, shift) => {
+        const removeAssignment = (id, name, room) => {
           if (!confirm(`Remove ${name}'s assignment from ${room}?`)) return;
-          saveAssignments(assignments.filter(a => a.id !== id));
+          adapterRef.current.deleteAssignment(id).then(() => loadAll());
         };
 
         // Filter by shift then sort
