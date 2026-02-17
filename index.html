@@ -2431,7 +2431,7 @@ ROOM_COLORS: {
   <div key={groupKey} style={{ background:'rgba(15,23,42,0.85)', border:`1px solid ${roomColor}33`, borderRadius:'14px', overflow:'hidden' }}>
     <div style={{ padding:'0.9rem 1.2rem', background:`linear-gradient(135deg, ${roomColor}22 0%, ${roomColor}08 100%)`, borderBottom:`2px solid ${roomColor}`, display:'flex', alignItems:'center', gap:'0.75rem' }}>
       <MapPin size={20} color={roomColor} />
-                        <div style={{ color:'#00ff88', fontWeight:900, textTransform:'uppercase', letterSpacing:'0.09em' }}>{groupKey}</div>
+                        <div style={{ color:'#ffffff', fontWeight:900, textTransform:'uppercase', letterSpacing:'0.09em' }}>{groupKey}</div>
                         <div style={{ marginLeft:'auto', color:'#8b9dc3', fontSize:'0.85rem' }}>{grouped.map[groupKey].length}</div>
                       </div>
 
@@ -2549,7 +2549,8 @@ ROOM_COLORS: {
                             })}
                           </div>
                     </div>
-                  ))}
+                  );
+})}
                 </div>
               )}
             </div>
