@@ -120,7 +120,7 @@
       SLA_MINUTES_WARN: 5,
       SLA_MINUTES_BAD: 10,
       SLA_MINUTES_CRIT: 20,
-      ROOMS: ["Bistro", "Salad", "Film/Labels", "MasterPacks", "Boxes", "Apples", "Loading"]
+      ROOMS: ["Bistro", "Salad", "Film", "Labels", "Boxes"]
     };
 
     // Icons (same style as your original file)
@@ -375,6 +375,7 @@
       // User management form state
       const [newUserName, setNewUserName] = useState("");
       const [newUserRole, setNewUserRole] = useState("room");
+      const [newUserShift, setNewUserShift] = useState("1st");
       const [editUserId, setEditUserId] = useState(null);
       const [editUserName, setEditUserName] = useState("");
       const [editUserRole, setEditUserRole] = useState("");
@@ -382,8 +383,11 @@
       const [assignPerson, setAssignPerson] = useState("");
       const [assignRoom, setAssignRoom] = useState("");
       const [assignDuration, setAssignDuration] = useState("day");
+      const [shiftFilter, setShiftFilter] = useState("all"); // all | 1st | 2nd
+      const [assignSort, setAssignSort] = useState("shift"); // shift | room | name
       // Login error
       const [loginError, setLoginError] = useState("");
+      const [userSortBy, setUserSortBy] = useState("role"); // role | name | date
 
       const saveUsers = (updated) => {
         setUsers(updated);
@@ -1648,9 +1652,10 @@
           const name = newUserName.trim();
           if (!name) { alert("Enter a name"); return; }
           if (users.find(u => u.name.toLowerCase() === name.toLowerCase())) { alert("A user with that name already exists!"); return; }
-          saveUsers([...users, { id: genId(), name, role: newUserRole, createdAt: new Date().toISOString(), createdBy: userName }]);
-          setNewUserName(""); setNewUserRole("room");
-          setSuccessMsg(`User "${name}" created successfully!`);
+          const shift = newUserRole === "admin" ? null : newUserShift;
+          saveUsers([...users, { id: genId(), name, role: newUserRole, shift, createdAt: new Date().toISOString(), createdBy: userName }]);
+          setNewUserName(""); setNewUserRole("room"); setNewUserShift("1st");
+          setSuccessMsg(`User "${name}" created!`);
           setTimeout(() => setSuccessMsg(""), 3000);
         };
 
@@ -1703,19 +1708,23 @@
                 <div style={{ background:'rgba(255,68,68,0.06)', border:'1px solid rgba(255,68,68,0.2)', borderRadius:'10px', padding:'1.25rem', marginBottom:'1.5rem' }}>
                   <div style={{ color:'#ff4444', fontWeight:800, fontSize:'0.9rem', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:'1rem' }}>➕ Create New User</div>
                   <div style={{ display:'flex', gap:'0.75rem', flexWrap:'wrap', alignItems:'flex-end' }}>
-                    <div style={{ flex:'1 1 220px' }}>
+
+                    {/* Name */}
+                    <div style={{ flex:'1 1 200px' }}>
                       <div style={{ color:'#8b9dc3', fontSize:'0.75rem', fontWeight:700, marginBottom:'0.4rem', textTransform:'uppercase' }}>Name</div>
                       <input value={newUserName} onChange={e => setNewUserName(e.target.value)}
                         onKeyDown={e => e.key === "Enter" && handleCreateUser()}
                         placeholder="Enter full name..."
                         style={{ width:'100%', padding:'0.75rem', background:'#1e293b', border:'1px solid #334155', borderRadius:'8px', color:'#e2e8f0', fontSize:'0.95rem' }} />
                     </div>
-                    <div style={{ flex:'1 1 200px' }}>
+
+                    {/* Role */}
+                    <div style={{ flex:'1 1 160px' }}>
                       <div style={{ color:'#8b9dc3', fontSize:'0.75rem', fontWeight:700, marginBottom:'0.4rem', textTransform:'uppercase' }}>Role</div>
-                      <div style={{ display:'flex', gap:'0.5rem' }}>
+                      <div style={{ display:'flex', gap:'0.4rem' }}>
                         {["room","warehouse","supervisor","admin"].map(r => (
                           <button key={r} onClick={() => setNewUserRole(r)}
-                            style={{ flex:1, padding:'0.6rem 0.3rem', borderRadius:'6px', border: newUserRole===r ? `2px solid ${roleColors[r]}` : '2px solid #334155',
+                            style={{ flex:1, padding:'0.6rem 0.2rem', borderRadius:'6px', border: newUserRole===r ? `2px solid ${roleColors[r]}` : '2px solid #334155',
                               background: newUserRole===r ? `${roleColors[r]}22` : '#1e293b',
                               color: newUserRole===r ? roleColors[r] : '#64748b',
                               fontWeight:900, cursor:'pointer', fontSize:'0.7rem', textTransform:'uppercase' }}>
@@ -1723,10 +1732,32 @@
                           </button>
                         ))}
                       </div>
-                      <div style={{ color: roleColors[newUserRole], fontSize:'0.75rem', marginTop:'0.3rem', fontWeight:700, textTransform:'uppercase' }}>
+                      <div style={{ color: roleColors[newUserRole], fontSize:'0.72rem', marginTop:'0.3rem', fontWeight:700, textTransform:'uppercase' }}>
                         {roleEmojis[newUserRole]} {newUserRole}
                       </div>
                     </div>
+
+                    {/* Shift (hidden for admin role) */}
+                    {newUserRole !== "admin" && (
+                      <div style={{ flex:'1 1 140px' }}>
+                        <div style={{ color:'#8b9dc3', fontSize:'0.75rem', fontWeight:700, marginBottom:'0.4rem', textTransform:'uppercase' }}>Shift</div>
+                        <div style={{ display:'flex', gap:'0.4rem' }}>
+                          {[{key:"1st",color:"#00ff88"},{key:"2nd",color:"#a78bfa"}].map(s => (
+                            <button key={s.key} onClick={() => setNewUserShift(s.key)}
+                              style={{ flex:1, padding:'0.65rem 0.4rem', borderRadius:'6px', fontWeight:900, fontSize:'0.8rem', cursor:'pointer', textTransform:'uppercase',
+                                border: newUserShift===s.key ? `2px solid ${s.color}` : '2px solid #334155',
+                                background: newUserShift===s.key ? `${s.color}22` : '#1e293b',
+                                color: newUserShift===s.key ? s.color : '#64748b' }}>
+                              {s.key}
+                            </button>
+                          ))}
+                        </div>
+                        <div style={{ color: newUserShift==="1st" ? '#00ff88' : '#a78bfa', fontSize:'0.72rem', marginTop:'0.3rem', fontWeight:700 }}>
+                          {newUserShift} Shift
+                        </div>
+                      </div>
+                    )}
+
                     <button onClick={handleCreateUser}
                       style={{ padding:'0.75rem 1.5rem', background:'linear-gradient(135deg, #ff4444 0%, #cc3333 100%)', border:'none', borderRadius:'8px', color:'#fff', fontWeight:900, cursor:'pointer', textTransform:'uppercase', whiteSpace:'nowrap' }}>
                       ➕ Add User
@@ -1735,20 +1766,45 @@
                 </div>
 
                 {/* Users List */}
-                <div style={{ color:'#8b9dc3', fontSize:'0.8rem', fontWeight:700, marginBottom:'0.75rem', textTransform:'uppercase' }}>
-                  Registered Users ({users.length})
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'0.75rem', flexWrap:'wrap', gap:'0.5rem' }}>
+                  <div style={{ color:'#8b9dc3', fontSize:'0.8rem', fontWeight:700, textTransform:'uppercase' }}>
+                    Registered Users ({users.length})
+                  </div>
+                  <div style={{ display:'flex', gap:'0.4rem', alignItems:'center' }}>
+                    <span style={{ color:'#64748b', fontSize:'0.72rem', textTransform:'uppercase', marginRight:'0.25rem' }}>Sort:</span>
+                    {[{key:"role",label:"Role"},{key:"shift",label:"Shift"},{key:"name",label:"Name"},{key:"date",label:"Date Added"}].map(s => (
+                      <button key={s.key} onClick={() => setUserSortBy(s.key)}
+                        style={{ padding:'0.3rem 0.7rem', borderRadius:'6px', fontSize:'0.72rem', fontWeight:900, cursor:'pointer', textTransform:'uppercase',
+                          background: userSortBy===s.key ? 'rgba(255,68,68,0.15)' : 'transparent',
+                          border: userSortBy===s.key ? '1px solid #ff4444' : '1px solid #334155',
+                          color: userSortBy===s.key ? '#ff4444' : '#64748b' }}>
+                        {s.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
                 {users.length === 0 ? (
                   <div style={{ padding:'2rem', textAlign:'center', color:'#64748b' }}>No users yet. Create one above.</div>
                 ) : (
                   <div style={{ display:'flex', flexDirection:'column', gap:'0.5rem' }}>
-                    {users.map(u => (
-                      <div key={u.id} style={{ padding:'1rem', background:'rgba(255,68,68,0.04)', border:'1px solid rgba(255,68,68,0.12)', borderRadius:'10px', display:'flex', alignItems:'center', gap:'1rem', flexWrap:'wrap' }}>
+                    {[...users].sort((a,b) => {
+                      if (userSortBy === "role") {
+                        const order = { admin:0, supervisor:1, warehouse:2, room:3 };
+                        return (order[a.role] ?? 9) - (order[b.role] ?? 9) || a.name.localeCompare(b.name);
+                      }
+                      if (userSortBy === "shift") {
+                        const sa = a.shift || "zzz", sb = b.shift || "zzz";
+                        return sa.localeCompare(sb) || a.name.localeCompare(b.name);
+                      }
+                      if (userSortBy === "name") return a.name.localeCompare(b.name);
+                      return new Date(a.createdAt) - new Date(b.createdAt);
+                    }).map(u => (
+                      <div key={u.id} style={{ padding:'0.9rem 1rem', background:'rgba(255,68,68,0.04)', border:'1px solid rgba(255,68,68,0.12)', borderRadius:'10px', display:'flex', alignItems:'center', gap:'1rem', flexWrap:'wrap' }}>
                         {editUserId === u.id ? (
                           <>
                             <input value={editUserName} onChange={e => setEditUserName(e.target.value)}
                               style={{ flex:'1 1 180px', padding:'0.5rem', background:'#1e293b', border:'1px solid #334155', borderRadius:'6px', color:'#e2e8f0', fontSize:'0.9rem' }} />
-                            <div style={{ display:'flex', gap:'0.4rem' }}>
+                            <div style={{ display:'flex', gap:'0.4rem', flexWrap:'wrap' }}>
                               {["room","warehouse","supervisor","admin"].map(r => (
                                 <button key={r} onClick={() => setEditUserRole(r)}
                                   style={{ padding:'0.4rem 0.6rem', borderRadius:'6px', border: editUserRole===r ? `2px solid ${roleColors[r]}` : '2px solid #334155',
@@ -1770,10 +1826,16 @@
                           <>
                             <div style={{ flex:'1 1 200px' }}>
                               <div style={{ fontWeight:900, color:'#e2e8f0', fontSize:'1rem' }}>{u.name}</div>
-                              <div style={{ fontSize:'0.8rem', marginTop:'0.2rem' }}>
+                              <div style={{ fontSize:'0.8rem', marginTop:'0.25rem', display:'flex', gap:'0.75rem', flexWrap:'wrap', alignItems:'center' }}>
                                 <span style={{ color: roleColors[u.role], fontWeight:700 }}>{roleEmojis[u.role]} {u.role}</span>
-                                <span style={{ color:'#4b5563', marginLeft:'0.75rem' }}>Added {new Date(u.createdAt).toLocaleDateString()}</span>
-                                {u.createdBy !== "system" && <span style={{ color:'#4b5563' }}> by {u.createdBy}</span>}
+                                {u.shift && (
+                                  <span style={{ padding:'0.15rem 0.5rem', borderRadius:'12px', fontWeight:900, fontSize:'0.72rem', textTransform:'uppercase',
+                                    background: u.shift==="1st" ? 'rgba(0,255,136,0.12)' : 'rgba(167,139,250,0.12)',
+                                    color: u.shift==="1st" ? '#00ff88' : '#a78bfa', border: `1px solid ${u.shift==="1st" ? '#00ff8844' : '#a78bfa44'}` }}>
+                                    {u.shift} Shift
+                                  </span>
+                                )}
+                                <span style={{ color:'#4b5563' }}>Added {new Date(u.createdAt).toLocaleDateString()}</span>
                               </div>
                             </div>
                             <div style={{ display:'flex', gap:'0.5rem' }}>
@@ -1883,7 +1945,7 @@
         );
       }
 
-      // ASSIGNMENTS (Supervisor + Admin: assign people to rooms)
+      // ASSIGNMENTS (Supervisor + Admin: assign people to rooms + shifts)
       if (screen === "assignments") {
         if (!canSupervisor) {
           return (
@@ -1896,194 +1958,264 @@
           );
         }
 
-        const durationOptions = [
-          { key:"day", label:"📅 Day", desc:"Expires tomorrow" },
-          { key:"week", label:"📅 Week", desc:"Expires in 7 days" },
-          { key:"month", label:"📅 Month", desc:"Expires in 1 month" },
-          { key:"year", label:"📅 Year", desc:"Expires in 1 year" }
+        const SHIFTS = [
+          { key:"1st", label:"1st Shift", color:"#00ff88", bg:"rgba(0,255,136,0.12)" },
+          { key:"2nd", label:"2nd Shift", color:"#a78bfa", bg:"rgba(167,139,250,0.12)" }
         ];
+        const shiftMap = { "1st": SHIFTS[0], "2nd": SHIFTS[1] };
+
+        const durationOptions = [
+          { key:"day",   label:"Day",   desc:"Expires tomorrow",   color:"#38bdf8" },
+          { key:"week",  label:"Week",  desc:"Expires in 7 days",  color:"#a78bfa" },
+          { key:"month", label:"Month", desc:"Expires in 1 month", color:"#fbbf24" },
+          { key:"year",  label:"Year",  desc:"Expires in 1 year",  color:"#00ff88" }
+        ];
+        const durationColor = { day:'#38bdf8', week:'#a78bfa', month:'#fbbf24', year:'#00ff88' };
+        const roleColors2 = { room:'#8b9dc3', warehouse:'#fbbf24', supervisor:'#a78bfa', admin:'#ff4444' };
 
         const handleAssign = () => {
           if (!assignPerson) { alert("Select a person"); return; }
-          if (!assignRoom) { alert("Select a room"); return; }
+          if (!assignRoom)   { alert("Select a room");   return; }
           const person = users.find(u => u.id === assignPerson);
           if (!person) return;
-          // Check if already assigned to this room
+          const personShift = person.shift || "1st"; // shift comes from user profile
           const existing = activeAssignments.find(a => a.userId === assignPerson && a.room === assignRoom);
-          if (existing) {
-            if (!confirm(`${person.name} is already assigned to ${assignRoom}. Replace the assignment?`)) return;
-            saveAssignments(assignments.filter(a => !(a.userId === assignPerson && a.room === assignRoom)));
-          }
-          const newAssignment = {
+          if (existing && !confirm(`${person.name} is already assigned to ${assignRoom}. Replace?`)) return;
+          const newA = {
             id: genId(), userId: person.id, userName: person.name, userRole: person.role,
-            room: assignRoom, duration: assignDuration,
+            room: assignRoom, shift: personShift, duration: assignDuration,
             startDate: new Date().toISOString(), expiresAt: expiryDate(assignDuration),
             assignedBy: userName, assignedAt: new Date().toISOString()
           };
-          saveAssignments([...assignments.filter(a => !(a.userId === assignPerson && a.room === assignRoom)), newAssignment]);
-          setSuccessMsg(`${person.name} assigned to ${assignRoom} for 1 ${assignDuration}!`);
+          saveAssignments([...assignments.filter(a => !(a.userId === assignPerson && a.room === assignRoom)), newA]);
+          setSuccessMsg(`${person.name} → ${assignRoom} · ${personShift} Shift · ${assignDuration}`);
           setTimeout(() => setSuccessMsg(""), 3000);
           setAssignPerson(""); setAssignRoom("");
         };
 
-        const removeAssignment = (id, name, room) => {
+        const removeAssignment = (id, name, room, shift) => {
           if (!confirm(`Remove ${name}'s assignment from ${room}?`)) return;
           saveAssignments(assignments.filter(a => a.id !== id));
         };
 
-        const durationColor = { day:'#38bdf8', week:'#a78bfa', month:'#fbbf24', year:'#00ff88' };
-        const roleColors2 = { room:'#8b9dc3', warehouse:'#fbbf24', supervisor:'#a78bfa', admin:'#ff4444' };
+        // Filter by shift then sort
+        const visibleAssignments = activeAssignments
+          .filter(a => shiftFilter === "all" ? true : a.shift === shiftFilter)
+          .sort((a, b) => {
+            if (assignSort === "shift") return (a.shift||"").localeCompare(b.shift||"") || a.room.localeCompare(b.room);
+            if (assignSort === "room")  return a.room.localeCompare(b.room) || (a.shift||"").localeCompare(b.shift||"");
+            return a.userName.localeCompare(b.userName);
+          });
 
-        // Group active assignments by room
-        const byRoom = {};
-        activeAssignments.forEach(a => {
-          if (!byRoom[a.room]) byRoom[a.room] = [];
-          byRoom[a.room].push(a);
-        });
+        // Stats
+        const first  = activeAssignments.filter(a => a.shift === "1st").length;
+        const second = activeAssignments.filter(a => a.shift === "2nd").length;
+        const roomsUsed = new Set(visibleAssignments.map(a => a.room)).size;
 
         return (
           <div style={{ minHeight:'100vh', ...bg, padding:'1.5rem', position:'relative', overflow:'hidden' }}>
             <div style={gridOverlay} />
-            <div style={{ maxWidth:'1400px', margin:'0 auto', position:'relative', zIndex:1 }}>
-              <TopBar title="Room Assignments" subtitle={`👤 ${userName} (${userRole}) • ${connectionMode === "supabase" ? "Supabase ready" : "Local + kiosk mode"}`} />
+            <div style={{ maxWidth:'1500px', margin:'0 auto', position:'relative', zIndex:1 }}>
+              <TopBar title="Assignments" subtitle={`👤 ${userName} (${userRole}) • ${connectionMode === "supabase" ? "Supabase ready" : "Local + kiosk mode"}`} />
 
               {successMsg && (
                 <div style={{ padding:'1rem', background:'rgba(0,255,136,0.15)', border:'1px solid #00ff88', borderRadius:'10px', color:'#00ff88', marginBottom:'1rem', fontWeight:900 }}>✅ {successMsg}</div>
               )}
 
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(380px, 1fr))', gap:'1.5rem', marginBottom:'1.5rem' }}>
+              {/* ─── TOP ROW: form + stats ─── */}
+              <div style={{ display:'grid', gridTemplateColumns:'1fr auto', gap:'1.5rem', marginBottom:'1.5rem', alignItems:'start' }}>
 
                 {/* Assign Form */}
                 <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(56,189,248,0.3)', borderRadius:'14px', padding:'1.5rem' }}>
-                  <div style={{ color:'#38bdf8', fontWeight:900, fontSize:'1.2rem', textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:'1.25rem' }}>➕ Assign Person to Room</div>
+                  <div style={{ color:'#38bdf8', fontWeight:900, fontSize:'1.15rem', textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:'1.25rem' }}>➕ New Assignment</div>
 
-                  <div style={{ marginBottom:'1rem' }}>
-                    <div style={{ color:'#8b9dc3', fontSize:'0.78rem', fontWeight:700, textTransform:'uppercase', marginBottom:'0.5rem' }}>Select Person</div>
-                    <select value={assignPerson} onChange={e => setAssignPerson(e.target.value)}
-                      style={{ width:'100%', padding:'0.75rem', background:'#1e293b', border:'1px solid #334155', borderRadius:'8px', color:'#e2e8f0', fontSize:'0.95rem' }}>
-                      <option value="">-- Choose person --</option>
-                      {users.filter(u => u.role !== 'admin').map(u => (
-                        <option key={u.id} value={u.id}>{u.name} ({u.role})</option>
-                      ))}
-                    </select>
+                  <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(200px, 1fr))', gap:'1rem', marginBottom:'1.25rem' }}>
+
+                    {/* Person */}
+                    <div>
+                      <div style={{ color:'#8b9dc3', fontSize:'0.75rem', fontWeight:700, textTransform:'uppercase', marginBottom:'0.4rem' }}>Person</div>
+                      <select value={assignPerson} onChange={e => setAssignPerson(e.target.value)}
+                        style={{ width:'100%', padding:'0.75rem', background:'#1e293b', border:'1px solid #334155', borderRadius:'8px', color: assignPerson ? '#e2e8f0' : '#64748b', fontSize:'0.95rem' }}>
+                        <option value="">— Select person —</option>
+                        {users.filter(u => u.role !== 'admin').sort((a,b) => a.name.localeCompare(b.name)).map(u => (
+                          <option key={u.id} value={u.id}>{u.name} ({u.role})</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Room */}
+                    <div>
+                      <div style={{ color:'#8b9dc3', fontSize:'0.75rem', fontWeight:700, textTransform:'uppercase', marginBottom:'0.4rem' }}>Room</div>
+                      <select value={assignRoom} onChange={e => setAssignRoom(e.target.value)}
+                        style={{ width:'100%', padding:'0.75rem', background:'#1e293b', border:'1px solid #334155', borderRadius:'8px', color: assignRoom ? '#e2e8f0' : '#64748b', fontSize:'0.95rem' }}>
+                        <option value="">— Select room —</option>
+                        {rooms.map(r => <option key={r} value={r}>{r}</option>)}
+                      </select>
+                    </div>
                   </div>
 
-                  <div style={{ marginBottom:'1rem' }}>
-                    <div style={{ color:'#8b9dc3', fontSize:'0.78rem', fontWeight:700, textTransform:'uppercase', marginBottom:'0.5rem' }}>Select Room</div>
-                    <select value={assignRoom} onChange={e => setAssignRoom(e.target.value)}
-                      style={{ width:'100%', padding:'0.75rem', background:'#1e293b', border:'1px solid #334155', borderRadius:'8px', color:'#e2e8f0', fontSize:'0.95rem' }}>
-                      <option value="">-- Choose room --</option>
-                      {rooms.map(r => (
-                        <option key={r} value={r}>{r}</option>
-                      ))}
-                    </select>
-                  </div>
+                  {/* Shift auto-detected from user profile */}
+                  {assignPerson && (() => {
+                    const p = users.find(u => u.id === assignPerson);
+                    const shift = p?.shift;
+                    if (!shift) return null;
+                    const shiftColor = shift === "1st" ? "#00ff88" : "#a78bfa";
+                    return (
+                      <div style={{ marginBottom:'1.25rem', padding:'0.75rem 1rem', background:`${shiftColor}11`, border:`1px solid ${shiftColor}44`, borderRadius:'8px', display:'flex', alignItems:'center', gap:'0.6rem' }}>
+                        <span style={{ color:shiftColor, fontWeight:900, fontSize:'0.85rem' }}>🔄 Shift auto-assigned:</span>
+                        <span style={{ padding:'0.2rem 0.75rem', borderRadius:'20px', background:`${shiftColor}22`, color:shiftColor, fontWeight:900, fontSize:'0.82rem', textTransform:'uppercase' }}>{shift} Shift</span>
+                        <span style={{ color:'#64748b', fontSize:'0.78rem', marginLeft:'0.25rem' }}>(set on user profile)</span>
+                      </div>
+                    );
+                  })()}
 
+                  {/* Duration */}
                   <div style={{ marginBottom:'1.25rem' }}>
-                    <div style={{ color:'#8b9dc3', fontSize:'0.78rem', fontWeight:700, textTransform:'uppercase', marginBottom:'0.5rem' }}>Duration</div>
+                    <div style={{ color:'#8b9dc3', fontSize:'0.75rem', fontWeight:700, textTransform:'uppercase', marginBottom:'0.6rem' }}>Duration</div>
                     <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1fr', gap:'0.5rem' }}>
                       {durationOptions.map(d => (
                         <button key={d.key} onClick={() => setAssignDuration(d.key)}
-                          style={{ padding:'0.75rem 0.4rem', borderRadius:'8px', textAlign:'center',
-                            border: assignDuration===d.key ? `2px solid ${durationColor[d.key]}` : '2px solid #334155',
-                            background: assignDuration===d.key ? `${durationColor[d.key]}22` : '#1e293b',
-                            color: assignDuration===d.key ? durationColor[d.key] : '#64748b',
+                          style={{ padding:'0.7rem 0.3rem', borderRadius:'8px', textAlign:'center',
+                            border: assignDuration===d.key ? `2px solid ${d.color}` : '2px solid #334155',
+                            background: assignDuration===d.key ? `${d.color}22` : '#1e293b',
+                            color: assignDuration===d.key ? d.color : '#64748b',
                             fontWeight:900, cursor:'pointer', fontSize:'0.8rem', textTransform:'uppercase' }}>
-                          {d.key.charAt(0).toUpperCase() + d.key.slice(1)}
+                          {d.label}
                         </button>
                       ))}
                     </div>
                     <div style={{ marginTop:'0.5rem', color:'#64748b', fontSize:'0.78rem' }}>
-                      {durationOptions.find(d => d.key === assignDuration)?.desc}
-                      {' • '}Expires: {new Date(expiryDate(assignDuration)).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}
+                      {durationOptions.find(d=>d.key===assignDuration)?.desc} · Expires {new Date(expiryDate(assignDuration)).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}
                     </div>
                   </div>
 
                   <button onClick={handleAssign}
                     style={{ width:'100%', padding:'1rem', background:'linear-gradient(135deg,#38bdf8,#0ea5e9)', border:'none', borderRadius:'10px', color:'#fff', fontWeight:900, cursor:'pointer', textTransform:'uppercase', fontSize:'1rem', letterSpacing:'0.05em' }}>
-                    ➕ Assign to Room
+                    ➕ Create Assignment
                   </button>
                 </div>
 
-                {/* Stats */}
-                <div style={{ display:'flex', flexDirection:'column', gap:'1rem' }}>
-                  <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(56,189,248,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
-                    <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>Active Assignments</div>
-                    <div style={{ color:'#38bdf8', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{activeAssignments.length}</div>
+                {/* Stats column */}
+                <div style={{ display:'flex', flexDirection:'column', gap:'0.75rem', minWidth:'200px' }}>
+                  <div style={{ background:'rgba(15,23,42,0.85)', border:`1px solid ${SHIFTS[0].color}44`, borderRadius:'14px', padding:'1.25rem' }}>
+                    <div style={{ color:'#8b9dc3', fontSize:'0.75rem', textTransform:'uppercase', marginBottom:'0.4rem' }}>1st Shift</div>
+                    <div style={{ color: SHIFTS[0].color, fontSize:'2.2rem', fontWeight:900 }}>{first}</div>
+                    <div style={{ color:'#64748b', fontSize:'0.75rem' }}>assigned</div>
                   </div>
-                  <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(56,189,248,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
-                    <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>Rooms with Assignments</div>
-                    <div style={{ color:'#38bdf8', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{Object.keys(byRoom).length}</div>
+                  <div style={{ background:'rgba(15,23,42,0.85)', border:`1px solid ${SHIFTS[1].color}44`, borderRadius:'14px', padding:'1.25rem' }}>
+                    <div style={{ color:'#8b9dc3', fontSize:'0.75rem', textTransform:'uppercase', marginBottom:'0.4rem' }}>2nd Shift</div>
+                    <div style={{ color: SHIFTS[1].color, fontSize:'2.2rem', fontWeight:900 }}>{second}</div>
+                    <div style={{ color:'#64748b', fontSize:'0.75rem' }}>assigned</div>
                   </div>
-                  <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(56,189,248,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
-                    <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>Total Users</div>
-                    <div style={{ color:'#38bdf8', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{users.length}</div>
+                  <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(56,189,248,0.2)', borderRadius:'14px', padding:'1.25rem' }}>
+                    <div style={{ color:'#8b9dc3', fontSize:'0.75rem', textTransform:'uppercase', marginBottom:'0.4rem' }}>Rooms Covered</div>
+                    <div style={{ color:'#38bdf8', fontSize:'2.2rem', fontWeight:900 }}>{roomsUsed}</div>
+                    <div style={{ color:'#64748b', fontSize:'0.75rem' }}>active filter</div>
                   </div>
                 </div>
               </div>
 
-              {/* Active Assignments Table */}
+              {/* ─── ACTIVE ASSIGNMENTS TABLE ─── */}
               <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(56,189,248,0.2)', borderRadius:'14px', overflow:'hidden' }}>
-                <div style={{ padding:'1.2rem 1.5rem', background:'linear-gradient(135deg,rgba(56,189,248,0.15) 0%,rgba(56,189,248,0.04) 100%)', borderBottom:'2px solid #38bdf8' }}>
+
+                {/* Table header + shift filter + sort */}
+                <div style={{ padding:'1.1rem 1.5rem', background:'linear-gradient(135deg,rgba(56,189,248,0.12) 0%,rgba(56,189,248,0.03) 100%)', borderBottom:'2px solid #38bdf8', display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'0.75rem' }}>
                   <div style={{ color:'#38bdf8', fontWeight:900, fontSize:'1.1rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>
-                    📋 All Active Assignments ({activeAssignments.length})
+                    📋 Active Assignments ({visibleAssignments.length})
+                  </div>
+                  <div style={{ display:'flex', gap:'0.75rem', flexWrap:'wrap', alignItems:'center' }}>
+                    {/* Shift filter */}
+                    <div style={{ display:'flex', gap:'0.4rem', alignItems:'center' }}>
+                      <span style={{ color:'#64748b', fontSize:'0.72rem', textTransform:'uppercase' }}>Filter:</span>
+                      {[{key:"all",label:"All",color:"#38bdf8"},{key:"1st",label:"1st Shift",color:SHIFTS[0].color},{key:"2nd",label:"2nd Shift",color:SHIFTS[1].color}].map(f => (
+                        <button key={f.key} onClick={() => setShiftFilter(f.key)}
+                          style={{ padding:'0.35rem 0.75rem', borderRadius:'8px', fontWeight:900, fontSize:'0.78rem', cursor:'pointer', textTransform:'uppercase',
+                            background: shiftFilter===f.key ? `${f.color}22` : 'transparent',
+                            border: shiftFilter===f.key ? `2px solid ${f.color}` : '2px solid #334155',
+                            color: shiftFilter===f.key ? f.color : '#64748b' }}>
+                          {f.label}
+                        </button>
+                      ))}
+                    </div>
+                    {/* Sort */}
+                    <div style={{ display:'flex', gap:'0.4rem', alignItems:'center' }}>
+                      <span style={{ color:'#64748b', fontSize:'0.72rem', textTransform:'uppercase' }}>Sort:</span>
+                      {[{key:"shift",label:"Shift"},{key:"room",label:"Room"},{key:"name",label:"Name"}].map(s => (
+                        <button key={s.key} onClick={() => setAssignSort(s.key)}
+                          style={{ padding:'0.35rem 0.75rem', borderRadius:'8px', fontWeight:900, fontSize:'0.78rem', cursor:'pointer', textTransform:'uppercase',
+                            background: assignSort===s.key ? 'rgba(56,189,248,0.15)' : 'transparent',
+                            border: assignSort===s.key ? '2px solid #38bdf8' : '2px solid #334155',
+                            color: assignSort===s.key ? '#38bdf8' : '#64748b' }}>
+                          {s.label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
 
-                {activeAssignments.length === 0 ? (
+                {visibleAssignments.length === 0 ? (
                   <div style={{ padding:'4rem', textAlign:'center', color:'#64748b' }}>
                     <div style={{ fontSize:'3rem', marginBottom:'1rem' }}>📋</div>
-                    <h3 style={{ margin:'0 0 0.5rem 0' }}>No active assignments</h3>
-                    <p style={{ margin:0, fontSize:'0.9rem' }}>Use the form above to assign people to rooms</p>
+                    <h3 style={{ margin:'0 0 0.5rem 0' }}>No assignments{shiftFilter !== "all" ? ` for ${shiftFilter} Shift` : ""}</h3>
+                    <p style={{ margin:0, fontSize:'0.9rem' }}>Use the form above to create one</p>
                   </div>
                 ) : (
                   <div style={{ overflowX:'auto' }}>
-                    <table style={{ width:'100%', borderCollapse:'collapse', minWidth:'750px' }}>
+                    <table style={{ width:'100%', borderCollapse:'collapse', minWidth:'800px' }}>
                       <thead>
-                        <tr style={{ background:'rgba(56,189,248,0.06)' }}>
-                          {["Person","Role","Room","Duration","Assigned By","Expires","Actions"].map(h => (
+                        <tr style={{ background:'rgba(56,189,248,0.05)' }}>
+                          {["Person","Role","Shift","Room","Duration","Assigned By","Expires",""].map(h => (
                             <th key={h} style={headerStyle}>{h}</th>
                           ))}
                         </tr>
                       </thead>
                       <tbody>
-                        {activeAssignments.sort((a,b) => a.room.localeCompare(b.room)).map((a, idx) => {
-                          const expires = new Date(a.expiresAt);
-                          const daysLeft = Math.ceil((expires - new Date()) / (1000*60*60*24));
-                          const expiryColor = daysLeft <= 1 ? '#ff4444' : daysLeft <= 3 ? '#fbbf24' : '#00ff88';
-                          return (
-                            <tr key={a.id} style={{ borderBottom: idx < activeAssignments.length-1 ? '1px solid #334155' : 'none', background: idx%2===0 ? 'transparent' : 'rgba(56,189,248,0.02)' }}>
-                              <td style={cellStyle}><div style={{ fontWeight:900 }}>{a.userName}</div></td>
-                              <td style={cellStyle}><span style={{ color: roleColors2[a.userRole], fontWeight:700, textTransform:'uppercase', fontSize:'0.85rem' }}>{a.userRole}</span></td>
-                              <td style={cellStyle}><div style={{ display:'flex', alignItems:'center', gap:'0.4rem' }}><MapPin size={14} color="#38bdf8" />{a.room}</div></td>
-                              <td style={cellStyle}><span style={{ padding:'0.25rem 0.6rem', borderRadius:'6px', background:`${durationColor[a.duration]}22`, color:durationColor[a.duration], fontWeight:900, fontSize:'0.8rem', textTransform:'uppercase' }}>{a.duration}</span></td>
-                              <td style={cellStyle}><div style={{ color:'#8b9dc3', fontSize:'0.85rem' }}>{a.assignedBy}</div></td>
-                              <td style={cellStyle}>
-                                <div style={{ color:expiryColor, fontWeight:700, fontSize:'0.85rem' }}>
-                                  {expires.toLocaleDateString('en-US',{month:'short',day:'numeric'})}
-                                </div>
-                                <div style={{ color: expiryColor, fontSize:'0.75rem' }}>
-                                  {daysLeft <= 0 ? 'Expired' : daysLeft === 1 ? 'Tomorrow' : `${daysLeft} days`}
-                                </div>
-                              </td>
-                              <td style={cellStyle}>
-                                <button onClick={() => removeAssignment(a.id, a.userName, a.room)}
-                                  style={{ padding:'0.4rem 0.8rem', background:'rgba(255,68,68,0.1)', border:'1px solid #ff4444', borderRadius:'6px', color:'#ff4444', fontWeight:900, cursor:'pointer', fontSize:'0.8rem' }}>
-                                  Remove
-                                </button>
-                              </td>
-                            </tr>
-                          );
-                        })}
+                        {visibleAssignments.map((a, idx) => {
+                            const expires  = new Date(a.expiresAt);
+                            const daysLeft = Math.ceil((expires - new Date()) / (1000*60*60*24));
+                            const expColor = daysLeft <= 1 ? '#ff4444' : daysLeft <= 3 ? '#fbbf24' : '#8b9dc3';
+                            const shift    = shiftMap[a.shift] || SHIFTS[0];
+                            return (
+                              <tr key={a.id} style={{ borderBottom: idx < visibleAssignments.length-1 ? '1px solid #1e293b' : 'none', background: idx%2===0 ? 'transparent' : 'rgba(56,189,248,0.015)' }}>
+                                <td style={cellStyle}><div style={{ fontWeight:900, color:'#e2e8f0' }}>{a.userName}</div></td>
+                                <td style={cellStyle}><span style={{ color:roleColors2[a.userRole], fontWeight:700, fontSize:'0.8rem', textTransform:'uppercase' }}>{a.userRole}</span></td>
+                                <td style={cellStyle}>
+                                  <span style={{ padding:'0.3rem 0.75rem', borderRadius:'20px', background:shift.bg, color:shift.color, fontWeight:900, fontSize:'0.82rem', textTransform:'uppercase', letterSpacing:'0.04em', whiteSpace:'nowrap' }}>
+                                    {shift.label}
+                                  </span>
+                                </td>
+                                <td style={cellStyle}><div style={{ display:'flex', alignItems:'center', gap:'0.4rem' }}><MapPin size={13} color="#38bdf8" />{a.room}</div></td>
+                                <td style={cellStyle}>
+                                  <span style={{ padding:'0.25rem 0.6rem', borderRadius:'6px', background:`${durationColor[a.duration]}22`, color:durationColor[a.duration], fontWeight:900, fontSize:'0.78rem', textTransform:'uppercase' }}>
+                                    {a.duration}
+                                  </span>
+                                </td>
+                                <td style={cellStyle}><div style={{ color:'#8b9dc3', fontSize:'0.82rem' }}>{a.assignedBy}</div></td>
+                                <td style={cellStyle}>
+                                  <div style={{ color:expColor, fontWeight:700, fontSize:'0.82rem' }}>{expires.toLocaleDateString('en-US',{month:'short',day:'numeric'})}</div>
+                                  <div style={{ color:expColor, fontSize:'0.72rem', opacity:0.85 }}>{daysLeft <= 0 ? 'Expired' : daysLeft === 1 ? 'Tomorrow' : `${daysLeft}d`}</div>
+                                </td>
+                                <td style={cellStyle}>
+                                  <button onClick={() => removeAssignment(a.id, a.userName, a.room, a.shift)}
+                                    style={{ padding:'0.4rem 0.75rem', background:'rgba(255,68,68,0.1)', border:'1px solid #ff444455', borderRadius:'6px', color:'#ff4444', fontWeight:900, cursor:'pointer', fontSize:'0.78rem' }}>
+                                    Remove
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })
+                        }
                       </tbody>
                     </table>
                   </div>
                 )}
               </div>
+
             </div>
           </div>
         );
       }
+
 
 
       // PICKLIST (Main operational screen)
