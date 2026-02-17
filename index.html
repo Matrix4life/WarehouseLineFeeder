@@ -160,7 +160,7 @@
       ROOMS: ["Bistro", "Salad", "Apple", "MasterPack", "Boxes", "Film/Labels", "Other", "******", "Loading", "Putaway" ],
       // 🎨 ROOM COLORS - Edit these to change room header colors!
       ROOM_COLORS: {
-       "Bistro": "#38bdf8",         // Blue
+        "Bistro": "#38bdf8",         // Blue
   "Salad": "#00ff88",          // Green
   "Apple": "#ff4444",          // Red
   "MasterPack": "#a78bfa",     // Purple
@@ -496,6 +496,14 @@
       const [onlyActive, setOnlyActive] = useState(true);
       const [search, setSearch] = useState("");
       const [sortMode, setSortMode] = useState("priority_age"); // priority_age|age|room|item
+      const [selectedRooms, setSelectedRooms] = useState(() => {
+        try {
+          const saved = localStorage.getItem("wd_selectedRooms");
+          return saved ? JSON.parse(saved) : CONFIG.ROOMS;
+        } catch {
+          return CONFIG.ROOMS;
+        }
+      });
       const [timeFilter, setTimeFilter] = useState("today"); // for dashboard analytics
       const [adminTimeFilter, setAdminTimeFilter] = useState("day"); // for admin panel
 
@@ -2384,6 +2392,25 @@
 
       // PICKLIST (Main operational screen)
       if (screen === "picklist") {
+        // Room filter handlers
+        const toggleRoom = (room) => {
+          const updated = selectedRooms.includes(room)
+            ? selectedRooms.filter(r => r !== room)
+            : [...selectedRooms, room];
+          setSelectedRooms(updated);
+          localStorage.setItem("wd_selectedRooms", JSON.stringify(updated));
+        };
+
+        const selectAllRooms = () => {
+          setSelectedRooms(CONFIG.ROOMS);
+          localStorage.setItem("wd_selectedRooms", JSON.stringify(CONFIG.ROOMS));
+        };
+
+        const clearAllRooms = () => {
+          setSelectedRooms([]);
+          localStorage.setItem("wd_selectedRooms", JSON.stringify([]));
+        };
+
         return (
           <div style={{ minHeight:'100vh', ...bg, padding:'1.5rem', position:'relative', overflow:'hidden' }}>
             <div style={gridOverlay} />
@@ -2424,15 +2451,63 @@
                 </div>
               </div>
 
-              {grouped.keys.length === 0 ? (
+              {/* Room Filter Checkboxes */}
+              <div style={{ marginBottom:'1rem', padding:'1rem', background:'rgba(15,23,42,0.85)', border:'1px solid rgba(56,189,248,0.2)', borderRadius:'12px' }}>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'0.75rem', flexWrap:'wrap', gap:'0.5rem' }}>
+                  <div style={{ color:'#38bdf8', fontWeight:900, fontSize:'0.85rem', textTransform:'uppercase', letterSpacing:'0.06em' }}>
+                    🎯 Filter Rooms
+                  </div>
+                  <div style={{ display:'flex', gap:'0.5rem' }}>
+                    <button onClick={selectAllRooms}
+                      style={{ padding:'0.35rem 0.75rem', background:'rgba(56,189,248,0.1)', border:'1px solid #38bdf8', borderRadius:'6px', color:'#38bdf8', fontWeight:900, fontSize:'0.72rem', cursor:'pointer', textTransform:'uppercase' }}>
+                      ✓ All
+                    </button>
+                    <button onClick={clearAllRooms}
+                      style={{ padding:'0.35rem 0.75rem', background:'transparent', border:'1px solid #64748b', borderRadius:'6px', color:'#64748b', fontWeight:900, fontSize:'0.72rem', cursor:'pointer', textTransform:'uppercase' }}>
+                      ✗ Clear
+                    </button>
+                  </div>
+                </div>
+                <div style={{ display:'flex', flexWrap:'wrap', gap:'0.6rem' }}>
+                  {CONFIG.ROOMS.map(room => {
+                    const isSelected = selectedRooms.includes(room);
+                    const roomColor = CONFIG.ROOM_COLORS[room] || '#00ff88';
+                    return (
+                      <label key={room} onClick={() => toggleRoom(room)}
+                        style={{
+                          display:'flex', alignItems:'center', gap:'0.4rem',
+                          padding:'0.5rem 0.85rem', borderRadius:'8px', cursor:'pointer',
+                          background: isSelected ? `${roomColor}15` : 'rgba(30,41,59,0.5)',
+                          border: isSelected ? `2px solid ${roomColor}` : '2px solid #334155',
+                          transition:'all 0.2s'
+                        }}>
+                        <input type="checkbox" checked={isSelected} onChange={() => {}} style={{ cursor:'pointer' }} />
+                        <span style={{ color: isSelected ? roomColor : '#64748b', fontWeight:900, fontSize:'0.8rem' }}>
+                          {room}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <div style={{ marginTop:'0.6rem', color:'#64748b', fontSize:'0.72rem' }}>
+                  Showing {selectedRooms.length} of {CONFIG.ROOMS.length} rooms
+                </div>
+              </div>
+
+              {grouped.keys.filter(groupKey => selectedRooms.includes(groupKey)).length === 0 ? (
                 <div style={{ padding:'4rem 2rem', textAlign:'center', background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px' }}>
                   <Package size={64} color="#334155" />
-                  <h3 style={{ color:'#64748b', margin:'1rem 0 0 0' }}>No requests</h3>
+                  <h3 style={{ color:'#64748b', margin:'1rem 0 0 0' }}>
+                    {selectedRooms.length === 0 ? 'No rooms selected' : 'No requests'}
+                  </h3>
+                  {selectedRooms.length === 0 && (
+                    <p style={{ color:'#64748b', fontSize:'0.9rem', margin:'0.5rem 0 0 0' }}>Select rooms above to view requests</p>
+                  )}
                 </div>
               ) : (
                 <div style={{ display:'flex', flexDirection:'column', gap:'1rem' }}>
-                  {grouped.keys.map(groupKey => {
-                    const roomColor = CONFIG.ROOM_COLORS[groupKey] || '#00ff88'; // Fallback to green if room not in config
+                  {grouped.keys.filter(groupKey => selectedRooms.includes(groupKey)).map(groupKey => {
+                    const roomColor = CONFIG.ROOM_COLORS[groupKey] || '#00ff88';
                     return (
                     <div key={groupKey} style={{ background:'rgba(15,23,42,0.85)', border:`1px solid ${roomColor}33`, borderRadius:'14px', overflow:'hidden' }}>
                       <div style={{ padding:'0.9rem 1.2rem', background:`linear-gradient(135deg, ${roomColor}22 0%, ${roomColor}08 100%)`, borderBottom:`2px solid ${roomColor}`, display:'flex', alignItems:'center', gap:'0.75rem' }}>
