@@ -149,7 +149,7 @@
      * -------------------------------------------------------------------
      **********************************************************************/
     const CONFIG = {
-      ENABLE_SUPABASE: true, // <- set true for real multi-user across devices
+      ENABLE_SUPABASE: false, // <- set true for real multi-user across devices
       SUPABASE_URL: "https://vryxhveadpvhgvhyyary.supabase.co",
       SUPABASE_ANON_KEY: "sb_publishable_vKIZKhITzYfAJqfg-O-Zbw_4UXI1U8e",
       STORAGE_KEY: "warehouse-requests-v3",
@@ -160,7 +160,7 @@
       ROOMS: ["Bistro", "Salad", "Apple", "MasterPack", "Boxes", "Film/Labels", "Other", "******", "Loading", "Putaway" ],
       // 🎨 ROOM COLORS - Edit these to change room header colors!
       ROOM_COLORS: {
-        "Bistro": "#38bdf8",         // Blue
+         "Bistro": "#38bdf8",         // Blue
   "Salad": "#00ff88",          // Green
   "Apple": "#ff4444",          // Red
   "MasterPack": "#a78bfa",     // Purple
@@ -526,6 +526,12 @@
       // Login error
       const [loginError, setLoginError] = useState("");
       const [userSortBy, setUserSortBy] = useState("role"); // role | name | date
+      // User filter states
+      const [userFilterRoles, setUserFilterRoles] = useState(["room", "warehouse", "supervisor", "admin"]);
+      const [userFilterShifts, setUserFilterShifts] = useState(["1st", "2nd", "none"]);
+      const [userSearchQuery, setUserSearchQuery] = useState("");
+      const [userDateFrom, setUserDateFrom] = useState("");
+      const [userDateTo, setUserDateTo] = useState("");
 
       const saveUsers = async (updated) => {
         setUsers(updated);
@@ -1876,21 +1882,22 @@
                 {/* Create New User */}
                 <div style={{ background:'rgba(255,68,68,0.06)', border:'1px solid rgba(255,68,68,0.2)', borderRadius:'10px', padding:'1.25rem', marginBottom:'1.5rem' }}>
                   <div style={{ color:'#ff4444', fontWeight:800, fontSize:'0.9rem', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:'1rem' }}>➕ Create New User</div>
-                  <div style={{ display:'flex', gap:'0.75rem', flexWrap:'wrap', alignItems:'flex-end' }}>
+                  <div style={{ display:'flex', gap:'0.75rem', flexWrap:'wrap', alignItems:'stretch' }}>
 
                     {/* Name */}
-                    <div style={{ flex:'1 1 200px' }}>
-                      <div style={{ color:'#8b9dc3', fontSize:'0.75rem', fontWeight:700, marginBottom:'0.4rem', textTransform:'uppercase' }}>Name</div>
+                    <div style={{ flex:'1 1 200px', display:'flex', flexDirection:'column' }}>
+                      <div style={{ color:'#8b9dc3', fontSize:'0.75rem', fontWeight:700, marginBottom:'0.4rem', textTransform:'uppercase', height:'1rem' }}>Name</div>
                       <input value={newUserName} onChange={e => setNewUserName(e.target.value)}
                         onKeyDown={e => e.key === "Enter" && handleCreateUser()}
                         placeholder="Enter full name..."
-                        style={{ width:'100%', padding:'0.75rem', background:'#1e293b', border:'1px solid #334155', borderRadius:'8px', color:'#e2e8f0', fontSize:'0.95rem' }} />
+                        style={{ flex:1, padding:'0.75rem', background:'#1e293b', border:'1px solid #334155', borderRadius:'8px', color:'#e2e8f0', fontSize:'0.95rem' }} />
+                      <div style={{ height:'1.5rem' }}></div>
                     </div>
 
                     {/* Role */}
-                    <div style={{ flex:'1 1 160px' }}>
-                      <div style={{ color:'#8b9dc3', fontSize:'0.75rem', fontWeight:700, marginBottom:'0.4rem', textTransform:'uppercase' }}>Role</div>
-                      <div style={{ display:'flex', gap:'0.4rem' }}>
+                    <div style={{ flex:'1 1 160px', display:'flex', flexDirection:'column' }}>
+                      <div style={{ color:'#8b9dc3', fontSize:'0.75rem', fontWeight:700, marginBottom:'0.4rem', textTransform:'uppercase', height:'1rem' }}>Role</div>
+                      <div style={{ display:'flex', gap:'0.4rem', flex:1 }}>
                         {["room","warehouse","supervisor","admin"].map(r => (
                           <button key={r} onClick={() => setNewUserRole(r)}
                             style={{ flex:1, padding:'0.6rem 0.2rem', borderRadius:'6px', border: newUserRole===r ? `2px solid ${roleColors[r]}` : '2px solid #334155',
@@ -1901,16 +1908,16 @@
                           </button>
                         ))}
                       </div>
-                      <div style={{ color: roleColors[newUserRole], fontSize:'0.72rem', marginTop:'0.3rem', fontWeight:700, textTransform:'uppercase' }}>
+                      <div style={{ color: roleColors[newUserRole], fontSize:'0.72rem', marginTop:'0.3rem', fontWeight:700, textTransform:'uppercase', height:'1.2rem' }}>
                         {roleEmojis[newUserRole]} {newUserRole}
                       </div>
                     </div>
 
                     {/* Shift (hidden for admin role) */}
                     {newUserRole !== "admin" && (
-                      <div style={{ flex:'1 1 140px' }}>
-                        <div style={{ color:'#8b9dc3', fontSize:'0.75rem', fontWeight:700, marginBottom:'0.4rem', textTransform:'uppercase' }}>Shift</div>
-                        <div style={{ display:'flex', gap:'0.4rem' }}>
+                      <div style={{ flex:'1 1 140px', display:'flex', flexDirection:'column' }}>
+                        <div style={{ color:'#8b9dc3', fontSize:'0.75rem', fontWeight:700, marginBottom:'0.4rem', textTransform:'uppercase', height:'1rem' }}>Shift</div>
+                        <div style={{ display:'flex', gap:'0.4rem', flex:1 }}>
                           {[{key:"1st",color:"#00ff88"},{key:"2nd",color:"#a78bfa"}].map(s => (
                             <button key={s.key} onClick={() => setNewUserShift(s.key)}
                               style={{ flex:1, padding:'0.65rem 0.4rem', borderRadius:'6px', fontWeight:900, fontSize:'0.8rem', cursor:'pointer', textTransform:'uppercase',
@@ -1921,23 +1928,161 @@
                             </button>
                           ))}
                         </div>
-                        <div style={{ color: newUserShift==="1st" ? '#00ff88' : '#a78bfa', fontSize:'0.72rem', marginTop:'0.3rem', fontWeight:700 }}>
+                        <div style={{ color: newUserShift==="1st" ? '#00ff88' : '#a78bfa', fontSize:'0.72rem', marginTop:'0.3rem', fontWeight:700, height:'1.2rem' }}>
                           {newUserShift} Shift
                         </div>
                       </div>
                     )}
 
-                    <button onClick={handleCreateUser}
-                      style={{ padding:'0.75rem 1.5rem', background:'linear-gradient(135deg, #ff4444 0%, #cc3333 100%)', border:'none', borderRadius:'8px', color:'#fff', fontWeight:900, cursor:'pointer', textTransform:'uppercase', whiteSpace:'nowrap' }}>
-                      ➕ Add User
-                    </button>
+                    <div style={{ display:'flex', flexDirection:'column', justifyContent:'flex-end' }}>
+                      <div style={{ height:'1rem', marginBottom:'0.4rem' }}></div>
+                      <button onClick={handleCreateUser}
+                        style={{ padding:'0.75rem 1.5rem', background:'linear-gradient(135deg, #ff4444 0%, #cc3333 100%)', border:'none', borderRadius:'8px', color:'#fff', fontWeight:900, cursor:'pointer', textTransform:'uppercase', whiteSpace:'nowrap' }}>
+                        ➕ Add User
+                      </button>
+                      <div style={{ height:'1.5rem' }}></div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* User Filters */}
+                <div style={{ background:'rgba(255,68,68,0.04)', border:'1px solid rgba(255,68,68,0.15)', borderRadius:'10px', padding:'1.25rem', marginBottom:'1.5rem' }}>
+                  <div style={{ color:'#ff4444', fontWeight:900, fontSize:'0.85rem', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:'1rem' }}>
+                    🔍 Filter Users
+                  </div>
+
+                  {/* Search */}
+                  <div style={{ marginBottom:'1rem' }}>
+                    <input 
+                      value={userSearchQuery} 
+                      onChange={e => setUserSearchQuery(e.target.value)}
+                      placeholder="Search by name..."
+                      style={{ width:'100%', padding:'0.7rem', background:'#1e293b', border:'1px solid #334155', borderRadius:'8px', color:'#e2e8f0', fontSize:'0.9rem' }}
+                    />
+                  </div>
+
+                  {/* Role Filters */}
+                  <div style={{ marginBottom:'1rem' }}>
+                    <div style={{ color:'#8b9dc3', fontSize:'0.75rem', fontWeight:700, marginBottom:'0.5rem', textTransform:'uppercase' }}>Role</div>
+                    <div style={{ display:'flex', flexWrap:'wrap', gap:'0.5rem' }}>
+                      {["room","warehouse","supervisor","admin"].map(role => {
+                        const isSelected = userFilterRoles.includes(role);
+                        const color = roleColors[role];
+                        return (
+                          <div key={role} onClick={() => {
+                            setUserFilterRoles(isSelected ? userFilterRoles.filter(r => r !== role) : [...userFilterRoles, role]);
+                          }}
+                            style={{
+                              display:'flex', alignItems:'center', gap:'0.4rem',
+                              padding:'0.5rem 0.8rem', borderRadius:'8px', cursor:'pointer',
+                              background: isSelected ? `${color}15` : 'rgba(30,41,59,0.5)',
+                              border: isSelected ? `2px solid ${color}` : '2px solid #334155',
+                              transition:'all 0.2s', userSelect:'none'
+                            }}>
+                            <div style={{ 
+                              width:'14px', height:'14px', borderRadius:'3px', 
+                              border: `2px solid ${isSelected ? color : '#64748b'}`,
+                              background: isSelected ? color : 'transparent',
+                              display:'flex', alignItems:'center', justifyContent:'center'
+                            }}>
+                              {isSelected && <span style={{ color:'#0a0e1a', fontSize:'0.65rem', fontWeight:900 }}>✓</span>}
+                            </div>
+                            <span style={{ color: isSelected ? color : '#64748b', fontWeight:900, fontSize:'0.78rem', textTransform:'uppercase' }}>
+                              {roleEmojis[role]} {role}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Shift Filters */}
+                  <div style={{ marginBottom:'1rem' }}>
+                    <div style={{ color:'#8b9dc3', fontSize:'0.75rem', fontWeight:700, marginBottom:'0.5rem', textTransform:'uppercase' }}>Shift</div>
+                    <div style={{ display:'flex', flexWrap:'wrap', gap:'0.5rem' }}>
+                      {[{key:"1st",label:"1st Shift",color:"#00ff88"},{key:"2nd",label:"2nd Shift",color:"#a78bfa"},{key:"none",label:"No Shift",color:"#64748b"}].map(shift => {
+                        const isSelected = userFilterShifts.includes(shift.key);
+                        return (
+                          <div key={shift.key} onClick={() => {
+                            setUserFilterShifts(isSelected ? userFilterShifts.filter(s => s !== shift.key) : [...userFilterShifts, shift.key]);
+                          }}
+                            style={{
+                              display:'flex', alignItems:'center', gap:'0.4rem',
+                              padding:'0.5rem 0.8rem', borderRadius:'8px', cursor:'pointer',
+                              background: isSelected ? `${shift.color}15` : 'rgba(30,41,59,0.5)',
+                              border: isSelected ? `2px solid ${shift.color}` : '2px solid #334155',
+                              transition:'all 0.2s', userSelect:'none'
+                            }}>
+                            <div style={{ 
+                              width:'14px', height:'14px', borderRadius:'3px', 
+                              border: `2px solid ${isSelected ? shift.color : '#64748b'}`,
+                              background: isSelected ? shift.color : 'transparent',
+                              display:'flex', alignItems:'center', justifyContent:'center'
+                            }}>
+                              {isSelected && <span style={{ color:'#0a0e1a', fontSize:'0.65rem', fontWeight:900 }}>✓</span>}
+                            </div>
+                            <span style={{ color: isSelected ? shift.color : '#64748b', fontWeight:900, fontSize:'0.78rem' }}>
+                              {shift.label}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Date Range */}
+                  <div>
+                    <div style={{ color:'#8b9dc3', fontSize:'0.75rem', fontWeight:700, marginBottom:'0.5rem', textTransform:'uppercase' }}>Date Added Range</div>
+                    <div style={{ display:'flex', gap:'0.75rem', flexWrap:'wrap' }}>
+                      <div style={{ flex:'1 1 180px' }}>
+                        <label style={{ display:'block', color:'#64748b', fontSize:'0.7rem', marginBottom:'0.3rem' }}>From</label>
+                        <input 
+                          type="date" 
+                          value={userDateFrom} 
+                          onChange={e => setUserDateFrom(e.target.value)}
+                          style={{ width:'100%', padding:'0.6rem', background:'#1e293b', border:'1px solid #334155', borderRadius:'6px', color:'#e2e8f0', fontSize:'0.85rem' }}
+                        />
+                      </div>
+                      <div style={{ flex:'1 1 180px' }}>
+                        <label style={{ display:'block', color:'#64748b', fontSize:'0.7rem', marginBottom:'0.3rem' }}>To</label>
+                        <input 
+                          type="date" 
+                          value={userDateTo} 
+                          onChange={e => setUserDateTo(e.target.value)}
+                          style={{ width:'100%', padding:'0.6rem', background:'#1e293b', border:'1px solid #334155', borderRadius:'6px', color:'#e2e8f0', fontSize:'0.85rem' }}
+                        />
+                      </div>
+                      {(userDateFrom || userDateTo) && (
+                        <button onClick={() => { setUserDateFrom(""); setUserDateTo(""); }}
+                          style={{ padding:'0.6rem 1rem', background:'rgba(255,68,68,0.1)', border:'1px solid #ff4444', borderRadius:'6px', color:'#ff4444', fontWeight:900, cursor:'pointer', fontSize:'0.75rem', alignSelf:'flex-end' }}>
+                          Clear Dates
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
 
                 {/* Users List */}
                 <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'0.75rem', flexWrap:'wrap', gap:'0.5rem' }}>
                   <div style={{ color:'#8b9dc3', fontSize:'0.8rem', fontWeight:700, textTransform:'uppercase' }}>
-                    Registered Users ({users.length})
+                    Registered Users 
+                    <span style={{ color:'#ff4444', marginLeft:'0.5rem' }}>
+                      ({(() => {
+                        const filtered = users.filter(u => {
+                          if (!userFilterRoles.includes(u.role)) return false;
+                          const userShift = u.shift || "none";
+                          if (!userFilterShifts.includes(userShift)) return false;
+                          if (userSearchQuery && !u.name.toLowerCase().includes(userSearchQuery.toLowerCase())) return false;
+                          if (userDateFrom || userDateTo) {
+                            const createdDate = new Date(u.createdAt).toISOString().split('T')[0];
+                            if (userDateFrom && createdDate < userDateFrom) return false;
+                            if (userDateTo && createdDate > userDateTo) return false;
+                          }
+                          return true;
+                        }).length;
+                        return filtered !== users.length ? `${filtered} / ${users.length}` : users.length;
+                      })()})
+                    </span>
                   </div>
                   <div style={{ display:'flex', gap:'0.4rem', alignItems:'center' }}>
                     <span style={{ color:'#64748b', fontSize:'0.72rem', textTransform:'uppercase', marginRight:'0.25rem' }}>Sort:</span>
@@ -1956,18 +2101,39 @@
                   <div style={{ padding:'2rem', textAlign:'center', color:'#64748b' }}>No users yet. Create one above.</div>
                 ) : (
                   <div style={{ display:'flex', flexDirection:'column', gap:'0.5rem' }}>
-                    {[...users].sort((a,b) => {
-                      if (userSortBy === "role") {
-                        const order = { admin:0, supervisor:1, warehouse:2, room:3 };
-                        return (order[a.role] ?? 9) - (order[b.role] ?? 9) || a.name.localeCompare(b.name);
-                      }
-                      if (userSortBy === "shift") {
-                        const sa = a.shift || "zzz", sb = b.shift || "zzz";
-                        return sa.localeCompare(sb) || a.name.localeCompare(b.name);
-                      }
-                      if (userSortBy === "name") return a.name.localeCompare(b.name);
-                      return new Date(a.createdAt) - new Date(b.createdAt);
-                    }).map(u => (
+                    {[...users]
+                      .filter(u => {
+                        // Role filter
+                        if (!userFilterRoles.includes(u.role)) return false;
+                        
+                        // Shift filter
+                        const userShift = u.shift || "none";
+                        if (!userFilterShifts.includes(userShift)) return false;
+                        
+                        // Search filter
+                        if (userSearchQuery && !u.name.toLowerCase().includes(userSearchQuery.toLowerCase())) return false;
+                        
+                        // Date range filter
+                        if (userDateFrom || userDateTo) {
+                          const createdDate = new Date(u.createdAt).toISOString().split('T')[0];
+                          if (userDateFrom && createdDate < userDateFrom) return false;
+                          if (userDateTo && createdDate > userDateTo) return false;
+                        }
+                        
+                        return true;
+                      })
+                      .sort((a,b) => {
+                        if (userSortBy === "role") {
+                          const order = { admin:0, supervisor:1, warehouse:2, room:3 };
+                          return (order[a.role] ?? 9) - (order[b.role] ?? 9) || a.name.localeCompare(b.name);
+                        }
+                        if (userSortBy === "shift") {
+                          const sa = a.shift || "zzz", sb = b.shift || "zzz";
+                          return sa.localeCompare(sb) || a.name.localeCompare(b.name);
+                        }
+                        if (userSortBy === "name") return a.name.localeCompare(b.name);
+                        return new Date(a.createdAt) - new Date(b.createdAt);
+                      }).map(u => (
                       <div key={u.id} style={{ padding:'0.9rem 1rem', background:'rgba(255,68,68,0.04)', border:'1px solid rgba(255,68,68,0.12)', borderRadius:'10px', display:'flex', alignItems:'center', gap:'1rem', flexWrap:'wrap' }}>
                         {editUserId === u.id ? (
                           <>
@@ -2473,19 +2639,27 @@
                     const isSelected = selectedRooms.includes(room);
                     const roomColor = CONFIG.ROOM_COLORS[room] || '#00ff88';
                     return (
-                      <label key={room} onClick={() => toggleRoom(room)}
+                      <div key={room} onClick={() => toggleRoom(room)}
                         style={{
-                          display:'flex', alignItems:'center', gap:'0.4rem',
-                          padding:'0.5rem 0.85rem', borderRadius:'8px', cursor:'pointer',
+                          display:'flex', alignItems:'center', gap:'0.5rem',
+                          padding:'0.6rem 1rem', borderRadius:'8px', cursor:'pointer',
                           background: isSelected ? `${roomColor}15` : 'rgba(30,41,59,0.5)',
                           border: isSelected ? `2px solid ${roomColor}` : '2px solid #334155',
+                          transition:'all 0.2s', userSelect:'none'
+                        }}>
+                        <div style={{ 
+                          width:'16px', height:'16px', borderRadius:'3px', 
+                          border: `2px solid ${isSelected ? roomColor : '#64748b'}`,
+                          background: isSelected ? roomColor : 'transparent',
+                          display:'flex', alignItems:'center', justifyContent:'center',
                           transition:'all 0.2s'
                         }}>
-                        <input type="checkbox" checked={isSelected} onChange={() => {}} style={{ cursor:'pointer' }} />
-                        <span style={{ color: isSelected ? roomColor : '#64748b', fontWeight:900, fontSize:'0.8rem' }}>
+                          {isSelected && <span style={{ color:'#0a0e1a', fontSize:'0.7rem', fontWeight:900 }}>✓</span>}
+                        </div>
+                        <span style={{ color: isSelected ? roomColor : '#64748b', fontWeight:900, fontSize:'0.85rem' }}>
                           {room}
                         </span>
-                      </label>
+                      </div>
                     );
                   })}
                 </div>
