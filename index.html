@@ -50,6 +50,33 @@
     input, select, textarea {
       font-size: 16px !important;
     }
+
+    /* NOTIFICATION — styles in <head>, React never touches them */
+    #wd-toast {
+      position:fixed; top:1rem; left:50%; transform:translateX(-50%);
+      width:calc(100% - 2rem); max-width:420px; z-index:9999;
+      font-family:'Space Mono','Courier New',monospace;
+      pointer-events:none;
+      opacity:0; transform:translateX(-50%) translateY(-14px);
+      transition:opacity 0.3s ease, transform 0.3s ease;
+    }
+    #wd-toast.wd-show {
+      opacity:1; transform:translateX(-50%) translateY(0);
+      pointer-events:auto;
+    }
+    @keyframes wdDrain { from{transform:scaleX(1)} to{transform:scaleX(0)} }
+    .wd-drain { animation:wdDrain 5s linear forwards }
+    .wd-bell-float {
+      display:none; position:fixed; bottom:1.5rem; right:1.5rem; z-index:8000;
+      width:54px; height:54px; border-radius:50%; background:#0f172a;
+      border:2px solid #00ff88; box-shadow:0 4px 24px rgba(0,255,136,0.35);
+      align-items:center; justify-content:center; cursor:pointer;
+    }
+    @media(max-width:860px){
+      .wd-bell-nav   { display:none !important; }
+      .wd-bell-float { display:flex !important; }
+    }
+    .wd-nr:hover { background:rgba(255,255,255,0.05)!important; cursor:pointer }
   </style>
 
   <!-- PWA -->
@@ -62,6 +89,7 @@
 
 </head>
 <body>
+  <div id="wd-toast"></div>
   <div id="root"></div>
 
   <script type="text/babel">
@@ -242,6 +270,29 @@
 
     // Local multi-tab sync channel (works on same device)
     const bc = ("BroadcastChannel" in window) ? new BroadcastChannel("warehouse-req-sync") : null;
+
+    // ── NOTIFICATION TRACKING (module-level, localStorage-backed) ─────────
+    // Toast is pure vanilla JS on #wd-toast div — React never re-renders it,
+    // so polling every 2.5s can never cause flashing or animation restarts.
+    const _LS = "wd_seen_v5";
+    const _seen = (()=>{ try{return new Set(JSON.parse(localStorage.getItem(_LS)||"[]"));}catch(e){return new Set();} })();
+    const _addSeen = k => { _seen.add(k); try{localStorage.setItem(_LS,JSON.stringify([..._seen].slice(-500)));}catch(e){} };
+    let _seeded = false;  // first loadAll seeds ALL existing statuses — no toasts for old data
+    let _wdUser = "";     // kept current via useEffect
+    let _toastTmr = null;
+
+    function _showToast(icon, title, detail, color, onAdd) {
+      const el = document.getElementById("wd-toast");
+      if (!el) return;
+      clearTimeout(_toastTmr);
+      el.classList.remove("wd-show");
+      el.innerHTML = `<div style="position:relative;background:linear-gradient(135deg,rgba(8,18,28,0.98),rgba(4,12,22,0.98));border:1.5px solid ${color};border-radius:14px;padding:0.9rem 1rem;overflow:hidden;display:flex;align-items:flex-start;gap:0.8rem;box-shadow:0 10px 40px rgba(0,0,0,0.7);"><div style="width:42px;height:42px;min-width:42px;border-radius:10px;background:${color}1a;border:1px solid ${color}40;display:flex;align-items:center;justify-content:center;font-size:1.3rem;">${icon}</div><div style="flex:1;min-width:0;"><div style="font-size:0.6rem;font-weight:700;color:${color};letter-spacing:0.1em;text-transform:uppercase;margin-bottom:0.15rem;">Delivery Update</div><div style="font-size:0.86rem;font-weight:700;color:#e2e8f0;line-height:1.35;">${title}</div><div style="font-size:0.68rem;color:#64748b;margin-top:0.18rem;">${detail}</div></div><button onclick="document.getElementById('wd-toast').classList.remove('wd-show')" style="background:none;border:none;color:#475569;cursor:pointer;font-size:1.1rem;padding:0;line-height:1;flex-shrink:0;">✕</button><div style="position:absolute;bottom:0;left:0;right:0;height:3px;background:${color}22;"><div class="wd-drain" style="height:100%;background:${color};transform-origin:left;"></div></div></div>`;
+      void el.offsetWidth; // force reflow before adding class
+      el.classList.add("wd-show");
+      _toastTmr = setTimeout(() => el.classList.remove("wd-show"), 5000);
+      if (typeof onAdd === "function") onAdd({ icon, title, detail, color });
+    }
+    // ──────────────────────────────────────────────────────────────────────
 
     // Data adapter (LocalStorage OR Supabase)
     function createAdapter({ onRemoteChange }) {
@@ -492,80 +543,44 @@
       const [notificationsEnabled, setNotificationsEnabled] = useState(false);
       const [connectionMode, setConnectionMode] = useState("local"); // "local" or "supabase"
 
-      // ── IN-APP NOTIFICATIONS ─────────────────────────────────────────────
-      // Use refs for userName/userRole so the polling setInterval closure
-      // always reads the CURRENT value instead of the stale one from mount time.
-      const userNameRef  = useRef(userName);
-      const userRoleRef  = useRef(userRole);
-      useEffect(() => { userNameRef.current = userName; }, [userName]);
-      useEffect(() => { userRoleRef.current = userRole; }, [userRole]);
-
-      // notifiedRef: tracks "id:status" keys already toasted — fires each exactly once.
-      // isSeededRef: on the very first loadAll we silently stamp all existing statuses
-      // so nothing that was already done before page load ever triggers a toast.
-      const notifiedRef  = useRef(new Set());
-      const isSeededRef  = useRef(false);
-
-      const [inAppNotifs, setInAppNotifs]   = useState([]);
-      const [toast, setToast]               = useState(null);
-      const [toastVisible, setToastVisible] = useState(false);
+      // ── NOTIFICATION STATE (bell badge + history panel only) ─────────────
+      // The actual toast popup is vanilla JS (_showToast) — React state here
+      // is ONLY for the bell badge count and the history panel list.
+      const [bellNotifs, setBellNotifs] = useState([]);
       const [notifPanelOpen, setNotifPanelOpen] = useState(false);
-      const toastTimerRef = useRef(null);
 
-      const showToast = (icon, title, detail, color) => {
-        color = color || "#00ff88";
-        setToastVisible(false);
-        clearTimeout(toastTimerRef.current);
-        setTimeout(function() {
-          setToast({ icon: icon, title: title, detail: detail, color: color });
-          setToastVisible(true);
-          toastTimerRef.current = setTimeout(function() { setToastVisible(false); }, 5000);
-        }, 80);
-        setInAppNotifs(function(prev) {
-          return [{ id: Date.now(), icon: icon, title: title, detail: detail, color: color, time: new Date(), unread: true }].concat(prev).slice(0, 50);
-        });
+      // Keep module-level user tracker in sync
+      useEffect(() => { _wdUser = userName; }, [userName]);
+
+      const _onNotif = (n) => {
+        setBellNotifs(prev => [{ id: Date.now(), ...n, time: new Date(), unread: true }, ...prev].slice(0, 50));
       };
 
-      const detectStatusChanges = function(freshRequests) {
-        var name = userNameRef.current;
-        var role = userRoleRef.current;
-
-        // Only room-role users receive delivery notifications.
-        // Warehouse/supervisor/admin are the ones doing the delivering — they don't need alerts.
-        if (!name || role !== "room") {
-          // Still seed on first load so the Set is populated
-          if (!isSeededRef.current) {
-            freshRequests.forEach(function(r) { notifiedRef.current.add(r.id + ":" + r.status); });
-            isSeededRef.current = true;
-          }
+      const detectStatusChanges = (fresh) => {
+        if (!_seeded) {
+          // First loadAll: stamp EVERYTHING regardless of username.
+          // This is critical — at this point _wdUser may still be ""
+          // so we cannot filter by user. We just mark all existing as seen.
+          fresh.forEach(r => _addSeen(r.id + ":" + r.status));
+          _seeded = true;
           return;
         }
-
-        if (!isSeededRef.current) {
-          // First load: silently stamp every current status — show nothing for existing data
-          freshRequests.forEach(function(r) { notifiedRef.current.add(r.id + ":" + r.status); });
-          isSeededRef.current = true;
-          return;
-        }
-
-        // Subsequent loads: only notify for MY requests (room users only see their own)
-        freshRequests.forEach(function(req) {
-          if (req.submittedBy !== name) return;           // not my request
-          var key = req.id + ":" + req.status;
-          if (notifiedRef.current.has(key)) return;       // already notified
-          notifiedRef.current.add(key);
-          if (req.status === "pending") return;           // initial state — no toast
-
-          var item = req.item + " \u00d7 " + req.qty;
-          var room = req.room;
+        if (!_wdUser) return;
+        fresh.forEach(req => {
+          if (req.submittedBy !== _wdUser) return;
+          const key = req.id + ":" + req.status;
+          if (_seen.has(key)) return;  // already toasted — never again
+          _addSeen(key);
+          if (req.status === "pending") return;
+          const lbl = req.item + " \u00d7 " + req.qty, rm = req.room;
           if (req.status === "completed")
-            showToast("✅", item + " \u2014 Delivered!", "Completed by " + (req.completedBy || "warehouse") + " \u00b7 " + room, "#00ff88");
+            _showToast("\u2705", lbl + " \u2014 Delivered!", "Completed by " + (req.completedBy||"warehouse") + " \u00b7 " + rm, "#00ff88", _onNotif);
           else if (req.status === "claimed")
-            showToast("🚚", item + " \u2014 On the way!", "Claimed by " + (req.claimedBy || "warehouse") + " \u00b7 " + room, "#3b82f6");
+            _showToast("\ud83d\ude9a", lbl + " \u2014 On the way!", "Claimed by " + (req.claimedBy||"warehouse") + " \u00b7 " + rm, "#3b82f6", _onNotif);
           else if (req.status === "in_progress")
-            showToast("⚡", item + " \u2014 In Progress", (req.claimedBy || "warehouse") + " is en route \u00b7 " + room, "#a78bfa");
+            _showToast("\u26a1", lbl + " \u2014 In Progress", (req.claimedBy||"warehouse") + " is en route \u00b7 " + rm, "#a78bfa", _onNotif);
           else if (req.status === "cancelled")
-            showToast("❌", item + " \u2014 Cancelled", "Cancelled by " + (req.cancelledBy || "warehouse") + " \u00b7 " + room, "#ff4444");
+            _showToast("\u274c", lbl + " \u2014 Cancelled", "Cancelled by " + (req.cancelledBy||"warehouse") + " \u00b7 " + rm, "#ff4444", _onNotif);
         });
       };
       // ────────────────────────────────────────────────────────────────────
@@ -1186,157 +1201,86 @@
       }
 
 
-      // HEADER BAR (shared)
-      const TopBar = ({ title, subtitle }) => (
-        <div style={{ marginBottom:'1.25rem' }}>
-          <style>{`
-            @keyframes wdIn  { from{transform:translateY(-115%) scale(0.95);opacity:0} to{transform:translateY(0) scale(1);opacity:1} }
-            @keyframes wdOut { from{transform:translateY(0) scale(1);opacity:1} to{transform:translateY(-115%) scale(0.9);opacity:0} }
-            @keyframes wdDrain { from{transform:scaleX(1)} to{transform:scaleX(0)} }
-            .wd-in  { animation:wdIn  0.4s cubic-bezier(0.34,1.56,0.64,1) forwards }
-            .wd-out { animation:wdOut 0.28s ease-in forwards }
-            .wd-drain { animation:wdDrain 5s linear forwards }
-            .wd-nr:hover { background:rgba(255,255,255,0.04)!important }
-          `}</style>
-
-          {toast && (
-            <div
-              className={toastVisible ? "wd-in" : "wd-out"}
-              onClick={() => setToastVisible(false)}
-              style={{
-                position:'fixed', top:'1rem', left:'50%', transform:'translateX(-50%)',
-                width:'calc(100% - 2rem)', maxWidth:'430px', zIndex:9999,
-                background:'linear-gradient(135deg,rgba(8,18,28,0.98),rgba(4,12,22,0.98))',
-                border:'1.5px solid ' + toast.color, borderRadius:'14px',
-                padding:'0.9rem 1rem', overflow:'hidden', cursor:'pointer',
-                boxShadow:'0 10px 40px rgba(0,0,0,0.65)',
-                display:'flex', alignItems:'flex-start', gap:'0.8rem',
-                fontFamily:'Space Mono,Courier New,monospace'
-              }}
-            >
-              <div style={{width:42,height:42,minWidth:42,borderRadius:10,background:toast.color+'1a',border:'1px solid '+toast.color+'40',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'1.3rem'}}>{toast.icon}</div>
-              <div style={{flex:1,minWidth:0}}>
-                <div style={{fontSize:'0.6rem',fontWeight:700,color:toast.color,letterSpacing:'0.1em',textTransform:'uppercase',marginBottom:'0.15rem'}}>Delivery Update</div>
-                <div style={{fontSize:'0.86rem',fontWeight:700,color:'#e2e8f0',lineHeight:1.35}}>{toast.title}</div>
-                <div style={{fontSize:'0.68rem',color:'#64748b',marginTop:'0.18rem'}}>{toast.detail}</div>
-              </div>
-              <button onClick={e => { e.stopPropagation(); setToastVisible(false); }} style={{background:'none',border:'none',color:'#475569',cursor:'pointer',fontSize:'1rem',padding:0,lineHeight:1,flexShrink:0}}>✕</button>
-              <div style={{position:'absolute',bottom:0,left:0,right:0,height:3,background:toast.color+'22',borderRadius:'0 0 14px 14px'}}>
-                <div className={toastVisible ? "wd-drain" : ""} style={{height:'100%',background:toast.color,transformOrigin:'left',borderRadius:'0 0 14px 14px'}} />
-              </div>
-            </div>
-          )}
-
-          {notifPanelOpen && (
-            <div>
-              <div style={{position:'fixed',inset:0,zIndex:9997}} onClick={() => setNotifPanelOpen(false)} />
-              <div style={{
-                position:'fixed', top:'4.5rem', right:'1rem',
-                width:320, maxWidth:'calc(100vw - 2rem)',
-                background:'#0f172a', border:'1.5px solid rgba(0,255,136,0.28)',
-                borderRadius:'14px', zIndex:9998,
-                boxShadow:'0 18px 50px rgba(0,0,0,0.7)',
-                fontFamily:'Space Mono,Courier New,monospace',
-                display:'flex', flexDirection:'column', maxHeight:'60vh', overflow:'hidden'
-              }}>
-                <div style={{padding:'0.8rem 1rem',borderBottom:'1px solid #1e293b',display:'flex',alignItems:'center',justifyContent:'space-between',flexShrink:0}}>
-                  <span style={{fontSize:'0.72rem',fontWeight:700,color:'#00ff88',letterSpacing:'0.08em',textTransform:'uppercase'}}>🔔 Notifications</span>
-                  <div style={{display:'flex',gap:'0.65rem',alignItems:'center'}}>
-                    {inAppNotifs.some(n => n.unread) && (
-                      <button onClick={() => setInAppNotifs(p => p.map(n => ({...n, unread:false})))}
-                        style={{fontSize:'0.6rem',color:'#64748b',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',letterSpacing:'0.05em',textTransform:'uppercase'}}>
-                        Mark all read
-                      </button>
-                    )}
-                    <button onClick={() => setNotifPanelOpen(false)} style={{background:'none',border:'none',color:'#475569',cursor:'pointer',fontSize:'0.95rem',padding:0}}>✕</button>
+      // HEADER BAR — toast is vanilla JS on #wd-toast, React only handles bell badge
+      const TopBar = ({ title, subtitle }) => {
+        const unread = bellNotifs.filter(n => n.unread).length;
+        return (
+          <>
+            {notifPanelOpen && (
+              <>
+                <div style={{position:'fixed',inset:0,zIndex:9997}} onClick={()=>setNotifPanelOpen(false)}/>
+                <div style={{position:'fixed',top:'4.5rem',right:'1rem',width:320,maxWidth:'calc(100vw - 2rem)',background:'#0f172a',border:'1.5px solid rgba(0,255,136,0.28)',borderRadius:'14px',zIndex:9998,boxShadow:'0 18px 50px rgba(0,0,0,0.8)',fontFamily:"'Space Mono',monospace",display:'flex',flexDirection:'column',maxHeight:'65vh',overflow:'hidden'}}>
+                  <div style={{padding:'0.8rem 1rem',borderBottom:'1px solid #1e293b',display:'flex',alignItems:'center',justifyContent:'space-between',flexShrink:0}}>
+                    <span style={{fontSize:'0.72rem',fontWeight:700,color:'#00ff88',letterSpacing:'0.08em',textTransform:'uppercase'}}>🔔 Notifications</span>
+                    <div style={{display:'flex',gap:'0.65rem',alignItems:'center'}}>
+                      {bellNotifs.some(n=>n.unread) && (
+                        <button onClick={()=>setBellNotifs(p=>p.map(n=>({...n,unread:false})))} style={{fontSize:'0.6rem',color:'#64748b',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',textTransform:'uppercase'}}>Mark all read</button>
+                      )}
+                      <button onClick={()=>setNotifPanelOpen(false)} style={{background:'none',border:'none',color:'#475569',cursor:'pointer',fontSize:'1rem',padding:0}}>✕</button>
+                    </div>
                   </div>
-                </div>
-                <div style={{overflowY:'auto',flex:1}}>
-                  {inAppNotifs.length === 0
-                    ? <div style={{padding:'1.5rem',textAlign:'center',color:'#475569',fontSize:'0.72rem'}}>No notifications yet</div>
-                    : inAppNotifs.map(n => (
-                      <div key={n.id} className="wd-nr"
-                        onClick={() => setInAppNotifs(p => p.map(x => x.id===n.id ? {...x,unread:false} : x))}
-                        style={{padding:'0.75rem 1rem',borderBottom:'1px solid #1e293b',display:'flex',gap:'0.65rem',alignItems:'flex-start',background:n.unread ? n.color+'0a' : 'transparent',cursor:'default'}}>
-                        <div style={{width:8,height:8,minWidth:8,borderRadius:'50%',background:n.unread?n.color:'#334155',boxShadow:n.unread?'0 0 5px '+n.color:'none',marginTop:6,flexShrink:0}} />
-                        <div style={{width:32,height:32,minWidth:32,borderRadius:8,background:n.color+'18',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'0.95rem',flexShrink:0}}>{n.icon}</div>
-                        <div style={{flex:1,minWidth:0}}>
-                          <div style={{fontSize:'0.77rem',fontWeight:700,color:'#e2e8f0',lineHeight:1.3}}>{n.title}</div>
-                          <div style={{fontSize:'0.65rem',color:'#64748b',marginTop:'0.12rem'}}>{n.detail}</div>
-                          <div style={{fontSize:'0.58rem',color:'#334155',marginTop:'0.12rem'}}>{new Date(n.time).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})}</div>
+                  <div style={{overflowY:'auto',flex:1}}>
+                    {bellNotifs.length===0
+                      ? <div style={{padding:'1.5rem',textAlign:'center',color:'#475569',fontSize:'0.72rem'}}>No notifications yet</div>
+                      : bellNotifs.map(n=>(
+                        <div key={n.id} className="wd-nr" onClick={()=>setBellNotifs(p=>p.map(x=>x.id===n.id?{...x,unread:false}:x))}
+                          style={{padding:'0.75rem 1rem',borderBottom:'1px solid #1e293b',display:'flex',gap:'0.65rem',alignItems:'flex-start',background:n.unread?n.color+'0a':'transparent'}}>
+                          <div style={{width:8,height:8,minWidth:8,borderRadius:'50%',background:n.unread?n.color:'#334155',boxShadow:n.unread?'0 0 5px '+n.color:'none',marginTop:6,flexShrink:0}}/>
+                          <div style={{width:32,height:32,minWidth:32,borderRadius:8,background:n.color+'18',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'0.95rem',flexShrink:0}}>{n.icon}</div>
+                          <div style={{flex:1,minWidth:0}}>
+                            <div style={{fontSize:'0.77rem',fontWeight:700,color:'#e2e8f0',lineHeight:1.3}}>{n.title}</div>
+                            <div style={{fontSize:'0.65rem',color:'#64748b',marginTop:'0.1rem'}}>{n.detail}</div>
+                            <div style={{fontSize:'0.58rem',color:'#475569',marginTop:'0.1rem'}}>{new Date(n.time).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})}</div>
+                          </div>
                         </div>
-                      </div>
-                    ))
-                  }
-                </div>
-              </div>
-            </div>
-          )}
-
-          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'0.75rem' }}>
-            <div style={{ display:'flex', alignItems:'center', gap:'0.85rem' }}>
-              <div style={{ display:'inline-flex', alignItems:'center', gap:'0.85rem', padding:'0.7rem 1.25rem', background:'rgba(0,255,136,0.1)', border:'2px solid #00ff88', borderRadius:'10px', boxShadow:'0 0 18px rgba(0,255,136,0.25)' }}>
-                <Truck size={28} color="#00ff88" />
-                <div>
-                  <div style={{ margin:0, fontSize:'1.4rem', fontWeight:900, color:'#00ff88', textTransform:'uppercase', letterSpacing:'0.09em' }}>{title}</div>
-                  <div style={{ margin:0, fontSize:'0.75rem', color:'#8b9dc3', letterSpacing:'0.04em' }}>{subtitle}</div>
-                </div>
-              </div>
-              <div style={{ display:'flex', gap:'0.8rem', padding:'0.65rem 0.9rem', background:'rgba(15,23,42,0.8)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'10px' }}>
-                {[
-                  { label:"Pending", val: metrics.pending, color:"#fbbf24" },
-                  { label:"Claimed", val: metrics.claimed, color:"#38bdf8" },
-                  { label:"In Prog", val: metrics.inprog, color:"#a78bfa" },
-                  { label:"Done", val: metrics.completed, color:"#00ff88" }
-                ].map(m => (
-                  <div key={m.label} style={{ textAlign:'center' }}>
-                    <div style={{ fontSize:'1.2rem', fontWeight:900, color:m.color }}>{m.val}</div>
-                    <div style={{ fontSize:'0.65rem', color:'#8b9dc3', textTransform:'uppercase' }}>{m.label}</div>
+                      ))
+                    }
                   </div>
-                ))}
+                </div>
+              </>
+            )}
+            <button className="wd-bell-float" onClick={()=>setNotifPanelOpen(p=>!p)} style={{position:'relative'}}>
+              <Bell size={22} color="#00ff88"/>
+              {unread>0 && <span style={{position:'absolute',top:-4,right:-4,background:'#ff4444',color:'#fff',fontSize:'0.55rem',fontWeight:900,minWidth:18,height:18,borderRadius:9,display:'flex',alignItems:'center',justifyContent:'center',border:'2px solid #0a0e1a',padding:'0 3px'}}>{unread}</span>}
+            </button>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:'0.75rem',marginBottom:'1.25rem'}}>
+              <div style={{display:'flex',alignItems:'center',gap:'0.85rem'}}>
+                <div style={{display:'inline-flex',alignItems:'center',gap:'0.85rem',padding:'0.7rem 1.25rem',background:'rgba(0,255,136,0.1)',border:'2px solid #00ff88',borderRadius:'10px',boxShadow:'0 0 18px rgba(0,255,136,0.25)'}}>
+                  <Truck size={28} color="#00ff88"/>
+                  <div>
+                    <div style={{margin:0,fontSize:'1.4rem',fontWeight:900,color:'#00ff88',textTransform:'uppercase',letterSpacing:'0.09em'}}>{title}</div>
+                    <div style={{margin:0,fontSize:'0.75rem',color:'#8b9dc3',letterSpacing:'0.04em'}}>{subtitle}</div>
+                  </div>
+                </div>
+                <div style={{display:'flex',gap:'0.8rem',padding:'0.65rem 0.9rem',background:'rgba(15,23,42,0.8)',border:'1px solid rgba(0,255,136,0.2)',borderRadius:'10px'}}>
+                  {[{label:"Pending",val:metrics.pending,color:"#fbbf24"},{label:"Claimed",val:metrics.claimed,color:"#38bdf8"},{label:"In Prog",val:metrics.inprog,color:"#a78bfa"},{label:"Done",val:metrics.completed,color:"#00ff88"}].map(m=>(
+                    <div key={m.label} style={{textAlign:'center'}}>
+                      <div style={{fontSize:'1.2rem',fontWeight:900,color:m.color}}>{m.val}</div>
+                      <div style={{fontSize:'0.65rem',color:'#8b9dc3',textTransform:'uppercase'}}>{m.label}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div style={{display:'flex',gap:'0.6rem',flexWrap:'wrap',alignItems:'center'}}>
+                <button onClick={()=>setRoute("form")} style={{padding:'0.7rem 1.1rem',background:'linear-gradient(135deg,#00ff88 0%,#00cc6f 100%)',border:'none',borderRadius:'10px',color:'#0a0e1a',fontWeight:900,cursor:'pointer',textTransform:'uppercase',letterSpacing:'0.04em'}}>+ New</button>
+                <button onClick={()=>setRoute("picklist")} style={{padding:'0.7rem 1.1rem',background:'transparent',border:'1px solid rgba(0,255,136,0.4)',borderRadius:'10px',color:'#00ff88',fontWeight:800,cursor:'pointer',textTransform:'uppercase',letterSpacing:'0.04em'}}>Pick List</button>
+                <button onClick={()=>setRoute("board")} style={{padding:'0.7rem 1.1rem',background:'transparent',border:'1px solid rgba(0,255,136,0.25)',borderRadius:'10px',color:'#8b9dc3',fontWeight:800,cursor:'pointer',textTransform:'uppercase',letterSpacing:'0.04em'}}>Board</button>
+                <button onClick={()=>setRoute("dashboard")} style={{padding:'0.7rem 1.1rem',background:'transparent',border:'1px solid rgba(0,255,136,0.25)',borderRadius:'10px',color:canSupervisor?'#00ff88':'#64748b',fontWeight:800,cursor:'pointer',textTransform:'uppercase',letterSpacing:'0.04em'}}>Dashboard</button>
+                <button onClick={()=>setRoute("completed")} style={{padding:'0.7rem 1.1rem',background:'transparent',border:'1px solid rgba(0,255,136,0.25)',borderRadius:'10px',color:canWarehouseAct?'#00ff88':'#64748b',fontWeight:800,cursor:'pointer',textTransform:'uppercase',letterSpacing:'0.04em'}}>Completed</button>
+                {canSupervisor && <button onClick={()=>setRoute("assignments")} style={{padding:'0.7rem 1.1rem',background:'transparent',border:'1px solid rgba(56,189,248,0.35)',borderRadius:'10px',color:'#38bdf8',fontWeight:800,cursor:'pointer',textTransform:'uppercase',letterSpacing:'0.04em'}}>Assignments</button>}
+                <button onClick={()=>setRoute("admin")} style={{padding:'0.7rem 1.1rem',background:'transparent',border:'1px solid rgba(255,68,68,0.25)',borderRadius:'10px',color:canAdmin?'#ff4444':'#64748b',fontWeight:800,cursor:'pointer',textTransform:'uppercase',letterSpacing:'0.04em'}}>Admin</button>
+                <button onClick={()=>{setUserName("");setUserRole("");setTempName("");setTempRole("");_wdUser="";setRoute("login");}} style={{padding:'0.7rem 1.1rem',background:'transparent',border:'1px solid #64748b',borderRadius:'10px',color:'#64748b',fontWeight:800,cursor:'pointer',textTransform:'uppercase',letterSpacing:'0.04em'}}>Sign Out</button>
+                <button className="wd-bell-nav" onClick={()=>setNotifPanelOpen(p=>!p)}
+                  style={{position:'relative',padding:'0.65rem 0.85rem',background:notifPanelOpen?'rgba(0,255,136,0.15)':'transparent',border:'1px solid '+(unread>0?'#00ff88':'rgba(0,255,136,0.25)'),borderRadius:'10px',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center'}}>
+                  <Bell size={18} color="#00ff88"/>
+                  {unread>0 && <span style={{position:'absolute',top:-7,right:-7,background:'#ff4444',color:'#fff',fontSize:'0.52rem',fontWeight:900,minWidth:18,height:18,borderRadius:9,display:'flex',alignItems:'center',justifyContent:'center',border:'2px solid #0a0e1a',padding:'0 3px'}}>{unread}</span>}
+                </button>
               </div>
             </div>
+          </>
+        );
+      };
 
-            <div style={{ display:'flex', gap:'0.6rem', flexWrap:'wrap', alignItems:'center' }}>
-              <button onClick={() => setRoute("form")} style={{ padding:'0.7rem 1.1rem', background:'linear-gradient(135deg, #00ff88 0%, #00cc6f 100%)', border:'none', borderRadius:'10px', color:'#0a0e1a', fontWeight:900, cursor:'pointer', textTransform:'uppercase', letterSpacing:'0.04em' }}>+ New</button>
-              <button onClick={() => setRoute("picklist")} style={{ padding:'0.7rem 1.1rem', background:'transparent', border:'1px solid rgba(0,255,136,0.4)', borderRadius:'10px', color:'#00ff88', fontWeight:800, cursor:'pointer', textTransform:'uppercase', letterSpacing:'0.04em' }}>Pick List</button>
-              <button onClick={() => setRoute("board")} style={{ padding:'0.7rem 1.1rem', background:'transparent', border:'1px solid rgba(0,255,136,0.25)', borderRadius:'10px', color:'#8b9dc3', fontWeight:800, cursor:'pointer', textTransform:'uppercase', letterSpacing:'0.04em' }}>Board</button>
-              <button onClick={() => setRoute("dashboard")} style={{ padding:'0.7rem 1.1rem', background:'transparent', border:'1px solid rgba(0,255,136,0.25)', borderRadius:'10px', color: canSupervisor ? '#00ff88' : '#64748b', fontWeight:800, cursor:'pointer', textTransform:'uppercase', letterSpacing:'0.04em' }}>Dashboard</button>
-              <button onClick={() => setRoute("completed")} style={{ padding:'0.7rem 1.1rem', background:'transparent', border:'1px solid rgba(0,255,136,0.25)', borderRadius:'10px', color: canWarehouseAct ? '#00ff88' : '#64748b', fontWeight:800, cursor:'pointer', textTransform:'uppercase', letterSpacing:'0.04em' }}>Completed</button>
-              {canSupervisor && (
-                <button onClick={() => setRoute("assignments")} style={{ padding:'0.7rem 1.1rem', background:'transparent', border:'1px solid rgba(56,189,248,0.35)', borderRadius:'10px', color:'#38bdf8', fontWeight:800, cursor:'pointer', textTransform:'uppercase', letterSpacing:'0.04em' }}>Assignments</button>
-              )}
-              <button onClick={() => setRoute("admin")} style={{ padding:'0.7rem 1.1rem', background:'transparent', border:'1px solid rgba(255,68,68,0.25)', borderRadius:'10px', color: canAdmin ? '#ff4444' : '#64748b', fontWeight:800, cursor:'pointer', textTransform:'uppercase', letterSpacing:'0.04em' }}>Admin</button>
-              <button onClick={() => { setUserName(""); setUserRole(""); setTempName(""); setTempRole(""); setRoute("login"); }} style={{ padding:'0.7rem 1.1rem', background:'transparent', border:'1px solid #64748b', borderRadius:'10px', color:'#64748b', fontWeight:800, cursor:'pointer', textTransform:'uppercase', letterSpacing:'0.04em' }}>Sign Out</button>
-
-              <button
-                onClick={() => setNotifPanelOpen(p => !p)}
-                style={{
-                  position:'relative', padding:'0.65rem 0.85rem',
-                  background: notifPanelOpen ? 'rgba(0,255,136,0.15)' : 'transparent',
-                  border:'1px solid ' + (inAppNotifs.some(n => n.unread) ? '#00ff88' : 'rgba(0,255,136,0.25)'),
-                  borderRadius:'10px', cursor:'pointer',
-                  display:'flex', alignItems:'center', justifyContent:'center'
-                }}
-              >
-                <Bell size={18} color="#00ff88" />
-                {inAppNotifs.some(n => n.unread) && (
-                  <span style={{
-                    position:'absolute', top:-7, right:-7,
-                    background:'#ff4444', color:'#fff',
-                    fontSize:'0.52rem', fontWeight:900,
-                    minWidth:18, height:18, borderRadius:9,
-                    display:'flex', alignItems:'center', justifyContent:'center',
-                    border:'2px solid #0a0e1a', padding:'0 3px'
-                  }}>
-                    {inAppNotifs.filter(n => n.unread).length}
-                  </span>
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
-      );
 
       if (loading) {
         return (
