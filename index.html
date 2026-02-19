@@ -573,14 +573,8 @@
           _addSeen(key);
           if (req.status === "pending") return;
           const lbl = req.item + " \u00d7 " + req.qty, rm = req.room;
-          if (req.status === "completed")
-            _showToast("\u2705", lbl + " \u2014 Delivered!", "Completed by " + (req.completedBy||"warehouse") + " \u00b7 " + rm, "#00ff88", _onNotif);
-          else if (req.status === "claimed")
-            _showToast("\ud83d\ude9a", lbl + " \u2014 On the way!", "Claimed by " + (req.claimedBy||"warehouse") + " \u00b7 " + rm, "#3b82f6", _onNotif);
-          else if (req.status === "in_progress")
-            _showToast("\u26a1", lbl + " \u2014 In Progress", (req.claimedBy||"warehouse") + " is en route \u00b7 " + rm, "#a78bfa", _onNotif);
-          else if (req.status === "cancelled")
-            _showToast("\u274c", lbl + " \u2014 Cancelled", "Cancelled by " + (req.cancelledBy||"warehouse") + " \u00b7 " + rm, "#ff4444", _onNotif);
+          if (req.status !== "completed") return;
+          _showToast("\u2705", lbl + " \u2014 Delivered!", "Completed by " + (req.completedBy||"warehouse") + " \u00b7 " + rm, "#00ff88", _onNotif);
         });
       };
       // ────────────────────────────────────────────────────────────────────
