@@ -3036,5 +3036,23 @@
     }
   </script>
 
+
+<script>
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.addEventListener("controllerchange", function () {
+    window.location.reload();
+  });
+
+  window.addEventListener("load", async function () {
+    const reg = await navigator.serviceWorker.getRegistration();
+    if (reg) {
+      setInterval(function () {
+        reg.update();
+      }, 60000); // check every 60 seconds
+    }
+  });
+}
+</script>
+
 </body>
 </html>
