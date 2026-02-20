@@ -731,7 +731,42 @@
             // For supabase we poll every 10s; for local every 2.5s.
             const pollMs = adapter.kind === "supabase" ? 10000 : CONFIG.REFRESH_MS;
             const t = setInterval(() => loadAll().catch(console.error), pollMs);
-            return () => { clearInterval(t); adapter.destroy(); };
+
+            // ── ANDROID FIX ───────────────────────────────────────────────
+            // Android Chrome kills the Supabase Realtime WebSocket whenever the
+            // screen dims or the tab backgrounds. iPhone Safari does not.
+            // Solution: on visibilitychange and online events, immediately reload
+            // data AND rebuild the realtime channel so Android reconnects cleanly.
+            let resubTimer = null;
+            const handleVisible = async () => {
+              if (document.visibilityState !== "visible") return;
+              clearTimeout(resubTimer);
+              resubTimer = setTimeout(async () => {
+                try {
+                  await loadAll();
+                  if (adapter.kind === "supabase") {
+                    adapter.destroy();          // tear down dead WebSocket
+                    await adapter.init();       // fresh realtime channel
+                  }
+                } catch(e) { console.warn("Reconnect on wake:", e); }
+              }, 350); // small delay so network is ready after screen-on
+            };
+            const handleOnline = async () => {
+              try {
+                await loadAll();
+                if (adapter.kind === "supabase") { adapter.destroy(); await adapter.init(); }
+              } catch(e) {}
+            };
+            document.addEventListener("visibilitychange", handleVisible);
+            window.addEventListener("online", handleOnline);
+
+            return () => {
+              clearInterval(t);
+              clearTimeout(resubTimer);
+              document.removeEventListener("visibilitychange", handleVisible);
+              window.removeEventListener("online", handleOnline);
+              adapter.destroy();
+            };
           } catch (error) {
             console.error("Failed to initialize app:", error);
             setLoading(false);
@@ -3031,7 +3066,27 @@
     // PWA service worker (works on https or localhost)
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
-        navigator.serviceWorker.register('./sw.js').catch(() => {});
+        navigator.serviceWorker.register('./sw.js').then(reg => {
+          // Check for SW updates every time page becomes visible
+          // This means staff don't need hard resets — just switching back to the tab picks up new versions
+          document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') reg.update();
+          });
+          // When a new SW is waiting, activate it immediately (skip waiting)
+          reg.addEventListener('updatefound', () => {
+            const newWorker = reg.installing;
+            newWorker?.addEventListener('statechange', () => {
+              if (newWorker.statechange === 'installed' && navigator.serviceWorker.controller) {
+                newWorker.postMessage({ type: 'SKIP_WAITING' });
+              }
+            });
+          });
+        }).catch(() => {});
+
+        // When SW activates a new version, reload the page cleanly
+        navigator.serviceWorker.addEventListener('controllerchange', () => {
+          window.location.reload();
+        });
       });
     }
   </script>
