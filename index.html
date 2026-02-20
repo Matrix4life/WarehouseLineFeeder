@@ -726,11 +726,12 @@
             await loadAll();
             await loadUsersAndAssignments();
 
-            // polling fallback ONLY for local mode (supabase realtime already calls onRemoteChange)
-            const t = (adapter.kind !== "supabase")
-              ? setInterval(() => loadAll().catch(console.error), CONFIG.REFRESH_MS)
-              : null;
-            return () => { if (t) clearInterval(t); adapter.destroy(); };
+            // Always poll as a safety net — realtime is fast but can miss events
+            // (connection drops, RLS issues, brief Supabase hiccups).
+            // For supabase we poll every 10s; for local every 2.5s.
+            const pollMs = adapter.kind === "supabase" ? 10000 : CONFIG.REFRESH_MS;
+            const t = setInterval(() => loadAll().catch(console.error), pollMs);
+            return () => { clearInterval(t); adapter.destroy(); };
           } catch (error) {
             console.error("Failed to initialize app:", error);
             setLoading(false);
