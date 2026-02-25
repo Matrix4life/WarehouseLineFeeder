@@ -108,6 +108,7 @@
       pointer-events:auto;
     }
     @keyframes wdDrain { from{transform:scaleX(1)} to{transform:scaleX(0)} }
+    @keyframes pulse { 0%,100%{box-shadow:0 0 0 0 rgba(255,159,67,0.4)} 50%{box-shadow:0 0 0 6px rgba(255,159,67,0)} }
     .wd-drain { animation:wdDrain 5s linear forwards }
     .wd-bell-float {
       display:none; position:fixed; bottom:1.5rem; right:1.5rem; z-index:8000;
@@ -214,10 +215,53 @@
      * create policy "update all" on warehouse_users for update using (true);
      * create policy "delete all" on warehouse_users for delete using (true);
      *
+     * -- Add archive columns to warehouse_users (run once in Supabase SQL Editor):
+     * alter table warehouse_users add column if not exists archived_at timestamptz;
+     * alter table warehouse_users add column if not exists archived_by text;
+     *
+     * -- Add break tracking column to warehouse_users (run once):
+     * -- Drop old break column if you ran the previous version:
+     * -- alter table warehouse_users drop column if exists on_break_since;
+     *
+     * -- BREAK HISTORY TABLE (run once in Supabase SQL Editor):
+     * create table if not exists warehouse_breaks (
+     *   id text primary key,
+     *   worker_name text not null,
+     *   worker_role text not null,
+     *   started_at timestamptz not null default now(),
+     *   ended_at timestamptz,
+     *   duration_mins numeric,
+     *   was_overdue boolean default false
+     * );
+     * create index if not exists idx_wb_worker on warehouse_breaks(worker_name);
+     * create index if not exists idx_wb_date on warehouse_breaks(started_at desc);
+     * alter table warehouse_breaks enable row level security;
+     * create policy "read all" on warehouse_breaks for select using (true);
+     * create policy "insert all" on warehouse_breaks for insert with check (true);
+     * create policy "update all" on warehouse_breaks for update using (true);
+     * -- Enable realtime for warehouse_breaks in Database -> Publications
+     *
      * create policy "read all" on warehouse_assignments for select using (true);
      * create policy "insert all" on warehouse_assignments for insert with check (true);
      * create policy "update all" on warehouse_assignments for update using (true);
      * create policy "delete all" on warehouse_assignments for delete using (true);
+     *
+     * -- CHAT TABLE (add to same Supabase project) -------------------------
+     * create table if not exists warehouse_chat (
+     *   id bigint primary key,
+     *   conversation_id text not null,
+     *   sender_name text not null,
+     *   sender_role text not null,
+     *   recipient_name text not null,
+     *   message text not null,
+     *   sent_at timestamptz not null default now()
+     * );
+     * create index if not exists idx_wc_conv on warehouse_chat(conversation_id);
+     * create index if not exists idx_wc_time on warehouse_chat(sent_at desc);
+     * alter table warehouse_chat enable row level security;
+     * create policy "read all" on warehouse_chat for select using (true);
+     * create policy "insert all" on warehouse_chat for insert with check (true);
+     * -- Enable realtime for warehouse_chat in Database -> Replication
      * -------------------------------------------------------------------
      **********************************************************************/
     const CONFIG = {
@@ -225,6 +269,7 @@
       SUPABASE_URL: "https://vryxhveadpvhgvhyyary.supabase.co",
       SUPABASE_ANON_KEY: "sb_publishable_vKIZKhITzYfAJqfg-O-Zbw_4UXI1U8e",
       STORAGE_KEY: "warehouse-requests-v3",
+      CHAT_KEY: "warehouse-chat-v1",
       REFRESH_MS: 2500, // polling fallback; realtime will override
       SLA_MINUTES_WARN: 5,
       SLA_MINUTES_BAD: 10,
@@ -342,7 +387,7 @@
     // ──────────────────────────────────────────────────────────────────────
 
     // Data adapter (LocalStorage OR Supabase)
-    function createAdapter({ onRemoteChange }) {
+    function createAdapter({ onRemoteChange, onChatChange }) {
       const useSupabase = CONFIG.ENABLE_SUPABASE && CONFIG.SUPABASE_URL && CONFIG.SUPABASE_ANON_KEY && window.supabase;
       const supabaseClient = useSupabase ? window.supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY) : null;
 
@@ -422,9 +467,12 @@
           } else {
             bc?.addEventListener("message", (e)=> {
               if (e?.data?.type === "updated") onRemoteChange?.();
+              if (e?.data?.type === "chat_updated") onChatChange?.();
             });
             window.addEventListener("storage", (e)=> {
               if (e.key === CONFIG.STORAGE_KEY || e.key === "wd_users_v1" || e.key === "wd_assignments_v1") onRemoteChange?.();
+              if (e.key === CONFIG.CHAT_KEY) onChatChange?.();
+              if (e.key === "breaks_updated") loadBreaks().catch(console.error);
             });
           }
         },
@@ -494,7 +542,8 @@
           if (error) throw error;
           return (data || []).map(u => ({
             id: u.id, name: u.name, role: u.role, shift: u.shift || null,
-            createdAt: u.created_at, createdBy: u.created_by || "system"
+            createdAt: u.created_at, createdBy: u.created_by || "system",
+            archivedAt: u.archived_at || null, archivedBy: u.archived_by || null
           }));
         },
         async saveUser(user) {
@@ -508,7 +557,8 @@
           }
           const { error } = await supabaseClient.from("warehouse_users").upsert({
             id: user.id, name: user.name, role: user.role, shift: user.shift || null,
-            created_at: user.createdAt, created_by: user.createdBy || "system"
+            created_at: user.createdAt, created_by: user.createdBy || "system",
+            archived_at: user.archivedAt || null, archived_by: user.archivedBy || null
           });
           if (error) throw error;
           return true;
@@ -568,6 +618,151 @@
           const { error } = await supabaseClient.from("warehouse_assignments").delete().eq("id", id);
           if (error) throw error;
           return true;
+        },
+
+        // ── CHAT ──────────────────────────────────────────────────────────
+        async loadChatMessages(conversationId) {
+          if (!useSupabase) {
+            const raw = localStorage.getItem(CONFIG.CHAT_KEY);
+            const all = safeJsonParse(raw, []);
+            return (Array.isArray(all) ? all : []).filter(m => m.conversationId === conversationId);
+          }
+          const { data, error } = await supabaseClient
+            .from("warehouse_chat")
+            .select("*")
+            .eq("conversation_id", conversationId)
+            .order("sent_at", { ascending: true })
+            .limit(200);
+          if (error) throw error;
+          return (data || []).map(r => ({
+            id: Number(r.id),
+            conversationId: r.conversation_id,
+            senderName: r.sender_name,
+            senderRole: r.sender_role,
+            recipientName: r.recipient_name,
+            message: r.message,
+            sentAt: r.sent_at
+          }));
+        },
+        async sendChatMessage({ conversationId, senderName, senderRole, recipientName, message }) {
+          const id = Date.now();
+          const msg = { id, conversationId, senderName, senderRole, recipientName, message, sentAt: nowIso() };
+          if (!useSupabase) {
+            const raw = localStorage.getItem(CONFIG.CHAT_KEY);
+            const all = safeJsonParse(raw, []);
+            localStorage.setItem(CONFIG.CHAT_KEY, JSON.stringify([...(Array.isArray(all)?all:[]), msg]));
+            bc?.postMessage({ type:"chat_updated" });
+            return msg;
+          }
+          const { error } = await supabaseClient.from("warehouse_chat").insert({
+            id, conversation_id: conversationId,
+            sender_name: senderName, sender_role: senderRole,
+            recipient_name: recipientName, message, sent_at: msg.sentAt
+          });
+          if (error) throw error;
+          return msg;
+        },
+        async loadAllConversations() {
+          // Admin/supervisor: latest message per unique conversation
+          if (!useSupabase) {
+            const raw = localStorage.getItem(CONFIG.CHAT_KEY);
+            const all = safeJsonParse(raw, []);
+            const map = {};
+            (Array.isArray(all) ? all : []).forEach(m => {
+              if (!map[m.conversationId] || m.sentAt > map[m.conversationId].sentAt) map[m.conversationId] = m;
+            });
+            return Object.values(map).sort((a,b) => b.sentAt > a.sentAt ? 1 : -1);
+          }
+          const { data, error } = await supabaseClient
+            .from("warehouse_chat")
+            .select("*")
+            .order("sent_at", { ascending: false });
+          if (error) throw error;
+          const map = {};
+          (data || []).forEach(r => {
+            if (!map[r.conversation_id]) map[r.conversation_id] = {
+              id: Number(r.id), conversationId: r.conversation_id,
+              senderName: r.sender_name, senderRole: r.sender_role,
+              recipientName: r.recipient_name, message: r.message, sentAt: r.sent_at
+            };
+          });
+          return Object.values(map).sort((a,b) => b.sentAt > a.sentAt ? 1 : -1);
+        },
+        // ── BREAKS ────────────────────────────────────────────────────────
+        async loadBreaks({ from, to } = {}) {
+          const KEY = "wd_breaks_v1";
+          if (!useSupabase) {
+            const all = safeJsonParse(localStorage.getItem(KEY), []);
+            return all.filter(b => {
+              if (from && b.startedAt < from) return false;
+              if (to   && b.startedAt > to)   return false;
+              return true;
+            });
+          }
+          // Always load active breaks + date-filtered history
+          let qActive = supabaseClient.from("warehouse_breaks").select("*").is("ended_at", null);
+          let qHist   = supabaseClient.from("warehouse_breaks").select("*").not("ended_at", "is", null).order("started_at", { ascending: false }).limit(500);
+          if (from) qHist = qHist.gte("started_at", from);
+          if (to)   qHist = qHist.lte("started_at", to);
+          const [{ data: activeData, error: e1 }, { data: histData, error: e2 }] = await Promise.all([qActive, qHist]);
+          const error = e1 || e2;
+          const data = [...(activeData||[]), ...(histData||[])];
+          if (error) throw error;
+          return (data||[]).map(r => ({
+            id: r.id, workerName: r.worker_name, workerRole: r.worker_role,
+            startedAt: r.started_at, endedAt: r.ended_at || null,
+            durationMins: r.duration_mins || null, wasOverdue: r.was_overdue || false
+          }));
+        },
+        async startBreak({ id, workerName, workerRole, startedAt }) {
+          const rec = { id, workerName, workerRole, startedAt, endedAt: null, durationMins: null, wasOverdue: false };
+          if (!useSupabase) {
+            const KEY = "wd_breaks_v1";
+            const all = safeJsonParse(localStorage.getItem(KEY), []);
+            localStorage.setItem(KEY, JSON.stringify([rec, ...all]));
+            bc?.postMessage({ type:"breaks_updated" });
+            return rec;
+          }
+          const { error } = await supabaseClient.from("warehouse_breaks").insert({
+            id, worker_name: workerName, worker_role: workerRole,
+            started_at: startedAt, ended_at: null, duration_mins: null, was_overdue: false
+          });
+          if (error) throw error;
+          return rec;
+        },
+        async endBreak({ id, endedAt, durationMins, wasOverdue }) {
+          if (!useSupabase) {
+            const KEY = "wd_breaks_v1";
+            const all = safeJsonParse(localStorage.getItem(KEY), []);
+            const next = all.map(b => b.id === id ? { ...b, endedAt, durationMins, wasOverdue } : b);
+            localStorage.setItem(KEY, JSON.stringify(next));
+            bc?.postMessage({ type:"breaks_updated" });
+            return true;
+          }
+          const { error } = await supabaseClient.from("warehouse_breaks")
+            .update({ ended_at: endedAt, duration_mins: durationMins, was_overdue: wasOverdue })
+            .eq("id", id);
+          if (error) throw error;
+          return true;
+        },
+        subscribeBreaks(onMsg) {
+          if (!useSupabase) return () => {};
+          const ch = supabaseClient.channel("warehouse-breaks-rt")
+            .on("postgres_changes", { event:"*", schema:"public", table:"warehouse_breaks" }, () => onMsg())
+            .subscribe();
+          return () => supabaseClient.removeChannel(ch);
+        },
+        subscribeChat(onMsg) {
+          if (!useSupabase) return () => {};
+          const ch = supabaseClient.channel("warehouse-chat-rt")
+            .on("postgres_changes", { event:"INSERT", schema:"public", table:"warehouse_chat" }, (payload) => {
+              const r = payload.new;
+              onMsg({ id:Number(r.id), conversationId:r.conversation_id, senderName:r.sender_name,
+                      senderRole:r.sender_role, recipientName:r.recipient_name,
+                      message:r.message, sentAt:r.sent_at });
+            })
+            .subscribe();
+          return () => supabaseClient.removeChannel(ch);
         }
       };
       return adapter;
@@ -663,6 +858,46 @@
       const [editingId, setEditingId] = useState(null);
       const [editQty, setEditQty] = useState(0);
 
+      // ── BREAK TRACKING STATE ───────────────────────────────────────────
+      const BREAK_MINS = 15;
+      const [breaks, setBreaks] = useState([]);          // all break records loaded
+      const [breakPanelOpen, setBreakPanelOpen] = useState(false);
+      const [breakHistoryRange, setBreakHistoryRange] = useState({ from:"", to:"" });
+      const [breakSelectedWorker, setBreakSelectedWorker] = useState(""); // admin: filter by person
+      const [breakTick, setBreakTick] = useState(0);     // 1-second heartbeat for countdowns
+      useEffect(() => {
+        const t = setInterval(() => setBreakTick(n => n + 1), 1000);
+        return () => clearInterval(t);
+      }, []);
+      // ──────────────────────────────────────────────────────────────────
+
+      // ── CHAT STATE ────────────────────────────────────────────────────
+      const [chatOpen, setChatOpen] = useState(false);
+      const [chatView, setChatView] = useState("list");   // "list" | "conversation"
+      const [chatContact, setChatContact] = useState(null); // { name, role }
+      const [chatMessages, setChatMessages] = useState([]);
+      const [chatInput, setChatInput] = useState("");
+      // chatUnreadFrom: { senderName: count } — persisted in localStorage so survives refresh
+      const [chatUnreadFrom, setChatUnreadFrom] = useState(() => {
+        try { return JSON.parse(localStorage.getItem("wd_chat_unread")||"{}"); } catch { return {}; }
+      });
+      // Sync to localStorage whenever it changes
+      useEffect(() => {
+        try { localStorage.setItem("wd_chat_unread", JSON.stringify(chatUnreadFrom)); } catch {}
+      }, [chatUnreadFrom]);
+      // Derived total — always consistent with chatUnreadFrom
+      const chatUnread = Object.values(chatUnreadFrom).reduce((a,b) => a + (b||0), 0);
+      const [chatLoading, setChatLoading] = useState(false);
+      const [chatTableReady, setChatTableReady] = useState(true);
+      const [chatConvList, setChatConvList] = useState([]); // admin: all convs
+      const chatEndRef = useRef(null);
+      const chatInputRef = useRef(null);
+      const chatContactRef = useRef(null);
+      const chatTableReadyRef = useRef(true);
+      useEffect(() => { chatTableReadyRef.current = chatTableReady; }, [chatTableReady]);
+      useEffect(() => { chatContactRef.current = chatContact; }, [chatContact]);
+      // ─────────────────────────────────────────────────────────────────
+
       const [viewGroup, setViewGroup] = useState("room"); // room|item|status
       const [onlyActive, setOnlyActive] = useState(true);
       const [search, setSearch] = useState("");
@@ -736,7 +971,8 @@
           const adapter = adapterRef.current;
           if (!adapter) return;
           const [u, a] = await Promise.all([adapter.loadUsers(), adapter.loadAssignments()]);
-          setUsers(Array.isArray(u) ? u : []);
+          const freshUsers = Array.isArray(u) ? u : [];
+          setUsers(freshUsers);
           setAssignments(Array.isArray(a) ? a : []);
         } catch (err) {
           console.error("Failed to load users/assignments:", err);
@@ -816,19 +1052,57 @@
         (async ()=>{
           try {
             setNotificationsEnabled(await requestNotifyPermission());
-            const adapter = createAdapter({ onRemoteChange: loadAll });
+            const adapter = createAdapter({
+              onRemoteChange: loadAll,
+              onChatChange: () => loadChatMessages(chatChannelRef.current)
+            });
             adapterRef.current = adapter;
             setConnectionMode(adapter.kind);
             await adapter.init();
             await loadAll();
             await loadUsersAndAssignments();
 
-            // Always poll as a safety net — realtime is fast but can miss events
-            // (connection drops, RLS issues, brief Supabase hiccups).
-            // For supabase we poll every 10s; for local every 2.5s.
+            // Load breaks on startup & subscribe to realtime changes
+            await loadBreaks().catch(console.error);
+            let unsubBreaks = null;
+            try {
+              unsubBreaks = adapter.subscribeBreaks?.(() => {
+                loadBreaks().catch(console.error);
+              });
+            } catch(e) {}
+
+            // Subscribe to Supabase realtime chat inserts (best-effort — table may not exist yet)
+            let unsubChat = null;
+            try {
+              unsubChat = adapter.subscribeChat?.((msg) => {
+                setChatTableReady(true);
+                chatTableReadyRef.current = true;
+                // Use _wdUser (module-level ref) — never stale inside this closure
+                const me = _wdUser;
+                if (!me) return;
+                // If we're in a conversation with this sender/recipient, append it live
+                const currentContact = chatContactRef.current;
+                if (currentContact) {
+                  const myConvId = [me, currentContact.name].sort().join("::");
+                  if (msg.conversationId === myConvId) {
+                    setChatMessages(prev => prev.find(m => m.id === msg.id) ? prev : [...prev, msg]);
+                    return; // don't bump unread — we're looking at this conversation
+                  }
+                }
+                // Message is for us (we're recipient) but panel is closed / different convo
+                if (msg.recipientName === me) {
+                  setChatUnreadFrom(prev => ({ ...prev, [msg.senderName]: (prev[msg.senderName]||0) + 1 }));
+                }
+              });
+            } catch(e) { /* table not created yet — silently ignore */ }
+
+            // Always poll as a safety net
             const pollMs = adapter.kind === "supabase" ? 10000 : CONFIG.REFRESH_MS;
-            const t = setInterval(() => loadAll().catch(console.error), pollMs);
-            return () => { clearInterval(t); adapter.destroy(); };
+            const t = setInterval(() => {
+              loadAll().catch(console.error);
+              loadBreaks().catch(console.error); // always poll breaks — don't rely solely on Realtime
+            }, pollMs);
+            return () => { clearInterval(t); adapter.destroy(); if (unsubChat) unsubChat(); if (unsubBreaks) unsubBreaks(); };
           } catch (error) {
             console.error("Failed to initialize app:", error);
             setLoading(false);
@@ -842,6 +1116,115 @@
         localStorage.setItem("wd_userName", userName || "");
         localStorage.setItem("wd_userRole", userRole || "");
       }, [userName, userRole]);
+
+      // ── CHAT EFFECTS ──────────────────────────────────────────────────
+      // Conversation ID — deterministic from two usernames (alphabetical sort)
+      const convId = (a, b) => [a, b].sort().join("::");
+
+      const _chatHandleError = (e) => {
+        const is404 = e?.code === "42P01"
+          || (e?.message && e.message.toLowerCase().includes("does not exist"))
+          || e?.status === 404 || e?.error === "Not Found"
+          || (e?.details && e.details.includes("warehouse_chat"));
+        if (is404) { setChatTableReady(false); chatTableReadyRef.current = false; }
+      };
+
+      const loadChatMessages = async (contact) => {
+        const adapter = adapterRef.current;
+        const me = _wdUser || userName;
+        if (!adapter || !contact || !me) return;
+        if (!chatTableReadyRef.current) return;
+        setChatLoading(true);
+        try {
+          const cid = convId(me, contact.name);
+          const msgs = await adapter.loadChatMessages(cid);
+          setChatMessages(Array.isArray(msgs) ? msgs : []);
+          if (!chatTableReady) { setChatTableReady(true); chatTableReadyRef.current = true; }
+        } catch(e) { _chatHandleError(e); }
+        setChatLoading(false);
+      };
+
+      const loadAdminConvList = async () => {
+        const adapter = adapterRef.current;
+        if (!adapter) return;
+        try {
+          const convs = await adapter.loadAllConversations();
+          setChatConvList(Array.isArray(convs) ? convs : []);
+          if (!chatTableReady) { setChatTableReady(true); chatTableReadyRef.current = true; }
+        } catch(e) { _chatHandleError(e); }
+      };
+
+      // When chat opens: load admin conv list if applicable
+      useEffect(() => {
+        if (!chatOpen) return;
+        setChatView("list");
+        setChatContact(null);
+        setChatMessages([]);
+        if ((userRole === "admin" || userRole === "supervisor") && chatTableReadyRef.current) {
+          loadAdminConvList();
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [chatOpen]);
+
+      // Load messages when contact is selected
+      useEffect(() => {
+        if (chatOpen && chatView === "conversation" && chatContact) {
+          loadChatMessages(chatContact);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [chatView, chatContact]);
+
+      // Poll while in a conversation (fallback for local mode + network hiccups)
+      useEffect(() => {
+        if (!chatOpen || chatView !== "conversation") return;
+        const t = setInterval(() => {
+          if (chatTableReadyRef.current && chatContactRef.current) {
+            loadChatMessages(chatContactRef.current);
+          }
+        }, 5000);
+        return () => clearInterval(t);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [chatOpen, chatView]);
+
+      // Scroll to bottom on new messages
+      useEffect(() => {
+        if (chatOpen && chatView === "conversation") {
+          chatEndRef.current?.scrollIntoView({ behavior:"smooth" });
+        }
+      }, [chatMessages, chatOpen, chatView]);
+
+      const sendChat = async (e) => {
+        e?.preventDefault();
+        const msg = chatInput.trim();
+        if (!msg || !userName || !chatContact) return;
+        setChatInput("");
+        try {
+          const cid = convId(userName, chatContact.name);
+          const newMsg = await adapterRef.current.sendChatMessage({
+            conversationId: cid,
+            senderName: userName,
+            senderRole: userRole,
+            recipientName: chatContact.name,
+            message: msg
+          });
+          setChatMessages(prev => [...prev, newMsg]);
+        } catch(err) { console.error("Chat send error:", err); }
+      };
+
+      // Which users can this person message?
+      // Defined BEFORE any early returns — required by React hooks rules.
+      const chatableUsers = useMemo(() => {
+        if (!users || users.length === 0) return [];
+        const active = users.filter(u => !u.archivedAt); // never show archived users in chat
+        if (userRole === "room") {
+          return active.filter(u => u.name !== userName && (u.role==="warehouse"||u.role==="supervisor"||u.role==="admin"));
+        }
+        if (userRole === "warehouse") {
+          return active.filter(u => u.name !== userName);
+        }
+        return active.filter(u => u.name !== userName);
+      }, [users, userName, userRole]);
+      // ─────────────────────────────────────────────────────────────────
 
       // Derived: filtered + sorted list
       const visibleRequests = useMemo(() => {
@@ -911,6 +1294,84 @@
         ).length;
         return { total, pending, claimed, inprog, completed, cancelled };
       }, [requests]);
+
+      // ── BREAK HELPERS (pure functions, no state) ─────────────────────
+      const breakElapsed     = (since) => Math.floor((Date.now() - new Date(since).getTime()) / 60000);
+      const breakSecsElapsed = (since) => Math.floor((Date.now() - new Date(since).getTime()) / 1000);
+      const breakSecsLeft    = (since) => Math.max(0, BREAK_MINS * 60 - breakSecsElapsed(since));
+      const fmtCountdown     = (secs)  => { const m=Math.floor(secs/60),s=secs%60; return `${m}:${String(s).padStart(2,"0")}`; };
+      const fmtTime          = (iso)   => { try { return new Date(iso).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"}); } catch { return ""; } };
+      const fmtDate          = (iso)   => { try { return new Date(iso).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}); } catch { return ""; } };
+      // Active break for THIS user (from breaks table, not users)
+      const myActiveBreak = breaks.find(b => b.workerName === userName && !b.endedAt) || null;
+
+      // ── BREAK ACTIONS ──────────────────────────────────────────────────
+      const _prevActiveBreaksRef = React.useRef([]);
+      const loadBreaks = async (opts={}) => {
+        try {
+          const data = await adapterRef.current?.loadBreaks(opts);
+          if (Array.isArray(data)) {
+            // Detect new active breaks for supervisor notifications
+            if (_wdUserRole === "supervisor" || _wdUserRole === "admin") {
+              const prevActive = _prevActiveBreaksRef.current;
+              const newActive = data.filter(b => !b.endedAt);
+              newActive.forEach(b => {
+                if (!prevActive.find(p => p.id === b.id)) {
+                  // New break started
+                  if (b.workerName !== _wdUser) { // don't toast your own
+                    _showToast("🍵", `${b.workerName} on break`, "Back in 15 mins", "#ff9f43", _onNotif);
+                  }
+                }
+              });
+              prevActive.forEach(p => {
+                if (!newActive.find(b => b.id === p.id)) {
+                  // Break ended
+                  const ended = data.find(b => b.id === p.id);
+                  if (ended && ended.workerName !== _wdUser) {
+                    const d = ended.durationMins || "?";
+                    _showToast("✅", `${ended.workerName} back`, `Break: ${d}m${ended.wasOverdue?" ⚠️ OVERDUE":""}`, ended.wasOverdue?"#ff4444":"#00ff88", _onNotif);
+                  }
+                }
+              });
+              _prevActiveBreaksRef.current = newActive;
+            }
+            setBreaks(data);
+          }
+        } catch(e) { console.error("loadBreaks error:", e); }
+      };
+
+      const startBreak = async () => {
+        const adapter = adapterRef.current;
+        if (!adapter || !userName) return;
+        const id = "brk_" + Date.now();
+        const startedAt = nowIso();
+        const rec = { id, workerName: userName, workerRole: userRole, startedAt, endedAt: null, durationMins: null, wasOverdue: false };
+        setBreaks(prev => [rec, ...prev]);
+        await adapter.startBreak(rec).catch(console.error);
+        _showToast("🍵", `${userName} on break`, "Back in 15 mins", "#ff9f43", _onNotif);
+      };
+
+      const endBreak = async (breakRec) => {
+        const adapter = adapterRef.current;
+        const rec = breakRec || myActiveBreak;
+        if (!adapter || !rec) return;
+        const endedAt = nowIso();
+        const durationMins = Math.round((new Date(endedAt) - new Date(rec.startedAt)) / 60000);
+        const wasOverdue = durationMins > BREAK_MINS;
+        const updated = { ...rec, endedAt, durationMins, wasOverdue };
+        setBreaks(prev => prev.map(b => b.id === rec.id ? updated : b));
+        await adapter.endBreak({ id: rec.id, endedAt, durationMins, wasOverdue }).catch(console.error);
+        _showToast("✅", `${rec.workerName} back from break`, `${durationMins}m${wasOverdue?" — OVERDUE":""}`, wasOverdue?"#ff4444":"#00ff88", _onNotif);
+      };
+
+      // Auto-end break at exactly 15 mins (client-side safety net)
+      useEffect(() => {
+        if (!myActiveBreak) return;
+        const secs = breakSecsLeft(myActiveBreak.startedAt);
+        if (secs <= 0) endBreak(myActiveBreak);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [breakTick]);
+      // ──────────────────────────────────────────────────────────────────
 
       const canWarehouseAct = userRole === "warehouse" || userRole === "supervisor" || userRole === "admin";
       const canSupervisor = userRole === "supervisor" || userRole === "admin";
@@ -1317,6 +1778,10 @@
             setLoginError("Name not found. Ask your Admin to add you to the system.");
             return;
           }
+          if (matchedUser.archivedAt) {
+            setLoginError("This account has been archived. Contact your Admin.");
+            return;
+          }
 
           setUserName(matchedUser.name);
           setUserRole(matchedUser.role);
@@ -1411,6 +1876,391 @@
         );
       }
 
+
+
+      // ── BREAK PANEL (inline JSX variable — never a sub-component) ────
+      const _breakPanelJsx = (canSupervisor && breakPanelOpen) ? (() => {
+        const activeBreaks = breaks.filter(b => !b.endedAt);
+        const todayStr = new Date().toISOString().slice(0,10);
+        const histFilter = canAdmin
+          ? breaks.filter(b => {
+              if (!b.endedAt) return false;
+              const d = b.startedAt.slice(0,10);
+              if (breakSelectedWorker && b.workerName !== breakSelectedWorker) return false;
+              if (breakHistoryRange.from && d < breakHistoryRange.from) return false;
+              if (breakHistoryRange.to   && d > breakHistoryRange.to)   return false;
+              return true;
+            })
+          : breaks.filter(b => b.endedAt && b.startedAt.slice(0,10) === todayStr);
+
+        return (
+          <div style={{position:"fixed",top:0,left:0,bottom:0,width:"min(400px,100vw)",background:"#0f172a",borderRight:"2px solid rgba(255,159,67,0.3)",boxShadow:"8px 0 40px rgba(0,0,0,0.6)",display:"flex",flexDirection:"column",zIndex:1100,fontFamily:"'Space Mono','Courier New',monospace"}}>
+
+            {/* Header */}
+            <div style={{padding:"0.85rem 1rem",background:"rgba(255,159,67,0.08)",borderBottom:"1px solid rgba(255,159,67,0.2)",display:"flex",alignItems:"center",gap:"0.65rem",flexShrink:0}}>
+              <span style={{fontSize:"1.2rem"}}>🍵</span>
+              <span style={{color:"#ff9f43",fontWeight:900,fontSize:"0.88rem",textTransform:"uppercase",letterSpacing:"0.08em",flex:1}}>Break Tracker</span>
+              {canAdmin && <span style={{padding:"0.18rem 0.5rem",background:"rgba(255,68,68,0.15)",border:"1px solid rgba(255,68,68,0.4)",borderRadius:"8px",color:"#ff4444",fontSize:"0.6rem",fontWeight:900}}>🔧 ADMIN</span>}
+              {!canAdmin && <span style={{padding:"0.18rem 0.5rem",background:"rgba(167,139,250,0.15)",border:"1px solid rgba(167,139,250,0.4)",borderRadius:"8px",color:"#a78bfa",fontSize:"0.6rem",fontWeight:900}}>🧭 SUPERVISOR</span>}
+              <button onClick={()=>setBreakPanelOpen(false)} style={{background:"transparent",border:"1px solid #334155",borderRadius:"8px",color:"#64748b",padding:"0.25rem 0.55rem",cursor:"pointer",fontWeight:900,fontSize:"0.95rem"}}>✕</button>
+            </div>
+
+            <div style={{flex:1,overflowY:"auto",padding:"0.75rem"}}>
+
+              {/* ── CURRENTLY ON BREAK ── */}
+              <div style={{marginBottom:"1rem"}}>
+                <div style={{color:"#ff9f43",fontWeight:900,fontSize:"0.65rem",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:"0.5rem",display:"flex",alignItems:"center",gap:"0.4rem"}}>
+                  <span style={{width:8,height:8,borderRadius:"50%",background:"#ff9f43",display:"inline-block",animation:"pulse 1.2s infinite"}}/>
+                  On Break Now {activeBreaks.length > 0 && `(${activeBreaks.length})`}
+                </div>
+                {activeBreaks.length === 0 ? (
+                  <div style={{padding:"0.85rem",background:"rgba(15,23,42,0.5)",borderRadius:"10px",color:"#475569",fontSize:"0.78rem",textAlign:"center"}}>Everyone is working 💪</div>
+                ) : activeBreaks.map(b => {
+                  const secs = breakSecsLeft(b.startedAt);
+                  const overdue = secs <= 0;
+                  const elapsed = breakSecsElapsed(b.startedAt);
+                  return (
+                    <div key={b.id} style={{marginBottom:"0.5rem",padding:"0.75rem",background:overdue?"rgba(255,68,68,0.12)":"rgba(255,159,67,0.08)",border:`1px solid ${overdue?"rgba(255,68,68,0.5)":"rgba(255,159,67,0.3)"}`,borderRadius:"12px",display:"flex",alignItems:"center",gap:"0.65rem"}}>
+                      <div style={{width:36,height:36,borderRadius:"50%",background:overdue?"rgba(255,68,68,0.2)":"rgba(255,159,67,0.15)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"1.1rem",flexShrink:0}}>📦</div>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{color:"#e2e8f0",fontWeight:900,fontSize:"0.82rem"}}>{b.workerName}</div>
+                        <div style={{color:"#64748b",fontSize:"0.65rem",marginTop:"0.1rem"}}>Started {fmtTime(b.startedAt)}</div>
+                      </div>
+                      <div style={{textAlign:"right",flexShrink:0}}>
+                        {overdue ? (
+                          <>
+                            <div style={{color:"#ff4444",fontWeight:900,fontSize:"0.8rem",animation:"pulse 1s infinite"}}>⚠️ OVERDUE</div>
+                            <div style={{color:"#ff4444",fontSize:"0.65rem"}}>{Math.floor(elapsed/60)}m {elapsed%60}s out</div>
+                          </>
+                        ) : (
+                          <>
+                            <div style={{color:"#ff9f43",fontWeight:900,fontSize:"0.85rem"}}>{fmtCountdown(secs)}</div>
+                            <div style={{color:"#64748b",fontSize:"0.6rem"}}>remaining</div>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* ── DIVIDER ── */}
+              <div style={{borderBottom:"1px solid #1e293b",margin:"0.5rem 0 0.75rem"}}/>
+
+              {/* ── DATE RANGE PICKER (Admin only) ── */}
+              {canAdmin && (
+                <div style={{marginBottom:"0.85rem"}}>
+                  <div style={{color:"#ff4444",fontWeight:900,fontSize:"0.63rem",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:"0.5rem"}}>🔧 Filter by Person</div>
+                  <select value={breakSelectedWorker} onChange={e => setBreakSelectedWorker(e.target.value)}
+                    style={{width:"100%",background:"#1e293b",border:"1px solid #334155",borderRadius:"8px",color:breakSelectedWorker?"#e2e8f0":"#64748b",padding:"0.5rem 0.7rem",fontFamily:"inherit",fontSize:"0.8rem",outline:"none",marginBottom:"0.65rem",cursor:"pointer"}}>
+                    <option value="">All warehouse staff</option>
+                    {[...new Set(breaks.map(b => b.workerName))].sort().map(name => (
+                      <option key={name} value={name}>{name}</option>
+                    ))}
+                  </select>
+                  <div style={{color:"#ff4444",fontWeight:900,fontSize:"0.63rem",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:"0.5rem"}}>🔧 Date Range</div>
+                  <div style={{display:"flex",gap:"0.5rem",flexWrap:"wrap"}}>
+                    <div style={{display:"flex",flexDirection:"column",gap:"0.2rem",flex:1}}>
+                      <label style={{color:"#64748b",fontSize:"0.6rem",textTransform:"uppercase"}}>From</label>
+                      <input type="date" value={breakHistoryRange.from}
+                        onChange={e => setBreakHistoryRange(p => ({...p, from:e.target.value}))}
+                        style={{background:"#1e293b",border:"1px solid #334155",borderRadius:"8px",color:"#e2e8f0",padding:"0.4rem 0.6rem",fontFamily:"inherit",fontSize:"0.75rem",outline:"none"}}/>
+                    </div>
+                    <div style={{display:"flex",flexDirection:"column",gap:"0.2rem",flex:1}}>
+                      <label style={{color:"#64748b",fontSize:"0.6rem",textTransform:"uppercase"}}>To</label>
+                      <input type="date" value={breakHistoryRange.to}
+                        onChange={e => setBreakHistoryRange(p => ({...p, to:e.target.value}))}
+                        style={{background:"#1e293b",border:"1px solid #334155",borderRadius:"8px",color:"#e2e8f0",padding:"0.4rem 0.6rem",fontFamily:"inherit",fontSize:"0.75rem",outline:"none"}}/>
+                    </div>
+                    <button onClick={()=>loadBreaks({from:breakHistoryRange.from?breakHistoryRange.from+"T00:00:00Z":undefined,to:breakHistoryRange.to?breakHistoryRange.to+"T23:59:59Z":undefined})}
+                      style={{alignSelf:"flex-end",padding:"0.4rem 0.75rem",background:"linear-gradient(135deg,#ff4444,#cc2222)",border:"none",borderRadius:"8px",color:"#fff",fontWeight:900,cursor:"pointer",fontFamily:"inherit",fontSize:"0.72rem"}}>
+                      Load
+                    </button>
+                    <button onClick={()=>{setBreakHistoryRange({from:"",to:""});setBreakSelectedWorker("");loadBreaks();}}
+                      style={{alignSelf:"flex-end",padding:"0.4rem 0.65rem",background:"transparent",border:"1px solid #334155",borderRadius:"8px",color:"#64748b",fontWeight:900,cursor:"pointer",fontFamily:"inherit",fontSize:"0.72rem"}}>
+                      All
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* ── HISTORY TABLE ── */}
+              <div>
+                <div style={{color: canAdmin?"#ff4444":"#a78bfa",fontWeight:900,fontSize:"0.63rem",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:"0.5rem"}}>
+                  {canAdmin
+                    ? (breakSelectedWorker ? `🔧 ${breakSelectedWorker} — Breaks` : "🔧 All Staff Breaks")
+                    : "📋 Today's Breaks"}
+                  {histFilter.length > 0 && ` (${histFilter.length})`}
+                </div>
+                {histFilter.length === 0 ? (
+                  <div style={{padding:"0.85rem",background:"rgba(15,23,42,0.5)",borderRadius:"10px",color:"#475569",fontSize:"0.75rem",textAlign:"center"}}>No break history {canAdmin?"for this range":"today"}</div>
+                ) : (
+                  <div style={{display:"flex",flexDirection:"column",gap:"0.35rem"}}>
+                    {/* Summary stats */}
+                    {histFilter.length > 0 && (()=>{
+                      const totalMins = histFilter.reduce((s,b) => s+(b.durationMins||0),0);
+                      const overdueCnt = histFilter.filter(b=>b.wasOverdue).length;
+                      const avgMins = Math.round(totalMins/histFilter.length);
+                      return (
+                        <div style={{display:"flex",gap:"0.5rem",marginBottom:"0.5rem",flexWrap:"wrap"}}>
+                          {[
+                            {label:"Total breaks",val:histFilter.length,color:"#e2e8f0"},
+                            {label:"Avg duration",val:avgMins+"m",color:"#ff9f43"},
+                            {label:"Overdue",val:overdueCnt,color:overdueCnt>0?"#ff4444":"#475569"},
+                          ].map(stat=>(
+                            <div key={stat.label} style={{flex:1,minWidth:80,padding:"0.45rem 0.55rem",background:"#1e293b",borderRadius:"8px",textAlign:"center"}}>
+                              <div style={{color:stat.color,fontWeight:900,fontSize:"0.85rem"}}>{stat.val}</div>
+                              <div style={{color:"#475569",fontSize:"0.6rem"}}>{stat.label}</div>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
+                    {histFilter.map(b => (
+                      <div key={b.id} style={{display:"flex",alignItems:"center",gap:"0.55rem",padding:"0.55rem 0.7rem",background:b.wasOverdue?"rgba(255,68,68,0.07)":"rgba(15,23,42,0.6)",border:`1px solid ${b.wasOverdue?"rgba(255,68,68,0.3)":"#1e293b"}`,borderRadius:"10px"}}>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{display:"flex",alignItems:"center",gap:"0.4rem"}}>
+                            <span style={{color:"#e2e8f0",fontWeight:800,fontSize:"0.77rem"}}>{b.workerName}</span>
+                            {b.wasOverdue && <span style={{color:"#ff4444",fontSize:"0.6rem",fontWeight:900}}>⚠️ LATE</span>}
+                          </div>
+                          <div style={{color:"#475569",fontSize:"0.62rem",marginTop:"0.1rem"}}>{fmtDate(b.startedAt)} · {fmtTime(b.startedAt)} → {fmtTime(b.endedAt)}</div>
+                        </div>
+                        <div style={{color:b.wasOverdue?"#ff4444":"#ff9f43",fontWeight:900,fontSize:"0.8rem",flexShrink:0}}>{b.durationMins||"?"}m</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+            </div>
+          </div>
+        );
+      })() : null;
+      // ──────────────────────────────────────────────────────────────────
+      // ── CHAT (inline JSX — NOT a sub-component, fixes input focus loss) ─
+      // Key principle: rendering as variables inside the parent component means
+      // React reconciles elements in-place on re-render — input stays focused.
+
+      const _roleColor = (role) => role==="warehouse"?"#38bdf8":role==="supervisor"?"#a78bfa":role==="admin"?"#ff4444":"#00ff88";
+      const _roleEmoji = (role) => role==="warehouse"?"📦":role==="supervisor"?"🧭":role==="admin"?"🔧":"🍽️";
+      const _fmtTime   = (iso) => { try { return new Date(iso).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"}); } catch{return "";} };
+
+      // ── Contact List View ─────────────────────────────────────────────
+      const _chatListJsx = (
+        <div style={{flex:1,overflowY:"auto",padding:"0.5rem"}}>
+          {!chatTableReady && (
+            <div style={{margin:"1rem 0.25rem",padding:"0.85rem",background:"rgba(251,191,36,0.08)",border:"1px solid rgba(251,191,36,0.3)",borderRadius:"10px"}}>
+              <div style={{color:"#fbbf24",fontWeight:900,fontSize:"0.78rem",marginBottom:"0.5rem"}}>⚠️ Chat table not found</div>
+              <div style={{color:"#8b9dc3",fontSize:"0.68rem",lineHeight:1.5}}>Run in Supabase → SQL Editor:</div>
+              <pre style={{marginTop:"0.5rem",padding:"0.5rem 0.65rem",background:"#0f172a",border:"1px solid #334155",borderRadius:"7px",color:"#00ff88",fontSize:"0.6rem",lineHeight:1.55,overflowX:"auto",whiteSpace:"pre-wrap",wordBreak:"break-all"}}>{`create table if not exists warehouse_chat (\n  id bigint primary key,\n  conversation_id text not null,\n  sender_name text not null,\n  sender_role text not null,\n  recipient_name text not null,\n  message text not null,\n  sent_at timestamptz not null default now()\n);\ncreate index if not exists idx_wc_conv on warehouse_chat(conversation_id);\ncreate index if not exists idx_wc_time on warehouse_chat(sent_at desc);\nalter table warehouse_chat enable row level security;\ncreate policy "read all" on warehouse_chat for select using (true);\ncreate policy "insert all" on warehouse_chat for insert with check (true);`}</pre>
+              <div style={{marginTop:"0.5rem",color:"#64748b",fontSize:"0.65rem"}}>Then enable Realtime for <b style={{color:"#8b9dc3"}}>warehouse_chat</b> in Database → Replication.</div>
+            </div>
+          )}
+
+          {/* ── Admin / Supervisor: All Conversations Monitor ── */}
+          {(userRole==="admin"||userRole==="supervisor") && chatTableReady && (
+            <div style={{marginBottom:"0.75rem"}}>
+              <div style={{padding:"0.4rem 0.6rem",color:"#a78bfa",fontWeight:900,fontSize:"0.65rem",textTransform:"uppercase",letterSpacing:"0.07em"}}>
+                👁 Monitor All Conversations
+              </div>
+              {chatConvList.length === 0 ? (
+                <div style={{padding:"0.75rem 0.6rem",color:"#475569",fontSize:"0.75rem"}}>No conversations yet.</div>
+              ) : chatConvList.map(conv => {
+                const parts = conv.conversationId.split("::");
+                const label = parts.join(" ↔ ");
+                return (
+                  <div key={conv.conversationId}
+                    onClick={() => {
+                      // Admin opens a monitored conversation (read-only for external convs)
+                      const otherName = parts.find(p => p !== userName) || parts[0];
+                      const otherUser = users.find(u => u.name === otherName) || {name: otherName, role:"unknown"};
+                      setChatContact(otherUser);
+                      setChatView("conversation");
+                    }}
+                    style={{display:"flex",alignItems:"center",gap:"0.6rem",padding:"0.65rem 0.6rem",borderRadius:"10px",cursor:"pointer",marginBottom:"0.3rem",background:"rgba(167,139,250,0.06)",border:"1px solid rgba(167,139,250,0.15)"}}
+                    onMouseEnter={e=>e.currentTarget.style.background="rgba(167,139,250,0.14)"}
+                    onMouseLeave={e=>e.currentTarget.style.background="rgba(167,139,250,0.06)"}>
+                    <div style={{width:34,height:34,borderRadius:"50%",background:"rgba(167,139,250,0.2)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"0.85rem",flexShrink:0}}>💬</div>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{color:"#a78bfa",fontWeight:900,fontSize:"0.75rem",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{label}</div>
+                      <div style={{color:"#64748b",fontSize:"0.65rem",marginTop:"0.1rem",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{conv.message}</div>
+                    </div>
+                    <div style={{color:"#475569",fontSize:"0.6rem",flexShrink:0}}>{_fmtTime(conv.sentAt)}</div>
+                  </div>
+                );
+              })}
+              <div style={{borderBottom:"1px solid #1e293b",margin:"0.5rem 0"}}/>
+              <div style={{padding:"0.4rem 0.6rem",color:"#00ff88",fontWeight:900,fontSize:"0.65rem",textTransform:"uppercase",letterSpacing:"0.07em"}}>
+                Start a Conversation
+              </div>
+            </div>
+          )}
+
+          {/* ── Contact List ── */}
+          {chatableUsers.length === 0 ? (
+            <div style={{textAlign:"center",padding:"2rem 1rem",color:"#475569",fontSize:"0.78rem"}}>
+              No other users in the system yet.
+            </div>
+          ) : (() => {
+            const grouped = {};
+            chatableUsers.forEach(u => {
+              if (!grouped[u.role]) grouped[u.role] = [];
+              grouped[u.role].push(u);
+            });
+            const roleOrder = ["warehouse","supervisor","admin","room"];
+            return roleOrder.filter(r => grouped[r]).map(role => (
+              <div key={role} style={{marginBottom:"0.75rem"}}>
+                <div style={{padding:"0.35rem 0.6rem",color:_roleColor(role),fontWeight:900,fontSize:"0.63rem",textTransform:"uppercase",letterSpacing:"0.07em"}}>
+                  {_roleEmoji(role)} {role.charAt(0).toUpperCase()+role.slice(1)}
+                </div>
+                {grouped[role].map(u => (
+                  <div key={u.id||u.name}
+                    onClick={() => { setChatContact({name:u.name,role:u.role}); setChatView("conversation"); setChatUnreadFrom(prev => { const n={...prev}; delete n[u.name]; return n; }); }}
+                    style={{display:"flex",alignItems:"center",gap:"0.65rem",padding:"0.65rem 0.6rem",borderRadius:"10px",cursor:"pointer",marginBottom:"0.3rem",transition:"background 0.15s",background:chatUnreadFrom[u.name]>0?"rgba(255,68,68,0.07)":"transparent",border:chatUnreadFrom[u.name]>0?"1px solid rgba(255,68,68,0.25)":"1px solid transparent"}}
+                    onMouseEnter={e=>e.currentTarget.style.background="rgba(0,255,136,0.08)"}
+                    onMouseLeave={e=>e.currentTarget.style.background=chatUnreadFrom[u.name]>0?"rgba(255,68,68,0.07)":"transparent"}>
+                    <div style={{width:36,height:36,borderRadius:"50%",background:_roleColor(u.role)+"22",border:`1.5px solid ${_roleColor(u.role)}55`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"1rem",flexShrink:0}}>
+                      {_roleEmoji(u.role)}
+                    </div>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{color:"#e2e8f0",fontWeight:800,fontSize:"0.82rem"}}>{u.name}</div>
+                      <div style={{color:_roleColor(u.role),fontSize:"0.65rem",marginTop:"0.1rem",textTransform:"capitalize"}}>{u.role}{u.shift?` · ${u.shift} shift`:""}</div>
+                    </div>
+                    <div style={{position:"relative",display:"flex",alignItems:"center",justifyContent:"center",width:22,flexShrink:0}}>
+                      {chatUnreadFrom[u.name] > 0 ? (
+                        <span style={{background:"#ff4444",color:"#fff",borderRadius:"50%",minWidth:20,height:20,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"0.62rem",fontWeight:900,padding:"0 3px"}}>
+                          {chatUnreadFrom[u.name] > 9 ? "9+" : chatUnreadFrom[u.name]}
+                        </span>
+                      ) : (
+                        <span style={{color:"#334155",fontSize:"0.85rem"}}>›</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ));
+          })()}
+        </div>
+      );
+
+      // ── Conversation View ─────────────────────────────────────────────
+      const _chatConvJsx = (
+        <div style={{display:"flex",flexDirection:"column",flex:1,minHeight:0}}>
+          {/* Conversation header */}
+          <div style={{padding:"0.6rem 0.85rem",background:"rgba(0,255,136,0.06)",borderBottom:"1px solid #1e293b",display:"flex",alignItems:"center",gap:"0.6rem",flexShrink:0}}>
+            <button onClick={()=>{setChatView("list");setChatContact(null);setChatMessages([]);}}
+              style={{background:"transparent",border:"1px solid #334155",borderRadius:"8px",color:"#00ff88",padding:"0.25rem 0.6rem",cursor:"pointer",fontFamily:"inherit",fontWeight:900,fontSize:"0.8rem"}}>
+              ‹ Back
+            </button>
+            {chatContact && (
+              <>
+                <div style={{width:30,height:30,borderRadius:"50%",background:_roleColor(chatContact.role)+"22",border:`1.5px solid ${_roleColor(chatContact.role)}55`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"0.9rem"}}>
+                  {_roleEmoji(chatContact.role)}
+                </div>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{color:"#e2e8f0",fontWeight:900,fontSize:"0.82rem"}}>{chatContact.name}</div>
+                  <div style={{color:_roleColor(chatContact.role),fontSize:"0.62rem",textTransform:"capitalize"}}>{chatContact.role}</div>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Messages */}
+          <div style={{flex:1,overflowY:"auto",padding:"0.75rem",display:"flex",flexDirection:"column",gap:"0.55rem"}}>
+            {chatLoading && <div style={{textAlign:"center",color:"#64748b",fontSize:"0.8rem",marginTop:"2rem"}}>Loading…</div>}
+            {!chatLoading && chatMessages.length===0 && (
+              <div style={{textAlign:"center",marginTop:"3rem"}}>
+                <div style={{fontSize:"2rem",marginBottom:"0.5rem"}}>💬</div>
+                <div style={{color:"#64748b",fontSize:"0.8rem"}}>No messages yet</div>
+                <div style={{color:"#475569",fontSize:"0.68rem",marginTop:"0.3rem"}}>Say hello to {chatContact?.name} 👋</div>
+              </div>
+            )}
+            {chatMessages.map(msg => {
+              const isMe = msg.senderName===userName;
+              const bubbleBg = isMe
+                ? "linear-gradient(135deg,#00ff88,#00cc6f)"
+                : msg.senderRole==="warehouse" ? "rgba(56,189,248,0.12)"
+                : msg.senderRole==="supervisor"||msg.senderRole==="admin" ? "rgba(167,139,250,0.12)"
+                : "#1e293b";
+              return (
+                <div key={msg.id} style={{display:"flex",flexDirection:"column",alignItems:isMe?"flex-end":"flex-start"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:"0.3rem",marginBottom:"0.18rem",flexDirection:isMe?"row-reverse":"row"}}>
+                    <span style={{fontSize:"0.63rem",color:_roleColor(msg.senderRole),fontWeight:900}}>{_roleEmoji(msg.senderRole)} {msg.senderName}</span>
+                    <span style={{fontSize:"0.58rem",color:"#475569"}}>{_fmtTime(msg.sentAt)}</span>
+                  </div>
+                  <div style={{maxWidth:"82%",padding:"0.55rem 0.8rem",borderRadius:isMe?"14px 14px 4px 14px":"14px 14px 14px 4px",background:bubbleBg,color:isMe?"#0a0e1a":"#e2e8f0",fontSize:"0.85rem",lineHeight:1.45,border:isMe?"none":`1px solid ${_roleColor(msg.senderRole)}33`,wordBreak:"break-word",fontWeight:isMe?700:400}}>
+                    {msg.message}
+                  </div>
+                </div>
+              );
+            })}
+            <div ref={chatEndRef}/>
+          </div>
+
+          {/* Input — inline, not a sub-component, preserves focus */}
+          <div style={{padding:"0.7rem",borderTop:"1px solid #334155",background:"#0f172a",flexShrink:0}}>
+            {!chatTableReady ? (
+              <div style={{color:"#64748b",fontSize:"0.72rem",textAlign:"center",padding:"0.3rem"}}>⚠️ Create the chat table first</div>
+            ) : (
+              <form onSubmit={sendChat} style={{display:"flex",gap:"0.45rem"}}>
+                <input
+                  ref={chatInputRef}
+                  value={chatInput}
+                  onChange={e => setChatInput(e.target.value)}
+                  onKeyDown={e => { if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendChat();} }}
+                  placeholder={`Message ${chatContact?.name||""}…`}
+                  maxLength={500}
+                  style={{flex:1,padding:"0.6rem 0.8rem",background:"#1e293b",border:"1px solid #334155",borderRadius:"10px",color:"#e2e8f0",outline:"none",fontFamily:"inherit",fontSize:"0.88rem"}}
+                  autoComplete="off"
+                />
+                <button type="submit" disabled={!chatInput.trim()}
+                  style={{padding:"0.6rem 0.95rem",background:chatInput.trim()?"linear-gradient(135deg,#00ff88,#00cc6f)":"#1e293b",border:chatInput.trim()?"none":"1px solid #334155",borderRadius:"10px",color:chatInput.trim()?"#0a0e1a":"#475569",fontWeight:900,cursor:chatInput.trim()?"pointer":"default",fontFamily:"inherit",fontSize:"1rem"}}>
+                  ↑
+                </button>
+              </form>
+            )}
+          </div>
+        </div>
+      );
+
+      // ── Assembled Chat Panel (inline var — NOT a component function) ──
+      const _chatUI = chatOpen ? (
+        <div style={{position:"fixed",top:0,right:0,bottom:0,width:"min(360px,100vw)",background:"#0f172a",borderLeft:"2px solid rgba(0,255,136,0.25)",boxShadow:"-8px 0 40px rgba(0,0,0,0.6)",display:"flex",flexDirection:"column",zIndex:1100,fontFamily:"'Space Mono','Courier New',monospace"}}>
+          {/* Header */}
+          <div style={{padding:"0.85rem 1rem",background:"rgba(0,255,136,0.07)",borderBottom:"1px solid rgba(0,255,136,0.18)",display:"flex",alignItems:"center",gap:"0.75rem",flexShrink:0}}>
+            <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="#00ff88" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            <span style={{color:"#00ff88",fontWeight:900,fontSize:"0.88rem",textTransform:"uppercase",letterSpacing:"0.08em",flex:1}}>
+              {chatView==="conversation" && chatContact ? `Chat with ${chatContact.name}` : "Messages"}
+            </span>
+            {(userRole==="admin"||userRole==="supervisor") && chatView==="list" && (
+              <span style={{padding:"0.18rem 0.5rem",background:"rgba(167,139,250,0.15)",border:"1px solid rgba(167,139,250,0.4)",borderRadius:"8px",color:"#a78bfa",fontSize:"0.6rem",fontWeight:900}}>👁 MONITOR</span>
+            )}
+            <button onClick={()=>setChatOpen(false)}
+              style={{background:"transparent",border:"1px solid #334155",borderRadius:"8px",color:"#64748b",padding:"0.25rem 0.55rem",cursor:"pointer",fontWeight:900,fontSize:"0.95rem"}}>
+              ✕
+            </button>
+          </div>
+
+          {/* Body */}
+          {chatView==="list" ? _chatListJsx : _chatConvJsx}
+        </div>
+      ) : null;
+
+      // ── Floating Chat Button (inline var) ────────────────────────────
+      const _chatFab = screen==="login" ? null : (
+        <button
+          onClick={()=>{ setChatOpen(o => !o); }}
+          title="Open Chat"
+          style={{position:"fixed",bottom:"1.5rem",right:chatOpen?"calc(min(360px,100vw) + 1rem)":"1.5rem",width:"52px",height:"52px",background:"linear-gradient(135deg,#00ff88,#00cc6f)",border:"none",borderRadius:"50%",boxShadow:"0 4px 20px rgba(0,255,136,0.45)",cursor:"pointer",zIndex:1099,display:"flex",alignItems:"center",justifyContent:"center",transition:"right 0.25s ease",flexShrink:0}}>
+          <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#0a0e1a" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          {chatUnread>0 && !chatOpen && (
+            <span style={{position:"absolute",top:"-3px",right:"-3px",background:"#ff4444",color:"#fff",borderRadius:"50%",width:"19px",height:"19px",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"0.63rem",fontWeight:900,border:"2px solid #0a0e1a"}}>
+              {chatUnread>9?"9+":chatUnread}
+            </span>
+          )}
+        </button>
+      );
+      // ─────────────────────────────────────────────────────────────────
 
       // HEADER BAR — toast is vanilla JS on #wd-toast, React only handles bell badge
       const TopBar = ({ title, subtitle }) => {
@@ -1523,8 +2373,34 @@
                     Admin
                   </button>
                 )}
+                {/* Break button — warehouse staff only */}
+                {userRole === "warehouse" && (
+                  myActiveBreak ? (
+                    <button className="wd-nav-btn" onClick={() => endBreak(myActiveBreak)}
+                      style={{background:'linear-gradient(135deg,#ff9f43,#e67e22)',border:'none',color:'#fff',animation:'pulse 1.5s ease-in-out infinite',position:'relative'}}>
+                      🍵 {fmtCountdown(breakSecsLeft(myActiveBreak.startedAt))} — Back?
+                    </button>
+                  ) : (
+                    <button className="wd-nav-btn" onClick={startBreak}
+                      style={{background:'transparent',border:'1px solid rgba(255,159,67,0.5)',color:'#ff9f43'}}>
+                      🍵 Break
+                    </button>
+                  )
+                )}
+                {/* Break panel button — supervisor/admin only */}
+                {(canSupervisor) && (
+                  <button className="wd-nav-btn" onClick={() => setBreakPanelOpen(o => !o)}
+                    style={{background:breakPanelOpen?'rgba(255,159,67,0.15)':'transparent',border:'1px solid rgba(255,159,67,0.45)',color:'#ff9f43',position:'relative'}}>
+                    🍵 Breaks
+                    {breaks.filter(b => !b.endedAt).length > 0 && (
+                      <span style={{position:'absolute',top:-5,right:-5,background:'#ff4444',color:'#fff',borderRadius:'50%',width:16,height:16,fontSize:'0.55rem',fontWeight:900,display:'flex',alignItems:'center',justifyContent:'center',border:'2px solid #0a0e1a'}}>
+                        {breaks.filter(b => !b.endedAt).length}
+                      </span>
+                    )}
+                  </button>
+                )}
                 <button className="wd-nav-btn"
-                  onClick={()=>{setUserName("");setUserRole("");setTempName("");setTempRole("");_wdUser="";_wdUserRole="";setRoute("login");}}
+                  onClick={()=>{if(myActiveBreak)endBreak(myActiveBreak);setUserName("");setUserRole("");setTempName("");setTempRole("");_wdUser="";_wdUserRole="";setChatUnreadFrom({});setRoute("login");}}
                   style={{background:'transparent',border:'1px solid #64748b',color:'#64748b'}}>
                   Sign Out
                 </button>
@@ -1558,6 +2434,7 @@
             <div style={gridOverlay} />
             <div style={{ maxWidth:'1600px', margin:'0 auto', position:'relative', zIndex:1 }}>
               <TopBar title="Live Board" subtitle={`👤 ${userName} (${userRole}) • ${connectionMode === "supabase" ? "Supabase ready • Realtime" : "Local + kiosk mode"}`} />
+
 
               <div style={{ display:'flex', gap:'0.75rem', flexWrap:'wrap', alignItems:'center', marginBottom:'0.75rem' }}>
                 <div style={{ color:'#00ff88', fontWeight:900, fontSize:'0.8rem' }}>AUTO-UPDATING</div>
@@ -1653,6 +2530,9 @@
                 </div>
               )}
             </div>
+            {_breakPanelJsx}
+            {_chatUI}
+            {_chatFab}
           </div>
         );
       }
@@ -1744,6 +2624,7 @@
             <div style={gridOverlay} />
             <div style={{ maxWidth:'1400px', margin:'0 auto', position:'relative', zIndex:1 }}>
               <TopBar title="Analytics Dashboard" subtitle={`👤 ${userName} (${userRole}) • ${connectionMode === "supabase" ? "Supabase ready" : "Local + kiosk mode"}`} />
+
 
               {/* Time Filter */}
               <div style={{ marginBottom:'1.5rem', display:'flex', gap:'0.75rem', flexWrap:'wrap' }}>
@@ -1904,6 +2785,9 @@
                 )}
               </div>
             </div>
+            {_breakPanelJsx}
+            {_chatUI}
+            {_chatFab}
           </div>
         );
       }
@@ -2166,6 +3050,9 @@ ${sortedCompleted.map(r => {
                 )}
               </div>
             </div>
+            {_breakPanelJsx}
+            {_chatUI}
+            {_chatFab}
           </div>
         );
       }
@@ -2237,6 +3124,22 @@ ${sortedCompleted.map(r => {
           if (!confirm(`Delete user "${name}"? They will no longer be able to sign in.`)) return;
           adapterRef.current.deleteUser(id).then(() => loadAll());
           setSuccessMsg(`User "${name}" deleted.`);
+          setTimeout(() => setSuccessMsg(""), 3000);
+        };
+
+        const handleArchiveUser = (u) => {
+          if (!confirm(`Archive "${u.name}"?\n\nThey will no longer be able to sign in, but ALL their historical data (requests, breaks, chat) is preserved.`)) return;
+          const updated = { ...u, archivedAt: new Date().toISOString(), archivedBy: userName };
+          adapterRef.current.saveUser(updated).then(() => loadAll());
+          setSuccessMsg(`"${u.name}" archived. All historical data preserved.`);
+          setTimeout(() => setSuccessMsg(""), 4000);
+        };
+
+        const handleUnarchiveUser = (u) => {
+          if (!confirm(`Restore "${u.name}" as an active user?`)) return;
+          const updated = { ...u, archivedAt: null, archivedBy: null };
+          adapterRef.current.saveUser(updated).then(() => loadAll());
+          setSuccessMsg(`"${u.name}" restored to active.`);
           setTimeout(() => setSuccessMsg(""), 3000);
         };
 
@@ -2470,6 +3373,7 @@ ${sortedCompleted.map(r => {
                     <span style={{ color:'#ff4444', marginLeft:'0.5rem' }}>
                       ({(() => {
                         const filtered = users.filter(u => {
+                          if (u.archivedAt) return false;
                           if (!userFilterRoles.includes(u.role)) return false;
                           const userShift = u.shift || "none";
                           if (!userFilterShifts.includes(userShift)) return false;
@@ -2504,6 +3408,7 @@ ${sortedCompleted.map(r => {
                   <div style={{ display:'flex', flexDirection:'column', gap:'0.5rem' }}>
                     {[...users]
                       .filter(u => {
+                        if (u.archivedAt) return false; // hide archived from active list
                         // Role filter
                         if (!userFilterRoles.includes(u.role)) return false;
                         
@@ -2580,10 +3485,16 @@ ${sortedCompleted.map(r => {
                                 ✏️ Edit
                               </button>
                               {u.name !== userName && (
-                                <button onClick={() => handleDeleteUser(u.id, u.name)}
-                                  style={{ padding:'0.5rem 1rem', background:'rgba(255,68,68,0.1)', border:'1px solid #ff4444', borderRadius:'6px', color:'#ff4444', fontWeight:900, cursor:'pointer', fontSize:'0.8rem' }}>
-                                  🗑️ Delete
-                                </button>
+                                <>
+                                  <button onClick={() => handleArchiveUser(u)}
+                                    style={{ padding:'0.5rem 1rem', background:'rgba(255,159,67,0.1)', border:'1px solid #ff9f43', borderRadius:'6px', color:'#ff9f43', fontWeight:900, cursor:'pointer', fontSize:'0.8rem' }}>
+                                    📦 Archive
+                                  </button>
+                                  <button onClick={() => handleDeleteUser(u.id, u.name)}
+                                    style={{ padding:'0.5rem 1rem', background:'rgba(255,68,68,0.1)', border:'1px solid #ff4444', borderRadius:'6px', color:'#ff4444', fontWeight:900, cursor:'pointer', fontSize:'0.8rem' }}>
+                                    🗑️ Delete
+                                  </button>
+                                </>
                               )}
                             </div>
                           </>
@@ -2593,6 +3504,91 @@ ${sortedCompleted.map(r => {
                   </div>
                 )}
               </div>
+
+
+              {/* ═══ ARCHIVED STAFF ═══ */}
+              {(() => {
+                const archivedUsers = users.filter(u => u.archivedAt);
+                if (archivedUsers.length === 0) return null;
+                return (
+                  <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(255,159,67,0.25)', borderRadius:'14px', padding:'1.5rem', marginBottom:'1.5rem' }}>
+                    <div style={{ color:'#ff9f43', fontWeight:900, fontSize:'1.1rem', textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:'1.25rem', display:'flex', alignItems:'center', gap:'0.75rem' }}>
+                      📦 Archived Staff
+                      <span style={{ padding:'0.2rem 0.6rem', background:'rgba(255,159,67,0.15)', border:'1px solid rgba(255,159,67,0.35)', borderRadius:'10px', fontSize:'0.72rem' }}>{archivedUsers.length}</span>
+                      <span style={{ color:'#64748b', fontSize:'0.72rem', fontWeight:400, textTransform:'none', marginLeft:'0.25rem' }}>Historical data preserved · cannot log in</span>
+                    </div>
+                    <div style={{ display:'flex', flexDirection:'column', gap:'0.75rem' }}>
+                      {archivedUsers.sort((a,b) => new Date(b.archivedAt) - new Date(a.archivedAt)).map(u => {
+                        // Gather this person's stats from all data sources
+                        const userReqs = [...requests, ...archivedRequests].filter(r => r.submittedBy === u.name || r.claimedBy === u.name || r.completedBy === u.name);
+                        const completedByUser = userReqs.filter(r => r.completedBy === u.name).length;
+                        const submittedByUser = userReqs.filter(r => r.submittedBy === u.name).length;
+                        const userBreaks = breaks.filter(b => b.workerName === u.name && b.endedAt);
+                        const totalBreakMins = userBreaks.reduce((s,b) => s+(b.durationMins||0),0);
+                        const overdueBreaks = userBreaks.filter(b => b.wasOverdue).length;
+                        const roleColors2 = { room:'#8b9dc3', warehouse:'#fbbf24', supervisor:'#a78bfa', admin:'#ff4444' };
+                        const roleEmojis2 = { room:'🍽️', warehouse:'📦', supervisor:'🧭', admin:'🔧' };
+                        return (
+                          <div key={u.id} style={{ padding:'1rem 1.1rem', background:'rgba(255,159,67,0.04)', border:'1px solid rgba(255,159,67,0.15)', borderRadius:'12px' }}>
+                            <div style={{ display:'flex', alignItems:'center', gap:'0.85rem', flexWrap:'wrap' }}>
+                              {/* Identity */}
+                              <div style={{ flex:'1 1 200px' }}>
+                                <div style={{ display:'flex', alignItems:'center', gap:'0.5rem', marginBottom:'0.25rem' }}>
+                                  <span style={{ color:'#64748b', fontSize:'1.1rem' }}>👤</span>
+                                  <span style={{ fontWeight:900, color:'#94a3b8', fontSize:'0.95rem', textDecoration:'line-through' }}>{u.name}</span>
+                                  <span style={{ padding:'0.15rem 0.5rem', background:'rgba(255,159,67,0.12)', border:'1px solid rgba(255,159,67,0.3)', borderRadius:'8px', color:'#ff9f43', fontSize:'0.62rem', fontWeight:900 }}>ARCHIVED</span>
+                                </div>
+                                <div style={{ fontSize:'0.75rem', color:'#475569', display:'flex', gap:'0.6rem', flexWrap:'wrap' }}>
+                                  <span style={{ color: roleColors2[u.role] }}>{roleEmojis2[u.role]} {u.role}</span>
+                                  {u.shift && <span>{u.shift} Shift</span>}
+                                  <span>Archived {new Date(u.archivedAt).toLocaleDateString()} by {u.archivedBy}</span>
+                                </div>
+                              </div>
+
+                              {/* Historical stats */}
+                              <div style={{ display:'flex', gap:'0.5rem', flexWrap:'wrap' }}>
+                                {u.role === 'warehouse' || u.role === 'supervisor' ? (
+                                  <>
+                                    <div style={{ padding:'0.45rem 0.65rem', background:'#1e293b', borderRadius:'8px', textAlign:'center', minWidth:70 }}>
+                                      <div style={{ color:'#00ff88', fontWeight:900, fontSize:'0.9rem' }}>{completedByUser}</div>
+                                      <div style={{ color:'#475569', fontSize:'0.58rem', textTransform:'uppercase' }}>Orders filled</div>
+                                    </div>
+                                    <div style={{ padding:'0.45rem 0.65rem', background:'#1e293b', borderRadius:'8px', textAlign:'center', minWidth:70 }}>
+                                      <div style={{ color:'#ff9f43', fontWeight:900, fontSize:'0.9rem' }}>{userBreaks.length}</div>
+                                      <div style={{ color:'#475569', fontSize:'0.58rem', textTransform:'uppercase' }}>Breaks taken</div>
+                                    </div>
+                                    <div style={{ padding:'0.45rem 0.65rem', background:'#1e293b', borderRadius:'8px', textAlign:'center', minWidth:70 }}>
+                                      <div style={{ color: overdueBreaks > 0 ? '#ff4444' : '#64748b', fontWeight:900, fontSize:'0.9rem' }}>{overdueBreaks}</div>
+                                      <div style={{ color:'#475569', fontSize:'0.58rem', textTransform:'uppercase' }}>Overdue breaks</div>
+                                    </div>
+                                    <div style={{ padding:'0.45rem 0.65rem', background:'#1e293b', borderRadius:'8px', textAlign:'center', minWidth:70 }}>
+                                      <div style={{ color:'#38bdf8', fontWeight:900, fontSize:'0.9rem' }}>{totalBreakMins}m</div>
+                                      <div style={{ color:'#475569', fontSize:'0.58rem', textTransform:'uppercase' }}>Total break time</div>
+                                    </div>
+                                  </>
+                                ) : (
+                                  <>
+                                    <div style={{ padding:'0.45rem 0.65rem', background:'#1e293b', borderRadius:'8px', textAlign:'center', minWidth:70 }}>
+                                      <div style={{ color:'#fbbf24', fontWeight:900, fontSize:'0.9rem' }}>{submittedByUser}</div>
+                                      <div style={{ color:'#475569', fontSize:'0.58rem', textTransform:'uppercase' }}>Orders placed</div>
+                                    </div>
+                                  </>
+                                )}
+                              </div>
+
+                              {/* Restore button */}
+                              <button onClick={() => handleUnarchiveUser(u)}
+                                style={{ padding:'0.5rem 1rem', background:'rgba(0,255,136,0.1)', border:'1px solid #00ff88', borderRadius:'8px', color:'#00ff88', fontWeight:900, cursor:'pointer', fontSize:'0.78rem', whiteSpace:'nowrap', flexShrink:0 }}>
+                                ♻️ Restore
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* ═══ ROOM ANALYTICS ═══ */}
               <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(255,68,68,0.2)', borderRadius:'14px', padding:'1.5rem', marginBottom:'1.5rem' }}>
@@ -2893,6 +3889,9 @@ ${filteredArchive.map(r => `<tr>
                 )}
               </div>
             </div>
+            {_breakPanelJsx}
+            {_chatUI}
+            {_chatFab}
           </div>
         );
       }
@@ -3167,6 +4166,9 @@ ${filteredArchive.map(r => `<tr>
               </div>
 
             </div>
+            {_breakPanelJsx}
+            {_chatUI}
+            {_chatFab}
           </div>
         );
       }
@@ -3200,6 +4202,7 @@ ${filteredArchive.map(r => `<tr>
             <div style={gridOverlay} />
             <div style={{ maxWidth:'1500px', margin:'0 auto', position:'relative', zIndex:1 }}>
               <TopBar title="Pick List" subtitle={`👤 ${userName} (${userRole}) • ${connectionMode === "supabase" ? "Supabase ready • Realtime updates" : "Local + kiosk mode"}`} />
+
 
               <div style={{ marginBottom:'0.9rem', padding:'0.6rem 0.9rem', background:'rgba(0,255,136,0.1)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'10px', color:'#00ff88', fontSize:'0.75rem', textAlign:'center', letterSpacing:'0.05em' }}>
                 ✅ Claim → Start → Done • Tap ↩ to undo any step • Multi-user safe
@@ -3443,6 +4446,9 @@ ${filteredArchive.map(r => `<tr>
                 </div>
               )}
             </div>
+            {_breakPanelJsx}
+            {_chatUI}
+            {_chatFab}
           </div>
         );
       }
@@ -3576,6 +4582,9 @@ ${filteredArchive.map(r => `<tr>
                 </div>
               )}
             </form>
+            {_breakPanelJsx}
+            {_chatUI}
+            {_chatFab}
           </div>
         </div>
       );
