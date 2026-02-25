@@ -46,9 +46,52 @@
       min-height: 100vh;
       width: 100%;
     }
+    /* Remove number input spinner arrows */
+    input[type=number]::-webkit-inner-spin-button,
+    input[type=number]::-webkit-outer-spin-button { -webkit-appearance:none; margin:0; }
+    input[type=number] { -moz-appearance:textfield; }
     /* Prevent zoom on input focus */
-    input, select, textarea {
-      font-size: 16px !important;
+    input, select, textarea { font-size:16px !important; }
+    /* ── Mobile-responsive TopBar ── */
+    .wd-topbar-wrap { display:flex; flex-direction:column; gap:0.6rem; margin-bottom:1.25rem; }
+    .wd-header-box  { display:inline-flex; align-items:center; gap:0.65rem; padding:0.6rem 1rem; background:rgba(0,255,136,0.1); border:2px solid #00ff88; border-radius:10px; box-shadow:0 0 18px rgba(0,255,136,0.25); min-width:0; flex-shrink:0; }
+    .wd-title       { font-size:1.2rem; font-weight:900; color:#00ff88; text-transform:uppercase; letter-spacing:0.07em; margin:0; }
+    .wd-subtitle    { font-size:0.68rem; color:#8b9dc3; letter-spacing:0.03em; margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:240px; }
+    .wd-metrics     { display:flex; gap:0.55rem; padding:0.5rem 0.75rem; background:rgba(15,23,42,0.8); border:1px solid rgba(0,255,136,0.2); border-radius:10px; flex-shrink:0; }
+    .wd-metric      { text-align:center; min-width:34px; }
+    .wd-metric-val  { font-size:1.1rem; font-weight:900; line-height:1; }
+    .wd-metric-lbl  { font-size:0.58rem; color:#8b9dc3; text-transform:uppercase; margin-top:2px; white-space:nowrap; }
+    .wd-nav         { display:flex; gap:0.4rem; flex-wrap:wrap; align-items:center; }
+    .wd-nav-btn     { padding:0.55rem 0.85rem; border-radius:10px; font-weight:800; cursor:pointer; text-transform:uppercase; letter-spacing:0.04em; font-family:inherit; font-size:0.78rem; white-space:nowrap; }
+    @media (max-width:480px) {
+      .wd-title      { font-size:1rem; }
+      .wd-subtitle   { font-size:0.6rem; max-width:150px; }
+      .wd-metrics    { gap:0.4rem; padding:0.45rem 0.6rem; }
+      .wd-metric     { min-width:28px; }
+      .wd-metric-val { font-size:0.95rem; }
+      .wd-metric-lbl { font-size:0.5rem; }
+      .wd-nav-btn    { padding:0.5rem 0.7rem; font-size:0.72rem; }
+      .wd-header-box { padding:0.5rem 0.8rem; gap:0.5rem; }
+    }
+    /* Mobile TopBar */
+    .wd-topbar-wrap { display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:0.6rem; margin-bottom:1.25rem; }
+    .wd-header-box { display:inline-flex; align-items:center; gap:0.65rem; padding:0.6rem 1rem; background:rgba(0,255,136,0.1); border:2px solid #00ff88; border-radius:10px; box-shadow:0 0 18px rgba(0,255,136,0.25); min-width:0; }
+    .wd-title { margin:0; font-size:1.2rem; font-weight:900; color:#00ff88; text-transform:uppercase; letter-spacing:0.07em; }
+    .wd-subtitle { margin:0; font-size:0.68rem; color:#8b9dc3; letter-spacing:0.03em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:220px; }
+    .wd-metrics { display:flex; gap:0.55rem; padding:0.5rem 0.7rem; background:rgba(15,23,42,0.8); border:1px solid rgba(0,255,136,0.2); border-radius:10px; flex-shrink:0; }
+    .wd-metric { text-align:center; min-width:36px; }
+    .wd-metric-val { font-size:1.1rem; font-weight:900; line-height:1; }
+    .wd-metric-lbl { font-size:0.58rem; color:#8b9dc3; text-transform:uppercase; margin-top:2px; white-space:nowrap; }
+    .wd-nav { display:flex; gap:0.45rem; flex-wrap:wrap; align-items:center; width:100%; }
+    .wd-nav-btn { padding:0.55rem 0.85rem; border-radius:10px; font-weight:800; cursor:pointer; text-transform:uppercase; letter-spacing:0.04em; font-family:inherit; font-size:0.78rem; white-space:nowrap; }
+    @media(max-width:480px) {
+      .wd-title { font-size:1rem; }
+      .wd-subtitle { font-size:0.6rem; max-width:160px; }
+      .wd-metric-val { font-size:0.95rem; }
+      .wd-metric-lbl { font-size:0.52rem; }
+      .wd-metrics { gap:0.4rem; padding:0.45rem 0.6rem; }
+      .wd-nav-btn { padding:0.5rem 0.7rem; font-size:0.72rem; }
+      .wd-header-box { padding:0.5rem 0.75rem; gap:0.5rem; }
     }
 
     /* NOTIFICATION — styles in <head>, React never touches them */
@@ -127,7 +170,8 @@
      *   cancelled_at timestamptz,
      *   cancelled_by text,
      *   version int not null default 1,
-     *   last_updated_at timestamptz not null default now()
+     *   last_updated_at timestamptz not null default now(),
+     *   archived_at timestamptz
      * );
      *
      * create table if not exists warehouse_users (
@@ -186,6 +230,8 @@
       SLA_MINUTES_BAD: 10,
       SLA_MINUTES_CRIT: 20,
       ROOMS: ["Bistro", "Salad", "Apple", "MasterPack", "Boxes", "Film/Labels", "Other", "******", "Loading", "Putaway" ],
+      // Rooms that are warehouse-internal only — hidden from room profile request form
+      WAREHOUSE_ONLY_ROOMS: ["Other", "Loading", "******", "Putaway"],
       // 🎨 ROOM COLORS - Edit these to change room header colors!
       ROOM_COLORS: {
          "Bistro": "#38bdf8",         // Blue
@@ -279,6 +325,7 @@
     const _addSeen = k => { _seen.add(k); try{localStorage.setItem(_LS,JSON.stringify([..._seen].slice(-500)));}catch(e){} };
     let _seeded = false;  // first loadAll seeds ALL existing statuses — no toasts for old data
     let _wdUser = "";     // kept current via useEffect
+    let _wdUserRole = ""; // kept current via useEffect
     let _toastTmr = null;
 
     function _showToast(icon, title, detail, color, onAdd) {
@@ -332,7 +379,8 @@
         cancelledAt: r.cancelled_at || null,
         cancelledBy: r.cancelled_by || null,
         version: Number(r.version || 1),
-        lastUpdatedAt: r.last_updated_at || r.submitted_at
+        lastUpdatedAt: r.last_updated_at || r.submitted_at,
+        archivedAt: r.archived_at || null
       });
 
       const supaDenormalize = (r)=> ({
@@ -355,7 +403,8 @@
         cancelled_at: r.cancelledAt || null,
         cancelled_by: r.cancelledBy || null,
         version: Number(r.version||1),
-        last_updated_at: r.lastUpdatedAt || nowIso()
+        last_updated_at: r.lastUpdatedAt || nowIso(),
+        archived_at: r.archivedAt || null
       });
 
       const adapter = {
@@ -551,6 +600,7 @@
 
       // Keep module-level user tracker in sync
       useEffect(() => { _wdUser = userName; }, [userName]);
+      useEffect(() => { _wdUserRole = userRole; }, [userRole]);
 
       const _onNotif = (n) => {
         setBellNotifs(prev => [{ id: Date.now(), ...n, time: new Date(), unread: true }, ...prev].slice(0, 50));
@@ -558,23 +608,54 @@
 
       const detectStatusChanges = (fresh) => {
         if (!_seeded) {
-          // First loadAll: stamp EVERYTHING regardless of username.
-          // This is critical — at this point _wdUser may still be ""
-          // so we cannot filter by user. We just mark all existing as seen.
-          fresh.forEach(r => _addSeen(r.id + ":" + r.status));
+          // First load: stamp everything as seen — no toasts for existing data
+          fresh.forEach(r => {
+            _addSeen(r.id + ":pending");
+            _addSeen(r.id + ":claimed");
+            _addSeen(r.id + ":in_progress");
+            _addSeen(r.id + ":completed");
+            _addSeen(r.id + ":cancelled");
+          });
           _seeded = true;
           return;
         }
-        if (!_wdUser) return;
+        if (!_wdUser || !_wdUserRole) return;
+
         fresh.forEach(req => {
-          if (req.submittedBy !== _wdUser) return;
           const key = req.id + ":" + req.status;
-          if (_seen.has(key)) return;  // already toasted — never again
+          if (_seen.has(key)) return; // already toasted — never again
           _addSeen(key);
-          if (req.status === "pending") return;
-          const lbl = req.item + " \u00d7 " + req.qty, rm = req.room;
-          if (req.status !== "completed") return;
-          _showToast("\u2705", lbl + " \u2014 Delivered!", "Completed by " + (req.completedBy||"warehouse") + " \u00b7 " + rm, "#00ff88", _onNotif);
+
+          const lbl = req.item + " \u00d7 " + req.qty;
+          const rm = req.room;
+
+          if (_wdUserRole === "warehouse") {
+            // Warehouse: notified on ALL new incoming requests
+            if (req.status === "pending") {
+              const pri = req.priority ? " \u{1F525} HIGH PRIORITY" : "";
+              _showToast("\u{1F4E6}", "New Request: " + lbl, rm + pri, "#fbbf24", _onNotif);
+            }
+
+          } else if (_wdUserRole === "supervisor" || _wdUserRole === "admin") {
+            // Supervisor/Admin: high priority new requests + all completions + all cancellations
+            if (req.status === "pending" && req.priority) {
+              _showToast("\u{1F525}", "HIGH PRIORITY: " + lbl, "New request \u00b7 " + rm, "#ff4444", _onNotif);
+            } else if (req.status === "completed") {
+              _showToast("\u2705", lbl + " \u2014 Delivered", "Completed by " + (req.completedBy||"warehouse") + " \u00b7 " + rm, "#00ff88", _onNotif);
+            } else if (req.status === "cancelled") {
+              _showToast("\u274c", lbl + " \u2014 Cancelled", "Cancelled \u00b7 " + rm + " \u00b7 by " + (req.cancelledBy||"warehouse"), "#ff4444", _onNotif);
+            }
+
+          } else if (_wdUserRole === "room") {
+            // Room profile: ONLY notified when their OWN submitted request is completed
+            if (req.submittedBy !== _wdUser) return;
+            if (req.status === "completed") {
+              _showToast("\u2705", "Order Delivered! " + lbl, "Your order for " + rm + " is done \u2014 picked up by warehouse", "#00ff88", _onNotif);
+            }
+            if (req.status === "cancelled") {
+              _showToast("\u274c", "Order Cancelled: " + lbl, rm + " \u2014 contact your supervisor", "#ff4444", _onNotif);
+            }
+          }
         });
       };
       // ────────────────────────────────────────────────────────────────────
@@ -596,6 +677,18 @@
       });
       const [timeFilter, setTimeFilter] = useState("today"); // for dashboard analytics
       const [adminTimeFilter, setAdminTimeFilter] = useState("day"); // for admin panel
+      const [archivedRequests, setArchivedRequests] = useState([]);
+      const [archiveReqTab, setArchiveReqTab] = useState("active"); // "active" | "archive" in admin request mgmt
+      const [exportDateFrom, setExportDateFrom] = useState("");
+      const [exportDateTo, setExportDateTo] = useState("");
+      const [exportRoom, setExportRoom] = useState("");
+      const [lastArchiveDate, setLastArchiveDate] = useState(() => localStorage.getItem("wd_lastArchiveDate") || "");
+      const [arcFrom, setArcFrom] = useState(() => {
+        const d = new Date(Date.now() - 24 * 60 * 60 * 1000);
+        return d.toISOString().split("T")[0];
+      });
+      const [arcTo, setArcTo] = useState("");
+      const [arcRoom, setArcRoom] = useState("");
 
       // Users & Assignments — loaded from adapter (Supabase or localStorage)
       const [users, setUsers] = useState([]);
@@ -700,9 +793,13 @@
           const adapter = adapterRef.current;
           if (!adapter) return;
           const data = await adapter.loadAll();
-          const fresh = Array.isArray(data) ? data : [];
-          detectStatusChanges(fresh);
-          setRequests(fresh);
+          const all = Array.isArray(data) ? data : [];
+          // Split archived vs active
+          const active = all.filter(r => !r.archivedAt);
+          const archived = all.filter(r => !!r.archivedAt);
+          detectStatusChanges(active);
+          setRequests(active);
+          setArchivedRequests(archived);
           if (adapter.loadUsers) {
             const [u, a] = await Promise.all([adapter.loadUsers(), adapter.loadAssignments()]);
             setUsers(Array.isArray(u) ? u : []);
@@ -731,42 +828,7 @@
             // For supabase we poll every 10s; for local every 2.5s.
             const pollMs = adapter.kind === "supabase" ? 10000 : CONFIG.REFRESH_MS;
             const t = setInterval(() => loadAll().catch(console.error), pollMs);
-
-            // ── ANDROID FIX ───────────────────────────────────────────────
-            // Android Chrome kills the Supabase Realtime WebSocket whenever the
-            // screen dims or the tab backgrounds. iPhone Safari does not.
-            // Solution: on visibilitychange and online events, immediately reload
-            // data AND rebuild the realtime channel so Android reconnects cleanly.
-            let resubTimer = null;
-            const handleVisible = async () => {
-              if (document.visibilityState !== "visible") return;
-              clearTimeout(resubTimer);
-              resubTimer = setTimeout(async () => {
-                try {
-                  await loadAll();
-                  if (adapter.kind === "supabase") {
-                    adapter.destroy();          // tear down dead WebSocket
-                    await adapter.init();       // fresh realtime channel
-                  }
-                } catch(e) { console.warn("Reconnect on wake:", e); }
-              }, 350); // small delay so network is ready after screen-on
-            };
-            const handleOnline = async () => {
-              try {
-                await loadAll();
-                if (adapter.kind === "supabase") { adapter.destroy(); await adapter.init(); }
-              } catch(e) {}
-            };
-            document.addEventListener("visibilitychange", handleVisible);
-            window.addEventListener("online", handleOnline);
-
-            return () => {
-              clearInterval(t);
-              clearTimeout(resubTimer);
-              document.removeEventListener("visibilitychange", handleVisible);
-              window.removeEventListener("online", handleOnline);
-              adapter.destroy();
-            };
+            return () => { clearInterval(t); adapter.destroy(); };
           } catch (error) {
             console.error("Failed to initialize app:", error);
             setLoading(false);
@@ -838,8 +900,15 @@
         const pending = requests.filter(r => r.status === "pending").length;
         const claimed = requests.filter(r => r.status === "claimed").length;
         const inprog = requests.filter(r => r.status === "in_progress").length;
-        const completed = requests.filter(r => r.status === "completed").length;
         const cancelled = requests.filter(r => r.status === "cancelled").length;
+        // Done resets daily — only count today's completions
+        const todayStart = new Date();
+        todayStart.setHours(0, 0, 0, 0);
+        const completed = requests.filter(r =>
+          r.status === "completed" &&
+          r.completedAt &&
+          new Date(r.completedAt) >= todayStart
+        ).length;
         return { total, pending, claimed, inprog, completed, cancelled };
       }, [requests]);
 
@@ -871,7 +940,7 @@
         return {
           item: "",
           room: "",
-          qty: 1,
+          qty: 0,
           adjQty: 0,
           reqTime: timeString,
           delTime: "",
@@ -892,7 +961,13 @@
         return () => document.removeEventListener("mousedown", handleClickOutside);
       }, []);
 
-      const filteredRooms = useMemo(() => rooms.filter(r => r.toLowerCase().includes(roomSearch.toLowerCase())), [rooms, roomSearch]);
+      const filteredRooms = useMemo(() => {
+        // Room profiles can't see warehouse-internal rooms
+        const availableRooms = userRole === "room"
+          ? rooms.filter(r => !CONFIG.WAREHOUSE_ONLY_ROOMS.includes(r))
+          : rooms;
+        return availableRooms.filter(r => r.toLowerCase().includes(roomSearch.toLowerCase()));
+      }, [rooms, roomSearch, userRole]);
 
       const submitRequest = async (e)=> {
         e.preventDefault();
@@ -957,6 +1032,44 @@
           await loadAll();
         } catch (error) {
           console.error("Failed to claim request:", error);
+        }
+      };
+
+      // Undo: claimed → pending
+      const unclaimRequest = async (id)=> {
+        if (!canWarehouseAct) return;
+        try {
+          await adapterRef.current.updatePartial(id, (r)=> {
+            if (r.status !== "claimed") return r;
+            // Only the person who claimed it (or supervisor) can unclaim
+            if (r.claimedBy !== userName && !canSupervisor) return r;
+            r.status = "pending";
+            r.claimedBy = null;
+            r.claimedAt = null;
+            r.lastUpdatedAt = nowIso();
+            return r;
+          });
+          await loadAll();
+        } catch (error) {
+          console.error("Failed to unclaim request:", error);
+        }
+      };
+
+      // Undo: in_progress → claimed
+      const unstartRequest = async (id)=> {
+        if (!canWarehouseAct) return;
+        try {
+          await adapterRef.current.updatePartial(id, (r)=> {
+            if (r.status !== "in_progress") return r;
+            if (r.claimedBy !== userName && !canSupervisor) return r;
+            r.status = "claimed";
+            r.startedAt = null;
+            r.lastUpdatedAt = nowIso();
+            return r;
+          });
+          await loadAll();
+        } catch (error) {
+          console.error("Failed to unstart request:", error);
         }
       };
 
@@ -1058,8 +1171,7 @@
         }
       };
 
-      const deleteRequest = async (id) => {
-        if (!canAdmin) return;
+      const deleteRequest = async (id) => {        if (!canAdmin) return;
         if (!confirm("Delete this request permanently? This cannot be undone.")) return;
         try {
           const adapter = adapterRef.current;
@@ -1077,6 +1189,73 @@
           alert("Failed to delete request");
         }
       };
+
+      // ── ARCHIVE ────────────────────────────────────────────────────────
+      const archiveCompleted = async () => {
+        try {
+          const adapter = adapterRef.current;
+          const toArchive = requests.filter(r =>
+            (r.status === "completed" || r.status === "cancelled") && !r.archivedAt
+          );
+          if (toArchive.length === 0) {
+            setSuccessMsg("Nothing to archive — no completed/cancelled requests.");
+            setTimeout(() => setSuccessMsg(""), 3000);
+            return;
+          }
+          const archiveTs = new Date().toISOString();
+          for (const r of toArchive) {
+            await adapter.updatePartial(r.id, (rec) => {
+              rec.archivedAt = archiveTs;
+              rec.lastUpdatedAt = archiveTs;
+              return rec;
+            });
+          }
+          const today = new Date().toISOString().split("T")[0];
+          setLastArchiveDate(today);
+          localStorage.setItem("wd_lastArchiveDate", today);
+          await loadAll();
+          setSuccessMsg(`✅ Archived ${toArchive.length} completed/cancelled request${toArchive.length !== 1 ? "s" : ""}.`);
+          setTimeout(() => setSuccessMsg(""), 4000);
+        } catch (err) {
+          console.error("Archive failed:", err);
+          setSuccessMsg("❌ Archive failed — check console.");
+          setTimeout(() => setSuccessMsg(""), 4000);
+        }
+      };
+
+      // Midnight auto-archive: checks once on mount + every hour
+      useEffect(() => {
+        const checkMidnightArchive = async () => {
+          const today = new Date().toISOString().split("T")[0];
+          const stored = localStorage.getItem("wd_lastArchiveDate") || "";
+          if (stored === today) return; // already archived today
+          const adapter = adapterRef.current;
+          if (!adapter) return;
+          try {
+            const data = await adapter.loadAll();
+            const all = Array.isArray(data) ? data : [];
+            const toArchive = all.filter(r =>
+              (r.status === "completed" || r.status === "cancelled") && !r.archivedAt
+            );
+            const archiveTs = new Date().toISOString();
+            for (const r of toArchive) {
+              await adapter.updatePartial(r.id, (rec) => {
+                rec.archivedAt = archiveTs;
+                rec.lastUpdatedAt = archiveTs;
+                return rec;
+              }).catch(() => {});
+            }
+            localStorage.setItem("wd_lastArchiveDate", today);
+            setLastArchiveDate(today);
+            if (toArchive.length > 0) await loadAll();
+          } catch (e) { console.warn("Auto-archive check failed", e); }
+        };
+        const initTimer = setTimeout(() => { if (adapterRef.current) checkMidnightArchive(); }, 6000);
+        const hourTimer = setInterval(checkMidnightArchive, 60 * 60 * 1000);
+        return () => { clearTimeout(initTimer); clearInterval(hourTimer); };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, []);
+      // ───────────────────────────────────────────────────────────────────
 
       // UI theme bits
       const bg = { background:'linear-gradient(135deg, #0a0e1a 0%, #1a1f2e 100%)' };
@@ -1243,7 +1422,7 @@
                 <div style={{position:'fixed',inset:0,zIndex:9997}} onClick={()=>setNotifPanelOpen(false)}/>
                 <div style={{position:'fixed',top:'4.5rem',right:'1rem',width:320,maxWidth:'calc(100vw - 2rem)',background:'#0f172a',border:'1.5px solid rgba(0,255,136,0.28)',borderRadius:'14px',zIndex:9998,boxShadow:'0 18px 50px rgba(0,0,0,0.8)',fontFamily:"'Space Mono',monospace",display:'flex',flexDirection:'column',maxHeight:'65vh',overflow:'hidden'}}>
                   <div style={{padding:'0.8rem 1rem',borderBottom:'1px solid #1e293b',display:'flex',alignItems:'center',justifyContent:'space-between',flexShrink:0}}>
-                    <span style={{fontSize:'0.72rem',fontWeight:700,color:'#00ff88',letterSpacing:'0.08em',textTransform:'uppercase'}}>🔔 Notifications</span>
+                    <span style={{fontSize:'0.72rem',fontWeight:700,color:'#00ff88',letterSpacing:'0.08em',textTransform:'uppercase'}}>\uD83D\uDD14 Notifications</span>
                     <div style={{display:'flex',gap:'0.65rem',alignItems:'center'}}>
                       {bellNotifs.some(n=>n.unread) && (
                         <button onClick={()=>setBellNotifs(p=>p.map(n=>({...n,unread:false})))} style={{fontSize:'0.6rem',color:'#64748b',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',textTransform:'uppercase'}}>Mark all read</button>
@@ -1271,41 +1450,89 @@
                 </div>
               </>
             )}
+
+            {/* Floating bell — mobile only */}
             <button className="wd-bell-float" onClick={()=>setNotifPanelOpen(p=>!p)} style={{position:'relative'}}>
               <Bell size={22} color="#00ff88"/>
               {unread>0 && <span style={{position:'absolute',top:-4,right:-4,background:'#ff4444',color:'#fff',fontSize:'0.55rem',fontWeight:900,minWidth:18,height:18,borderRadius:9,display:'flex',alignItems:'center',justifyContent:'center',border:'2px solid #0a0e1a',padding:'0 3px'}}>{unread}</span>}
             </button>
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:'0.75rem',marginBottom:'1.25rem'}}>
-              <div style={{display:'flex',alignItems:'center',gap:'0.85rem'}}>
-                <div style={{display:'inline-flex',alignItems:'center',gap:'0.85rem',padding:'0.7rem 1.25rem',background:'rgba(0,255,136,0.1)',border:'2px solid #00ff88',borderRadius:'10px',boxShadow:'0 0 18px rgba(0,255,136,0.25)'}}>
-                  <Truck size={28} color="#00ff88"/>
-                  <div>
-                    <div style={{margin:0,fontSize:'1.4rem',fontWeight:900,color:'#00ff88',textTransform:'uppercase',letterSpacing:'0.09em'}}>{title}</div>
-                    <div style={{margin:0,fontSize:'0.75rem',color:'#8b9dc3',letterSpacing:'0.04em'}}>{subtitle}</div>
+
+            <div className="wd-topbar-wrap">
+              {/* Row 1: Logo + title + metrics — always on one line */}
+              <div style={{display:'flex',alignItems:'center',gap:'0.6rem',flexWrap:'wrap',width:'100%'}}>
+                <div className="wd-header-box">
+                  <Truck size={22} color="#00ff88"/>
+                  <div style={{minWidth:0}}>
+                    <div className="wd-title">{title}</div>
+                    <div className="wd-subtitle">{subtitle}</div>
                   </div>
                 </div>
-                <div style={{display:'flex',gap:'0.8rem',padding:'0.65rem 0.9rem',background:'rgba(15,23,42,0.8)',border:'1px solid rgba(0,255,136,0.2)',borderRadius:'10px'}}>
-                  {[{label:"Pending",val:metrics.pending,color:"#fbbf24"},{label:"Claimed",val:metrics.claimed,color:"#38bdf8"},{label:"In Prog",val:metrics.inprog,color:"#a78bfa"},{label:"Done",val:metrics.completed,color:"#00ff88"}].map(m=>(
-                    <div key={m.label} style={{textAlign:'center'}}>
-                      <div style={{fontSize:'1.2rem',fontWeight:900,color:m.color}}>{m.val}</div>
-                      <div style={{fontSize:'0.65rem',color:'#8b9dc3',textTransform:'uppercase'}}>{m.label}</div>
+                {/* Stats — compact labels so they never overflow */}
+                <div className="wd-metrics">
+                  {[
+                    {label:"Pend", val:metrics.pending,  color:"#fbbf24"},
+                    {label:"Claim",val:metrics.claimed,  color:"#38bdf8"},
+                    {label:"Prog", val:metrics.inprog,   color:"#a78bfa"},
+                    {label:"Done", val:metrics.completed,color:"#00ff88"}
+                  ].map(m=>(
+                    <div key={m.label} className="wd-metric">
+                      <div className="wd-metric-val" style={{color:m.color}}>{m.val}</div>
+                      <div className="wd-metric-lbl">{m.label}</div>
                     </div>
                   ))}
                 </div>
               </div>
-              <div style={{display:'flex',gap:'0.6rem',flexWrap:'wrap',alignItems:'center'}}>
-                <button onClick={()=>setRoute("form")} style={{padding:'0.7rem 1.1rem',background:'linear-gradient(135deg,#00ff88 0%,#00cc6f 100%)',border:'none',borderRadius:'10px',color:'#0a0e1a',fontWeight:900,cursor:'pointer',textTransform:'uppercase',letterSpacing:'0.04em'}}>+ New</button>
-                <button onClick={()=>setRoute("picklist")} style={{padding:'0.7rem 1.1rem',background:'transparent',border:'1px solid rgba(0,255,136,0.4)',borderRadius:'10px',color:'#00ff88',fontWeight:800,cursor:'pointer',textTransform:'uppercase',letterSpacing:'0.04em'}}>Pick List</button>
-                <button onClick={()=>setRoute("board")} style={{padding:'0.7rem 1.1rem',background:'transparent',border:'1px solid rgba(0,255,136,0.25)',borderRadius:'10px',color:'#8b9dc3',fontWeight:800,cursor:'pointer',textTransform:'uppercase',letterSpacing:'0.04em'}}>Board</button>
-                <button onClick={()=>setRoute("dashboard")} style={{padding:'0.7rem 1.1rem',background:'transparent',border:'1px solid rgba(0,255,136,0.25)',borderRadius:'10px',color:canSupervisor?'#00ff88':'#64748b',fontWeight:800,cursor:'pointer',textTransform:'uppercase',letterSpacing:'0.04em'}}>Dashboard</button>
-                <button onClick={()=>setRoute("completed")} style={{padding:'0.7rem 1.1rem',background:'transparent',border:'1px solid rgba(0,255,136,0.25)',borderRadius:'10px',color:canWarehouseAct?'#00ff88':'#64748b',fontWeight:800,cursor:'pointer',textTransform:'uppercase',letterSpacing:'0.04em'}}>Completed</button>
-                {canSupervisor && <button onClick={()=>setRoute("assignments")} style={{padding:'0.7rem 1.1rem',background:'transparent',border:'1px solid rgba(56,189,248,0.35)',borderRadius:'10px',color:'#38bdf8',fontWeight:800,cursor:'pointer',textTransform:'uppercase',letterSpacing:'0.04em'}}>Assignments</button>}
-                <button onClick={()=>setRoute("admin")} style={{padding:'0.7rem 1.1rem',background:'transparent',border:'1px solid rgba(255,68,68,0.25)',borderRadius:'10px',color:canAdmin?'#ff4444':'#64748b',fontWeight:800,cursor:'pointer',textTransform:'uppercase',letterSpacing:'0.04em'}}>Admin</button>
-                <button onClick={()=>{setUserName("");setUserRole("");setTempName("");setTempRole("");_wdUser="";setRoute("login");}} style={{padding:'0.7rem 1.1rem',background:'transparent',border:'1px solid #64748b',borderRadius:'10px',color:'#64748b',fontWeight:800,cursor:'pointer',textTransform:'uppercase',letterSpacing:'0.04em'}}>Sign Out</button>
+
+              {/* Row 2: Nav buttons — wrap naturally on small screens */}
+              <div className="wd-nav">
+                {(userRole==="room"||userRole==="supervisor"||userRole==="admin") && (
+                  <button className="wd-nav-btn" onClick={()=>setRoute("form")}
+                    style={{background:'linear-gradient(135deg,#00ff88,#00cc6f)',border:'none',color:'#0a0e1a'}}>
+                    + New
+                  </button>
+                )}
+                {(userRole==="warehouse"||userRole==="supervisor"||userRole==="admin") && (
+                  <button className="wd-nav-btn" onClick={()=>setRoute("picklist")}
+                    style={{background:'transparent',border:'1px solid rgba(0,255,136,0.4)',color:'#00ff88'}}>
+                    Pick List
+                  </button>
+                )}
+                <button className="wd-nav-btn" onClick={()=>setRoute("board")}
+                  style={{background:'transparent',border:'1px solid rgba(0,255,136,0.25)',color:'#8b9dc3'}}>
+                  Board
+                </button>
+                {(userRole==="supervisor"||userRole==="admin") && (
+                  <button className="wd-nav-btn" onClick={()=>setRoute("dashboard")}
+                    style={{background:'transparent',border:'1px solid rgba(0,255,136,0.25)',color:'#00ff88'}}>
+                    Dashboard
+                  </button>
+                )}
+                <button className="wd-nav-btn" onClick={()=>setRoute("completed")}
+                  style={{background:'transparent',border:'1px solid rgba(0,255,136,0.25)',color:'#00ff88'}}>
+                  Completed
+                </button>
+                {canSupervisor && (
+                  <button className="wd-nav-btn" onClick={()=>setRoute("assignments")}
+                    style={{background:'transparent',border:'1px solid rgba(56,189,248,0.35)',color:'#38bdf8'}}>
+                    Assignments
+                  </button>
+                )}
+                {canAdmin && (
+                  <button className="wd-nav-btn" onClick={()=>setRoute("admin")}
+                    style={{background:'transparent',border:'1px solid rgba(255,68,68,0.5)',color:'#ff4444'}}>
+                    Admin
+                  </button>
+                )}
+                <button className="wd-nav-btn"
+                  onClick={()=>{setUserName("");setUserRole("");setTempName("");setTempRole("");_wdUser="";_wdUserRole="";setRoute("login");}}
+                  style={{background:'transparent',border:'1px solid #64748b',color:'#64748b'}}>
+                  Sign Out
+                </button>
+                {/* Desktop bell */}
                 <button className="wd-bell-nav" onClick={()=>setNotifPanelOpen(p=>!p)}
-                  style={{position:'relative',padding:'0.65rem 0.85rem',background:notifPanelOpen?'rgba(0,255,136,0.15)':'transparent',border:'1px solid '+(unread>0?'#00ff88':'rgba(0,255,136,0.25)'),borderRadius:'10px',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center'}}>
-                  <Bell size={18} color="#00ff88"/>
-                  {unread>0 && <span style={{position:'absolute',top:-7,right:-7,background:'#ff4444',color:'#fff',fontSize:'0.52rem',fontWeight:900,minWidth:18,height:18,borderRadius:9,display:'flex',alignItems:'center',justifyContent:'center',border:'2px solid #0a0e1a',padding:'0 3px'}}>{unread}</span>}
+                  style={{position:'relative',padding:'0.5rem 0.75rem',background:notifPanelOpen?'rgba(0,255,136,0.15)':'transparent',border:'1px solid '+(unread>0?'#00ff88':'rgba(0,255,136,0.25)'),borderRadius:'10px',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center'}}>
+                  <Bell size={17} color="#00ff88"/>
+                  {unread>0 && <span style={{position:'absolute',top:-6,right:-6,background:'#ff4444',color:'#fff',fontSize:'0.5rem',fontWeight:900,minWidth:17,height:17,borderRadius:9,display:'flex',alignItems:'center',justifyContent:'center',border:'2px solid #0a0e1a',padding:'0 2px'}}>{unread}</span>}
                 </button>
               </div>
             </div>
@@ -1696,8 +1923,14 @@
           if (timeFilter === "today") return completed >= today;
           if (timeFilter === "week") return completed >= thisWeek;
           if (timeFilter === "month") return completed >= thisMonth;
+          // "custom" — use exportDateFrom/To
+          if (timeFilter === "custom") {
+            if (exportDateFrom && completed < new Date(exportDateFrom)) return false;
+            if (exportDateTo && completed > new Date(exportDateTo + "T23:59:59")) return false;
+            return true;
+          }
           return true; // all
-        });
+        }).filter(r => !exportRoom || r.room === exportRoom);
 
         // Sort by completion time (newest first)
         const sortedCompleted = [...filteredCompletedReqs].sort((a, b) => {
@@ -1714,45 +1947,59 @@
             }, 0) / sortedCompleted.length)
           : 0;
 
-        // CSV Export function
+        const buildRows = (data) => data.map(r => {
+          const start = new Date(r.submittedAt);
+          const end = new Date(r.completedAt);
+          const timeMin = Math.round((end - start) / 60000);
+          return [r.id, r.item, r.room, r.qty + (r.adjQty ? ` (adj:${r.adjQty})` : ''),
+            r.priority ? 'HIGH' : 'NORMAL', new Date(r.submittedAt).toLocaleString(),
+            r.submittedBy||'', r.claimedBy||'', new Date(r.completedAt).toLocaleString(),
+            r.completedBy||'', timeMin, (r.comments||'').replace(/,/g,';')];
+        });
+
         const exportToCSV = () => {
-          const headers = ["ID", "Item", "Room", "Qty", "Priority", "Submitted At", "Submitted By", "Claimed By", "Completed At", "Completed By", "Time (min)", "Comments"];
-          
-          const rows = sortedCompleted.map(r => {
-            const start = new Date(r.submittedAt);
-            const end = new Date(r.completedAt);
-            const timeMin = Math.round((end - start) / 60000);
-            
-            return [
-              r.id,
-              r.item,
-              r.room,
-              r.qty + (r.adjQty ? ` (adj: ${r.adjQty})` : ''),
-              r.priority ? 'HIGH' : 'NORMAL',
-              new Date(r.submittedAt).toLocaleString(),
-              r.submittedBy || '',
-              r.claimedBy || '',
-              new Date(r.completedAt).toLocaleString(),
-              r.completedBy || '',
-              timeMin,
-              (r.comments || '').replace(/,/g, ';') // escape commas
-            ];
-          });
+          const headers = ["ID","Item","Room","Qty","Priority","Submitted At","Submitted By","Claimed By","Completed At","Completed By","Time (min)","Comments"];
+          const rows = buildRows(sortedCompleted);
+          const csv = [headers.join(','), ...rows.map(row => row.map(c=>`"${c}"`).join(','))].join('\n');
+          const blob = new Blob([csv], { type:'text/csv;charset=utf-8;' });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          const label = timeFilter==="custom" ? `${exportDateFrom||'start'}-to-${exportDateTo||'end'}` : timeFilter;
+          a.download = `completed-${label}${exportRoom?'-'+exportRoom:''}-${new Date().toISOString().split('T')[0]}.csv`;
+          a.click();
+        };
 
-          const csvContent = [
-            headers.join(','),
-            ...rows.map(row => row.map(cell => `"${cell}"`).join(','))
-          ].join('\n');
-
-          const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-          const link = document.createElement('a');
-          const url = URL.createObjectURL(blob);
-          link.setAttribute('href', url);
-          link.setAttribute('download', `completed-requests-${timeFilter}-${new Date().toISOString().split('T')[0]}.csv`);
-          link.style.visibility = 'hidden';
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
+        const exportToPDF = () => {
+          const label = timeFilter==="custom" ? `${exportDateFrom||'start'} → ${exportDateTo||'end'}` : timeFilter.charAt(0).toUpperCase()+timeFilter.slice(1);
+          const roomLabel = exportRoom ? ` · ${exportRoom}` : "";
+          const w = window.open('','_blank');
+          w.document.write(`<!DOCTYPE html><html><head><title>Completed Requests Export</title>
+<style>
+  body{font-family:'Segoe UI',Arial,sans-serif;padding:20px;color:#111;background:#fff;}
+  h1{font-size:1.4rem;margin:0 0 4px 0;} .meta{color:#666;font-size:0.85rem;margin-bottom:16px;}
+  table{width:100%;border-collapse:collapse;font-size:0.8rem;}
+  th{background:#0a0e1a;color:#00ff88;padding:8px 10px;text-align:left;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;}
+  td{padding:7px 10px;border-bottom:1px solid #e5e7eb;vertical-align:top;}
+  tr:nth-child(even) td{background:#f9fafb;}
+  .high{background:#fee2e2;color:#b91c1c;padding:2px 6px;border-radius:4px;font-weight:700;font-size:0.75rem;}
+  .time-ok{color:#16a34a;font-weight:700;} .time-warn{color:#ca8a04;font-weight:700;} .time-bad{color:#dc2626;font-weight:700;}
+  @media print{body{padding:0;} button{display:none;}}
+</style></head><body>
+<h1>📦 Completed Requests Export</h1>
+<div class="meta">Period: ${label}${roomLabel} · Generated: ${new Date().toLocaleString()} · Total: ${sortedCompleted.length} records</div>
+<button onclick="window.print()" style="margin-bottom:12px;padding:8px 16px;background:#0a0e1a;color:#00ff88;border:none;border-radius:6px;cursor:pointer;font-weight:700;">🖨️ Print / Save as PDF</button>
+<table><thead><tr><th>Item</th><th>Room</th><th>Qty</th><th>Priority</th><th>Submitted</th><th>Completed</th><th>Time</th><th>Claimed By</th><th>Completed By</th><th>Comments</th></tr></thead><tbody>
+${sortedCompleted.map(r => {
+  const tmin = Math.round((new Date(r.completedAt)-new Date(r.submittedAt))/60000);
+  const tc = tmin<=5?'time-ok':tmin<=10?'time-warn':'time-bad';
+  return `<tr><td><strong>${r.item}</strong></td><td>${r.room}</td><td>${r.qty}${r.adjQty?` <small>(adj:${r.adjQty})</small>`:''}</td>
+<td>${r.priority?'<span class="high">HIGH</span>':''}</td>
+<td>${new Date(r.submittedAt).toLocaleString()}<br><small style="color:#666">${r.submittedBy||''}</small></td>
+<td>${new Date(r.completedAt).toLocaleString()}</td>
+<td class="${tc}">${tmin}min</td><td>${r.claimedBy||'—'}</td><td>${r.completedBy||'—'}</td><td>${r.comments||''}</td></tr>`;
+}).join('')}
+</tbody></table></body></html>`);
+          w.document.close();
         };
 
         return (
@@ -1762,32 +2009,63 @@
               <TopBar title="Completed Requests" subtitle={`👤 ${userName} (${userRole}) • ${connectionMode === "supabase" ? "Supabase ready" : "Local + kiosk mode"}`} />
 
               {/* Time Filter & Export */}
-              <div style={{ marginBottom:'1.5rem', display:'flex', gap:'0.75rem', flexWrap:'wrap', justifyContent:'space-between', alignItems:'center' }}>
-                <div style={{ display:'flex', gap:'0.75rem', flexWrap:'wrap' }}>
-                  {["today", "week", "month", "all"].map(filter => (
+              <div style={{ marginBottom:'1.25rem', background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.25rem' }}>
+                <div style={{ display:'flex', gap:'0.6rem', flexWrap:'wrap', marginBottom:'0.75rem' }}>
+                  {["today","week","month","all","custom"].map(filter => (
                     <button key={filter} onClick={() => setTimeFilter(filter)}
                       style={{
-                        padding:'0.6rem 1.2rem', borderRadius:'10px',
+                        padding:'0.55rem 1rem', borderRadius:'10px',
                         background: timeFilter === filter ? 'linear-gradient(135deg, #00ff88 0%, #00cc6f 100%)' : 'rgba(15,23,42,0.85)',
                         border: timeFilter === filter ? 'none' : '1px solid #334155',
                         color: timeFilter === filter ? '#0a0e1a' : '#8b9dc3',
-                        fontWeight:900, cursor:'pointer', textTransform:'uppercase', fontSize:'0.8rem'
+                        fontWeight:900, cursor:'pointer', textTransform:'uppercase', fontSize:'0.78rem'
                       }}>
-                      {filter === "all" ? "All Time" : filter === "week" ? "This Week" : filter === "month" ? "This Month" : "Today"}
+                      {filter==="all"?"All Time":filter==="week"?"This Week":filter==="month"?"This Month":filter==="custom"?"Custom Range":"Today"}
                     </button>
                   ))}
                 </div>
 
-                <button onClick={exportToCSV} disabled={sortedCompleted.length === 0}
-                  style={{
-                    padding:'0.7rem 1.2rem', borderRadius:'10px',
-                    background: sortedCompleted.length > 0 ? 'linear-gradient(135deg, #38bdf8 0%, #0ea5e9 100%)' : '#334155',
-                    border:'none', color:'#fff', fontWeight:900, cursor: sortedCompleted.length > 0 ? 'pointer' : 'not-allowed',
-                    textTransform:'uppercase', fontSize:'0.85rem',
-                    opacity: sortedCompleted.length > 0 ? 1 : 0.5
-                  }}>
-                  📥 Export CSV ({totalCompleted})
-                </button>
+                {timeFilter === "custom" && (
+                  <div style={{ display:'flex', gap:'0.75rem', flexWrap:'wrap', marginBottom:'0.75rem', alignItems:'flex-end' }}>
+                    <div>
+                      <div style={{ color:'#8b9dc3', fontSize:'0.7rem', fontWeight:700, textTransform:'uppercase', marginBottom:'0.3rem' }}>From Date</div>
+                      <input type="date" value={exportDateFrom} onChange={e=>setExportDateFrom(e.target.value)}
+                        style={{ padding:'0.55rem', background:'#1e293b', border:'1px solid #334155', borderRadius:'8px', color:'#e2e8f0', fontSize:'0.9rem' }} />
+                    </div>
+                    <div>
+                      <div style={{ color:'#8b9dc3', fontSize:'0.7rem', fontWeight:700, textTransform:'uppercase', marginBottom:'0.3rem' }}>To Date</div>
+                      <input type="date" value={exportDateTo} onChange={e=>setExportDateTo(e.target.value)}
+                        style={{ padding:'0.55rem', background:'#1e293b', border:'1px solid #334155', borderRadius:'8px', color:'#e2e8f0', fontSize:'0.9rem' }} />
+                    </div>
+                  </div>
+                )}
+
+                <div style={{ display:'flex', gap:'0.75rem', flexWrap:'wrap', alignItems:'center' }}>
+                  <div>
+                    <div style={{ color:'#8b9dc3', fontSize:'0.7rem', fontWeight:700, textTransform:'uppercase', marginBottom:'0.3rem' }}>Filter by Room</div>
+                    <select value={exportRoom} onChange={e=>setExportRoom(e.target.value)}
+                      style={{ padding:'0.55rem', background:'#1e293b', border:'1px solid #334155', borderRadius:'8px', color:'#e2e8f0', fontSize:'0.88rem' }}>
+                      <option value="">All Rooms</option>
+                      {CONFIG.ROOMS.map(r => <option key={r} value={r}>{r}</option>)}
+                    </select>
+                  </div>
+                  <div style={{ display:'flex', gap:'0.5rem', marginTop:'1.35rem' }}>
+                    <button onClick={exportToCSV} disabled={sortedCompleted.length===0}
+                      style={{ padding:'0.65rem 1.1rem', borderRadius:'10px',
+                        background: sortedCompleted.length>0?'linear-gradient(135deg,#38bdf8,#0ea5e9)':'#334155',
+                        border:'none', color:'#fff', fontWeight:900, cursor:sortedCompleted.length>0?'pointer':'not-allowed',
+                        textTransform:'uppercase', fontSize:'0.8rem', opacity:sortedCompleted.length>0?1:0.5 }}>
+                      📥 CSV ({totalCompleted})
+                    </button>
+                    <button onClick={exportToPDF} disabled={sortedCompleted.length===0}
+                      style={{ padding:'0.65rem 1.1rem', borderRadius:'10px',
+                        background: sortedCompleted.length>0?'linear-gradient(135deg,#a78bfa,#7c3aed)':'#334155',
+                        border:'none', color:'#fff', fontWeight:900, cursor:sortedCompleted.length>0?'pointer':'not-allowed',
+                        textTransform:'uppercase', fontSize:'0.8rem', opacity:sortedCompleted.length>0?1:0.5 }}>
+                      🖨️ PDF ({totalCompleted})
+                    </button>
+                  </div>
+                </div>
               </div>
 
               {/* Stats Cards */}
@@ -2375,28 +2653,244 @@
                 )}
               </div>
 
-              {/* ═══ REQUEST MANAGEMENT ═══ */}
+              {/* ═══ REQUEST MANAGEMENT + ARCHIVE ═══ */}
               <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(255,68,68,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
-                <div style={{ color:'#ff4444', fontWeight:900, fontSize:'1.3rem', textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:'1rem' }}>🔧 Request Management</div>
-                <div style={{ display:'flex', gap:'0.75rem', flexWrap:'wrap', marginBottom:'1rem' }}>
-                  <button onClick={clearCompleted} style={{ padding:'0.7rem 1.2rem', borderRadius:'10px', border:'1px solid rgba(255,68,68,0.35)', background:'transparent', color:'#ff4444', fontWeight:900, cursor:'pointer', textTransform:'uppercase' }}>Clear Completed</button>
-                  <button onClick={clearAll} style={{ padding:'0.7rem 1.2rem', borderRadius:'10px', border:'1px solid #ff4444', background:'rgba(255,68,68,0.1)', color:'#ff4444', fontWeight:900, cursor:'pointer', textTransform:'uppercase' }}>⚠️ Clear ALL</button>
-                  <button onClick={loadAll} style={{ padding:'0.7rem 1.2rem', borderRadius:'10px', border:'1px solid #334155', background:'transparent', color:'#8b9dc3', fontWeight:900, cursor:'pointer', textTransform:'uppercase' }}>🔄 Refresh</button>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'1rem', flexWrap:'wrap', gap:'0.75rem' }}>
+                  <div style={{ color:'#ff4444', fontWeight:900, fontSize:'1.3rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>🗄️ Request Management & Archive</div>
+                  <div style={{ fontSize:'0.75rem', color:'#64748b' }}>
+                    Last auto-archive: {lastArchiveDate || "Not yet this session"}
+                  </div>
                 </div>
-                {requests.slice(0,10).map(req => (
-                  <div key={req.id} style={{ padding:'0.85rem', background:'rgba(255,68,68,0.04)', border:'1px solid rgba(255,68,68,0.12)', borderRadius:'8px', display:'flex', justifyContent:'space-between', alignItems:'center', gap:'1rem', flexWrap:'wrap', marginBottom:'0.5rem' }}>
-                    <div>
-                      <div style={{ fontWeight:900, color:'#e2e8f0' }}>{req.qty}× {req.item}</div>
-                      <div style={{ fontSize:'0.8rem', color:'#8b9dc3' }}>{req.room} • {req.status} • by {req.submittedBy}
-                        {req.priority && <span style={{ marginLeft:'0.5rem', padding:'0.15rem 0.4rem', background:'#ff4444', borderRadius:'4px', color:'#fff', fontSize:'0.65rem' }}>HIGH</span>}
+
+                {/* Tab switcher: Active vs Archive */}
+                <div style={{ display:'flex', gap:'0.5rem', marginBottom:'1.25rem' }}>
+                  {[{key:"active",label:`Active (${requests.length})`,color:"#ff4444"},{key:"archive",label:`Archive (${archivedRequests.length})`,color:"#8b9dc3"}].map(t => (
+                    <button key={t.key} onClick={() => setArchiveReqTab(t.key)}
+                      style={{ padding:'0.6rem 1.2rem', borderRadius:'10px', fontWeight:900, cursor:'pointer', fontSize:'0.82rem', textTransform:'uppercase',
+                        background: archiveReqTab===t.key ? `${t.color}22` : 'transparent',
+                        border: archiveReqTab===t.key ? `2px solid ${t.color}` : '2px solid #334155',
+                        color: archiveReqTab===t.key ? t.color : '#64748b' }}>
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+
+                {archiveReqTab === "active" ? (
+                  <>
+                    {/* Archive controls */}
+                    <div style={{ background:'rgba(255,68,68,0.06)', border:'1px solid rgba(255,68,68,0.2)', borderRadius:'10px', padding:'1rem', marginBottom:'1.25rem' }}>
+                      <div style={{ color:'#ff4444', fontWeight:800, fontSize:'0.82rem', textTransform:'uppercase', letterSpacing:'0.05em', marginBottom:'0.65rem' }}>Archive Controls</div>
+                      <div style={{ display:'flex', gap:'0.75rem', flexWrap:'wrap', alignItems:'center' }}>
+                        <button onClick={archiveCompleted}
+                          style={{ padding:'0.7rem 1.2rem', borderRadius:'10px', border:'1px solid #ff4444', background:'rgba(255,68,68,0.12)', color:'#ff4444', fontWeight:900, cursor:'pointer', textTransform:'uppercase', fontSize:'0.82rem' }}>
+                          📦 Archive Completed Now
+                        </button>
+                        <button onClick={clearCompleted}
+                          style={{ padding:'0.7rem 1.2rem', borderRadius:'10px', border:'1px solid rgba(255,68,68,0.35)', background:'transparent', color:'#ff4444', fontWeight:900, cursor:'pointer', textTransform:'uppercase', fontSize:'0.82rem' }}>
+                          🗑️ Delete Completed (Permanent)
+                        </button>
+                        <button onClick={clearAll}
+                          style={{ padding:'0.7rem 1.2rem', borderRadius:'10px', border:'1px solid #ff4444', background:'rgba(255,68,68,0.15)', color:'#ff4444', fontWeight:900, cursor:'pointer', textTransform:'uppercase', fontSize:'0.82rem' }}>
+                          ⚠️ Delete ALL (Permanent)
+                        </button>
+                        <button onClick={loadAll}
+                          style={{ padding:'0.7rem 1.2rem', borderRadius:'10px', border:'1px solid #334155', background:'transparent', color:'#8b9dc3', fontWeight:900, cursor:'pointer', textTransform:'uppercase', fontSize:'0.82rem' }}>
+                          🔄 Refresh
+                        </button>
+                      </div>
+                      <div style={{ marginTop:'0.65rem', color:'#64748b', fontSize:'0.75rem' }}>
+                        💡 "Archive" moves completed/cancelled out of active view but keeps full history accessible. Auto-archives at midnight.
                       </div>
                     </div>
-                    <button onClick={() => deleteRequest(req.id)}
-                      style={{ padding:'0.45rem 0.9rem', background:'linear-gradient(135deg,#ff4444,#cc3333)', border:'none', borderRadius:'6px', color:'#fff', fontWeight:900, cursor:'pointer', fontSize:'0.8rem' }}>
-                      🗑️ Delete
-                    </button>
-                  </div>
-                ))}
+
+                    {/* Active request list */}
+                    {requests.length === 0 ? (
+                      <div style={{ padding:'2rem', textAlign:'center', color:'#64748b' }}>No active requests.</div>
+                    ) : (
+                      <div style={{ display:'flex', flexDirection:'column', gap:'0.4rem', maxHeight:'480px', overflowY:'auto' }}>
+                        {requests.map(req => (
+                          <div key={req.id} style={{ padding:'0.85rem', background:'rgba(255,68,68,0.04)', border:'1px solid rgba(255,68,68,0.12)', borderRadius:'8px', display:'flex', justifyContent:'space-between', alignItems:'center', gap:'1rem', flexWrap:'wrap' }}>
+                            <div style={{ flex:'1 1 200px' }}>
+                              <div style={{ fontWeight:900, color:'#e2e8f0' }}>{req.qty}× {req.item}</div>
+                              <div style={{ fontSize:'0.78rem', color:'#8b9dc3', display:'flex', gap:'0.5rem', flexWrap:'wrap', marginTop:'0.2rem' }}>
+                                <span style={{ color:CONFIG.ROOM_COLORS[req.room]||'#8b9dc3' }}>{req.room}</span>
+                                <span>•</span>
+                                <span style={{ color: req.status==='completed'?'#00ff88':req.status==='pending'?'#fbbf24':'#38bdf8', textTransform:'uppercase', fontSize:'0.72rem', fontWeight:700 }}>{req.status.replace('_',' ')}</span>
+                                <span>•</span>
+                                <span>{req.submittedBy}</span>
+                                {req.priority && <span style={{ padding:'0.1rem 0.35rem', background:'#ff4444', borderRadius:'4px', color:'#fff', fontSize:'0.65rem', fontWeight:900 }}>HIGH</span>}
+                              </div>
+                            </div>
+                            <button onClick={() => deleteRequest(req.id)}
+                              style={{ padding:'0.45rem 0.9rem', background:'linear-gradient(135deg,#ff4444,#cc3333)', border:'none', borderRadius:'6px', color:'#fff', fontWeight:900, cursor:'pointer', fontSize:'0.8rem' }}>
+                              🗑️ Delete
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  /* ARCHIVE TAB */
+                  (() => {
+                    const filteredArchive = archivedRequests.filter(r => {
+                      const d = new Date(r.archivedAt || r.completedAt || r.submittedAt);
+                      if (arcFrom && d < new Date(arcFrom)) return false;
+                      if (arcTo && d > new Date(arcTo+"T23:59:59")) return false;
+                      if (arcRoom && r.room !== arcRoom) return false;
+                      return true;
+                    }).sort((a,b) => new Date(b.archivedAt||b.completedAt||0) - new Date(a.archivedAt||a.completedAt||0));
+
+                    const exportArchiveCSV = () => {
+                      const headers = ["ID","Item","Room","Qty","Adj Qty","Priority","Status","Comments","Submitted At","Submitted By","Submitted By Role","Claimed By","Claimed At","Started At","Completed At","Completed By","Cancelled At","Cancelled By","Archived At"];
+                      const rows = filteredArchive.map(r => [
+                        r.id, r.item, r.room, r.qty, r.adjQty||0,
+                        r.priority?'HIGH':'NORMAL', r.status,
+                        (r.comments||'').replace(/,/g,';'),
+                        r.submittedAt ? new Date(r.submittedAt).toLocaleString() : '',
+                        r.submittedBy||'', r.submittedByRole||'',
+                        r.claimedBy||'', r.claimedAt ? new Date(r.claimedAt).toLocaleString() : '',
+                        r.startedAt ? new Date(r.startedAt).toLocaleString() : '',
+                        r.completedAt ? new Date(r.completedAt).toLocaleString() : '',
+                        r.completedBy||'',
+                        r.cancelledAt ? new Date(r.cancelledAt).toLocaleString() : '',
+                        r.cancelledBy||'',
+                        r.archivedAt ? new Date(r.archivedAt).toLocaleString() : ''
+                      ]);
+                      const csv = [headers.join(','), ...rows.map(row => row.map(c=>`"${c}"`).join(','))].join('\n');
+                      const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+                      const a = document.createElement('a');
+                      a.href = URL.createObjectURL(blob);
+                      a.download = `archive${arcRoom?'-'+arcRoom:''}${arcFrom?'-from-'+arcFrom:''}${arcTo?'-to-'+arcTo:''}-${new Date().toISOString().split('T')[0]}.csv`;
+                      a.click();
+                    };
+
+                    const exportArchivePDF = () => {
+                      const w = window.open('','_blank');
+                      w.document.write(`<!DOCTYPE html><html><head><title>Archive Export</title>
+<style>
+  body{font-family:'Segoe UI',Arial,sans-serif;padding:20px;color:#111;}
+  h1{font-size:1.3rem;margin:0 0 4px 0;} .meta{color:#666;font-size:0.82rem;margin-bottom:14px;}
+  table{width:100%;border-collapse:collapse;font-size:0.75rem;}
+  th{background:#0a0e1a;color:#00ff88;padding:7px 8px;text-align:left;font-weight:700;text-transform:uppercase;}
+  td{padding:6px 8px;border-bottom:1px solid #e5e7eb;vertical-align:top;}
+  tr:nth-child(even) td{background:#f9fafb;}
+  .high{background:#fee2e2;color:#b91c1c;padding:2px 5px;border-radius:3px;font-weight:700;font-size:0.72rem;}
+  @media print{button{display:none;}}
+</style></head><body>
+<h1>🗄️ Request Archive Export</h1>
+<div class="meta">Rooms: ${arcRoom||'All'} · Dates: ${arcFrom||'start'} → ${arcTo||'end'} · Generated: ${new Date().toLocaleString()} · Records: ${filteredArchive.length}</div>
+<button onclick="window.print()" style="margin-bottom:10px;padding:7px 14px;background:#0a0e1a;color:#00ff88;border:none;border-radius:5px;cursor:pointer;font-weight:700;">🖨️ Print / Save PDF</button>
+<table><thead><tr><th>Item</th><th>Room</th><th>Qty</th><th>Pri</th><th>Status</th><th>Submitted</th><th>Completed</th><th>Completed By</th><th>Archived</th><th>Comments</th></tr></thead><tbody>
+${filteredArchive.map(r => `<tr>
+<td><strong>${r.item}</strong></td><td>${r.room}</td><td>${r.qty}${r.adjQty?`<small>(adj:${r.adjQty})</small>`:''}</td>
+<td>${r.priority?'<span class="high">HIGH</span>':''}</td>
+<td style="text-transform:uppercase;font-size:0.7rem;font-weight:700">${r.status.replace('_',' ')}</td>
+<td>${r.submittedAt?new Date(r.submittedAt).toLocaleString():''}<br><small>${r.submittedBy||''}</small></td>
+<td>${r.completedAt?new Date(r.completedAt).toLocaleString():''}</td>
+<td>${r.completedBy||r.cancelledBy||'—'}</td>
+<td>${r.archivedAt?new Date(r.archivedAt).toLocaleDateString():''}</td>
+<td>${r.comments||''}</td></tr>`).join('')}
+</tbody></table></body></html>`);
+                      w.document.close();
+                    };
+
+                    return (
+                      <>
+                        {/* Archive filters */}
+                        <div style={{ background:'rgba(139,157,195,0.06)', border:'1px solid rgba(139,157,195,0.2)', borderRadius:'10px', padding:'1rem', marginBottom:'1.25rem' }}>
+                          <div style={{ color:'#8b9dc3', fontWeight:800, fontSize:'0.82rem', textTransform:'uppercase', letterSpacing:'0.05em', marginBottom:'0.75rem' }}>🔍 Filter & Export Archive</div>
+                          <div style={{ display:'flex', gap:'0.75rem', flexWrap:'wrap', alignItems:'flex-end', marginBottom:'0.75rem' }}>
+                            <div>
+                              <div style={{ color:'#64748b', fontSize:'0.7rem', fontWeight:700, textTransform:'uppercase', marginBottom:'0.3rem' }}>From Date</div>
+                              <input type="date" value={arcFrom} onChange={e=>setArcFrom(e.target.value)}
+                                style={{ padding:'0.5rem', background:'#1e293b', border:'1px solid #334155', borderRadius:'7px', color:'#e2e8f0', fontSize:'0.85rem' }} />
+                            </div>
+                            <div>
+                              <div style={{ color:'#64748b', fontSize:'0.7rem', fontWeight:700, textTransform:'uppercase', marginBottom:'0.3rem' }}>To Date</div>
+                              <input type="date" value={arcTo} onChange={e=>setArcTo(e.target.value)}
+                                style={{ padding:'0.5rem', background:'#1e293b', border:'1px solid #334155', borderRadius:'7px', color:'#e2e8f0', fontSize:'0.85rem' }} />
+                            </div>
+                            <div>
+                              <div style={{ color:'#64748b', fontSize:'0.7rem', fontWeight:700, textTransform:'uppercase', marginBottom:'0.3rem' }}>Room</div>
+                              <select value={arcRoom} onChange={e=>setArcRoom(e.target.value)}
+                                style={{ padding:'0.5rem', background:'#1e293b', border:'1px solid #334155', borderRadius:'7px', color:'#e2e8f0', fontSize:'0.85rem' }}>
+                                <option value="">All Rooms</option>
+                                {CONFIG.ROOMS.map(r=><option key={r} value={r}>{r}</option>)}
+                              </select>
+                            </div>
+                            <button onClick={()=>{
+                                const d = new Date(Date.now() - 24*60*60*1000);
+                                setArcFrom(d.toISOString().split("T")[0]);
+                                setArcTo(""); setArcRoom("");
+                              }}
+                                style={{ padding:'0.5rem 1rem', background:'rgba(0,255,136,0.08)', border:'1px solid #00ff8844', borderRadius:'7px', color:'#00ff88', fontWeight:900, cursor:'pointer', fontSize:'0.78rem', alignSelf:'flex-end' }}>
+                              Reset to 24hr
+                            </button>
+                            <button onClick={()=>{setArcFrom(""); setArcTo(""); setArcRoom("");}}
+                              style={{ padding:'0.5rem 1rem', background:'rgba(255,68,68,0.1)', border:'1px solid #ff444455', borderRadius:'7px', color:'#ff4444', fontWeight:900, cursor:'pointer', fontSize:'0.78rem', alignSelf:'flex-end' }}>
+                              Show All
+                            </button>
+                          </div>
+                          <div style={{ display:'flex', gap:'0.6rem', flexWrap:'wrap' }}>
+                            <button onClick={exportArchiveCSV} disabled={filteredArchive.length===0}
+                              style={{ padding:'0.6rem 1.1rem', borderRadius:'9px', background:filteredArchive.length>0?'linear-gradient(135deg,#38bdf8,#0ea5e9)':'#334155', border:'none', color:'#fff', fontWeight:900, cursor:filteredArchive.length>0?'pointer':'not-allowed', textTransform:'uppercase', fontSize:'0.8rem', opacity:filteredArchive.length>0?1:0.5 }}>
+                              📥 Export CSV ({filteredArchive.length})
+                            </button>
+                            <button onClick={exportArchivePDF} disabled={filteredArchive.length===0}
+                              style={{ padding:'0.6rem 1.1rem', borderRadius:'9px', background:filteredArchive.length>0?'linear-gradient(135deg,#a78bfa,#7c3aed)':'#334155', border:'none', color:'#fff', fontWeight:900, cursor:filteredArchive.length>0?'pointer':'not-allowed', textTransform:'uppercase', fontSize:'0.8rem', opacity:filteredArchive.length>0?1:0.5 }}>
+                              🖨️ Export PDF ({filteredArchive.length})
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Archive list */}
+                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'0.75rem', flexWrap:'wrap', gap:'0.5rem' }}>
+                          <div style={{ color:'#64748b', fontSize:'0.72rem', fontWeight:700, textTransform:'uppercase', letterSpacing:'0.05em' }}>
+                            {filteredArchive.length} record{filteredArchive.length !== 1 ? 's' : ''} {arcFrom && !arcTo ? `from ${new Date(arcFrom).toLocaleDateString('en-US',{month:'short',day:'numeric'})} onward` : arcFrom && arcTo ? `${new Date(arcFrom).toLocaleDateString('en-US',{month:'short',day:'numeric'})} — ${new Date(arcTo).toLocaleDateString('en-US',{month:'short',day:'numeric'})}` : 'all time'}
+                            {arcRoom ? ` · ${arcRoom}` : ''}
+                            {!arcTo && !arcFrom ? '' : ''}
+                          </div>
+                          <div style={{ color:'#334155', fontSize:'0.68rem' }}>Defaults to last 24hr · use filters above to see older data</div>
+                        </div>
+                        {filteredArchive.length === 0 ? (
+                          <div style={{ padding:'2.5rem', textAlign:'center', color:'#64748b' }}>
+                            <div style={{ fontSize:'2.5rem', marginBottom:'0.75rem' }}>🗄️</div>
+                            <div style={{ fontWeight:700 }}>No archived records match your filters</div>
+                          </div>
+                        ) : (
+                          <div style={{ overflowX:'auto' }}>
+                            <table style={{ width:'100%', borderCollapse:'collapse', minWidth:'900px' }}>
+                              <thead>
+                                <tr style={{ background:'rgba(139,157,195,0.08)' }}>
+                                  {["Item","Room","Qty","Priority","Status","Submitted","Completed","Completed By","Archived","Comments"].map(h=>(
+                                    <th key={h} style={headerStyle}>{h}</th>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {filteredArchive.map((r, idx) => (
+                                  <tr key={r.id} style={{ borderBottom: idx<filteredArchive.length-1?'1px solid #1e293b':'none', background:idx%2===0?'transparent':'rgba(139,157,195,0.03)' }}>
+                                    <td style={cellStyle}><div style={{ fontWeight:900 }}>{r.item}</div></td>
+                                    <td style={cellStyle}><div style={{ display:'flex', alignItems:'center', gap:'0.3rem' }}><MapPin size={13} color={CONFIG.ROOM_COLORS[r.room]||'#8b9dc3'} />{r.room}</div></td>
+                                    <td style={cellStyle}><div style={{ fontWeight:900 }}>{r.qty}{r.adjQty>0&&<div style={{ fontSize:'0.72rem', color:'#8b9dc3' }}>adj:{r.adjQty}</div>}</div></td>
+                                    <td style={cellStyle}>{r.priority&&<span style={{ padding:'0.25rem 0.5rem', background:'#ff4444', borderRadius:'6px', color:'#fff', fontWeight:900, fontSize:'0.68rem' }}>HIGH</span>}</td>
+                                    <td style={cellStyle}><span style={{ padding:'0.2rem 0.55rem', borderRadius:'6px', background: r.status==='completed'?'rgba(0,255,136,0.15)':'rgba(255,68,68,0.15)', color:r.status==='completed'?'#00ff88':'#ff4444', fontWeight:900, fontSize:'0.7rem', textTransform:'uppercase' }}>{r.status.replace('_',' ')}</span></td>
+                                    <td style={cellStyle}><div style={{ fontSize:'0.8rem' }}>{r.submittedAt?niceTime(r.submittedAt):''}</div><div style={{ fontSize:'0.72rem', color:'#64748b' }}>{r.submittedBy}</div></td>
+                                    <td style={cellStyle}><div style={{ fontSize:'0.8rem' }}>{r.completedAt?niceTime(r.completedAt):'—'}</div></td>
+                                    <td style={cellStyle}><div style={{ fontSize:'0.8rem', color:'#00ff88' }}>{r.completedBy||r.cancelledBy||'—'}</div></td>
+                                    <td style={cellStyle}><div style={{ fontSize:'0.78rem', color:'#64748b' }}>{r.archivedAt?niceTime(r.archivedAt):'—'}</div></td>
+                                    <td style={cellStyle}><div style={{ fontSize:'0.78rem', color:'#8b9dc3', maxWidth:'180px', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{r.comments||'—'}</div></td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()
+                )}
               </div>
             </div>
           </div>
@@ -2681,6 +3175,8 @@
       // PICKLIST (Main operational screen)
       if (screen === "picklist") {
         // Room filter handlers
+        const picklistRooms = CONFIG.ROOMS.filter(r => !CONFIG.WAREHOUSE_ONLY_ROOMS.includes(r));
+
         const toggleRoom = (room) => {
           const updated = selectedRooms.includes(room)
             ? selectedRooms.filter(r => r !== room)
@@ -2690,8 +3186,8 @@
         };
 
         const selectAllRooms = () => {
-          setSelectedRooms(CONFIG.ROOMS);
-          localStorage.setItem("wd_selectedRooms", JSON.stringify(CONFIG.ROOMS));
+          setSelectedRooms(picklistRooms);
+          localStorage.setItem("wd_selectedRooms", JSON.stringify(picklistRooms));
         };
 
         const clearAllRooms = () => {
@@ -2706,7 +3202,7 @@
               <TopBar title="Pick List" subtitle={`👤 ${userName} (${userRole}) • ${connectionMode === "supabase" ? "Supabase ready • Realtime updates" : "Local + kiosk mode"}`} />
 
               <div style={{ marginBottom:'0.9rem', padding:'0.6rem 0.9rem', background:'rgba(0,255,136,0.1)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'10px', color:'#00ff88', fontSize:'0.75rem', textAlign:'center', letterSpacing:'0.05em' }}>
-                ✅ Claim → Start → Done • Prevents double-picking (multi-user safe)
+                ✅ Claim → Start → Done • Tap ↩ to undo any step • Multi-user safe
               </div>
 
               <div style={{ display:'flex', gap:'0.75rem', flexWrap:'wrap', alignItems:'center', marginBottom:'0.9rem' }}>
@@ -2757,7 +3253,7 @@
                   </div>
                 </div>
                 <div style={{ display:'flex', flexWrap:'wrap', gap:'0.6rem' }}>
-                  {CONFIG.ROOMS.map(room => {
+                  {picklistRooms.map(room => {
                     const isSelected = selectedRooms.includes(room);
                     const roomColor = CONFIG.ROOM_COLORS[room] || '#00ff88';
                     return (
@@ -2786,7 +3282,7 @@
                   })}
                 </div>
                 <div style={{ marginTop:'0.6rem', color:'#64748b', fontSize:'0.72rem' }}>
-                  Showing {selectedRooms.length} of {CONFIG.ROOMS.length} rooms
+                  Showing {selectedRooms.filter(r => picklistRooms.includes(r)).length} of {picklistRooms.length} rooms
                 </div>
               </div>
 
@@ -2897,10 +3393,26 @@
                                         Claim
                                       </button>
                                     )}
+                                    {/* UNDO: Unclaim — only the claimer (or supervisor) can undo */}
+                                    {req.status === "claimed" && (req.claimedBy === userName || canSupervisor) && (
+                                      <button onClick={()=> unclaimRequest(req.id)}
+                                        title="Undo claim — puts request back to Pending"
+                                        style={{ padding:'0.45rem 0.75rem', background:'transparent', border:'2px solid #38bdf8', borderRadius:'8px', fontWeight:900, cursor:'pointer', fontSize:'0.8rem', color:'#38bdf8', display:'inline-flex', alignItems:'center', gap:'0.25rem' }}>
+                                        ↩ Unclaim
+                                      </button>
+                                    )}
                                     {(req.status === "claimed" || req.status === "pending") && (
                                       <button disabled={!canActThis} onClick={()=> startRequest(req.id)}
                                         style={{ opacity: canActThis ? 1 : 0.45, padding:'0.45rem 0.9rem', background:'#a78bfa', border:'none', borderRadius:'8px', fontWeight:900, cursor: canActThis ? 'pointer' : 'not-allowed', fontSize:'0.85rem', color:'#0a0e1a' }}>
                                         Start
+                                      </button>
+                                    )}
+                                    {/* UNDO: Un-Start — back to Claimed */}
+                                    {req.status === "in_progress" && (req.claimedBy === userName || canSupervisor) && (
+                                      <button onClick={()=> unstartRequest(req.id)}
+                                        title="Undo start — puts request back to Claimed"
+                                        style={{ padding:'0.45rem 0.75rem', background:'transparent', border:'2px solid #a78bfa', borderRadius:'8px', fontWeight:900, cursor:'pointer', fontSize:'0.8rem', color:'#a78bfa', display:'inline-flex', alignItems:'center', gap:'0.25rem' }}>
+                                        ↩ Un-Start
                                       </button>
                                     )}
                                     {(req.status === "in_progress" || req.status === "claimed") && (
@@ -2958,10 +3470,13 @@
                   <Package size={16} color="#00ff88" /> Item <span style={{ color:'#00ff88' }}>*</span>
                 </label>
                 <input
+                  type="tel"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
                   value={formData.item}
-                  onChange={(e)=> setFormData({ ...formData, item: e.target.value })}
+                  onChange={(e)=> setFormData({ ...formData, item: e.target.value.replace(/[^0-9]/g, '') })}
                   style={{ width:'100%', padding:'0.875rem', background:'#1e293b', border:`2px solid ${errors.item ? '#ff4444' : (formData.item ? '#00ff88' : '#334155')}`, borderRadius:'10px', color:'#e2e8f0', fontSize:'1rem', outline:'none' }}
-                  placeholder="e.g., Film rolls"
+                  placeholder="Item number"
                 />
                 {errors.item && <div style={{ marginTop:'0.35rem', color:'#ff4444', fontSize:'0.78rem', display:'flex', gap:'0.35rem', alignItems:'center' }}><AlertCircle size={12} /> {errors.item}</div>}
               </div>
@@ -3001,8 +3516,15 @@
                   <label style={{ display:'block', color:'#e2e8f0', fontSize:'0.85rem', fontWeight:900, marginBottom:'0.5rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>
                     Qty <span style={{ color:'#00ff88' }}>*</span>
                   </label>
-                  <input type="number" value={formData.qty} onChange={(e)=> setFormData({ ...formData, qty: parseInt(e.target.value)||0 })}
-                    style={{ width:'100%', padding:'0.875rem', background:'#1e293b', border:`2px solid ${errors.qty ? '#ff4444' : '#334155'}`, borderRadius:'10px', color:'#e2e8f0', fontSize:'1rem', outline:'none' }} />
+                  <input
+                    type="tel"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    value={formData.qty === 0 ? '' : formData.qty}
+                    onChange={(e)=> setFormData({ ...formData, qty: parseInt(e.target.value.replace(/[^0-9]/g, ''))||0 })}
+                    style={{ width:'100%', padding:'0.875rem', background:'#1e293b', border:`2px solid ${errors.qty ? '#ff4444' : '#334155'}`, borderRadius:'10px', color:'#e2e8f0', fontSize:'1rem', outline:'none', MozAppearance:'textfield', WebkitAppearance:'none' }}
+                    placeholder="0"
+                  />
                   {errors.qty && <div style={{ marginTop:'0.35rem', color:'#ff4444', fontSize:'0.78rem', display:'flex', gap:'0.35rem', alignItems:'center' }}><AlertCircle size={12} /> {errors.qty}</div>}
                 </div>
 
@@ -3066,27 +3588,7 @@
     // PWA service worker (works on https or localhost)
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
-        navigator.serviceWorker.register('./sw.js').then(reg => {
-          // Check for SW updates every time page becomes visible
-          // This means staff don't need hard resets — just switching back to the tab picks up new versions
-          document.addEventListener('visibilitychange', () => {
-            if (document.visibilityState === 'visible') reg.update();
-          });
-          // When a new SW is waiting, activate it immediately (skip waiting)
-          reg.addEventListener('updatefound', () => {
-            const newWorker = reg.installing;
-            newWorker?.addEventListener('statechange', () => {
-              if (newWorker.statechange === 'installed' && navigator.serviceWorker.controller) {
-                newWorker.postMessage({ type: 'SKIP_WAITING' });
-              }
-            });
-          });
-        }).catch(() => {});
-
-        // When SW activates a new version, reload the page cleanly
-        navigator.serviceWorker.addEventListener('controllerchange', () => {
-          window.location.reload();
-        });
+        navigator.serviceWorker.register('./sw.js').catch(() => {});
       });
     }
   </script>
