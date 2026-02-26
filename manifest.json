@@ -1,26 +1,78 @@
 {
-  "name": "Warehouse Delivery Request System",
-  "short_name": "Warehouse",
-  "start_url": "./index.html",
-  "scope": "./",
-  "display": "fullscreen",
-  "display_override": ["fullscreen", "standalone", "minimal-ui"],
+  "name": "Warehouse Delivery System",
+  "short_name": "WH Delivery",
+  "description": "Real-time warehouse delivery request and management system",
+  "start_url": "./",
+  "display": "standalone",
   "orientation": "any",
   "background_color": "#0a0e1a",
   "theme_color": "#00ff88",
-  "description": "Multi-user warehouse delivery request tracking system with real-time updates",
+  "scope": "./",
+  "categories": ["productivity", "utilities"],
   "icons": [
     {
-      "src": "./icon-192.png",
+      "src": "./icons/icon-72.png",
+      "sizes": "72x72",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-96.png",
+      "sizes": "96x96",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-128.png",
+      "sizes": "128x128",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-144.png",
+      "sizes": "144x144",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-152.png",
+      "sizes": "152x152",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "./icon-512.png",
+      "src": "./icons/icon-384.png",
+      "sizes": "384x384",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Pick List",
+      "short_name": "Pick List",
+      "description": "View active warehouse requests",
+      "url": "./#picklist",
+      "icons": [{ "src": "./icons/icon-96.png", "sizes": "96x96" }]
+    },
+    {
+      "name": "New Request",
+      "short_name": "New Request",
+      "description": "Submit a new delivery request",
+      "url": "./#form",
+      "icons": [{ "src": "./icons/icon-96.png", "sizes": "96x96" }]
     }
   ]
 }
