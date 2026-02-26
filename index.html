@@ -1364,13 +1364,8 @@
         _showToast("✅", `${rec.workerName} back from break`, `${durationMins}m${wasOverdue?" — OVERDUE":""}`, wasOverdue?"#ff4444":"#00ff88", _onNotif);
       };
 
-      // Auto-end break at exactly 15 mins (client-side safety net)
-      useEffect(() => {
-        if (!myActiveBreak) return;
-        const secs = breakSecsLeft(myActiveBreak.startedAt);
-        if (secs <= 0) endBreak(myActiveBreak);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-      }, [breakTick]);
+      // NOTE: breaks do NOT auto-end — they go red/overdue at 15 mins
+      // The worker must manually tap "Back?" to end their break.
       // ──────────────────────────────────────────────────────────────────
 
       const canWarehouseAct = userRole === "warehouse" || userRole === "supervisor" || userRole === "admin";
@@ -2090,55 +2085,92 @@
                 );
               })}
               <div style={{borderBottom:"1px solid #1e293b",margin:"0.5rem 0"}}/>
-              <div style={{padding:"0.4rem 0.6rem",color:"#00ff88",fontWeight:900,fontSize:"0.65rem",textTransform:"uppercase",letterSpacing:"0.07em"}}>
-                Start a Conversation
-              </div>
             </div>
           )}
 
-          {/* ── Contact List ── */}
-          {chatableUsers.length === 0 ? (
-            <div style={{textAlign:"center",padding:"2rem 1rem",color:"#475569",fontSize:"0.78rem"}}>
-              No other users in the system yet.
+          {/* ── Dropdown contact picker ── */}
+          <div style={{padding:"0 0.25rem 0.5rem"}}>
+            <div style={{color:"#00ff88",fontWeight:900,fontSize:"0.62rem",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:"0.45rem"}}>
+              Start a Conversation
             </div>
-          ) : (() => {
-            const grouped = {};
-            chatableUsers.forEach(u => {
-              if (!grouped[u.role]) grouped[u.role] = [];
-              grouped[u.role].push(u);
-            });
-            const roleOrder = ["warehouse","supervisor","admin","room"];
-            return roleOrder.filter(r => grouped[r]).map(role => (
-              <div key={role} style={{marginBottom:"0.75rem"}}>
-                <div style={{padding:"0.35rem 0.6rem",color:_roleColor(role),fontWeight:900,fontSize:"0.63rem",textTransform:"uppercase",letterSpacing:"0.07em"}}>
-                  {_roleEmoji(role)} {role.charAt(0).toUpperCase()+role.slice(1)}
-                </div>
-                {grouped[role].map(u => (
-                  <div key={u.id||u.name}
-                    onClick={() => { setChatContact({name:u.name,role:u.role}); setChatView("conversation"); setChatUnreadFrom(prev => { const n={...prev}; delete n[u.name]; return n; }); }}
-                    style={{display:"flex",alignItems:"center",gap:"0.65rem",padding:"0.65rem 0.6rem",borderRadius:"10px",cursor:"pointer",marginBottom:"0.3rem",transition:"background 0.15s",background:chatUnreadFrom[u.name]>0?"rgba(255,68,68,0.07)":"transparent",border:chatUnreadFrom[u.name]>0?"1px solid rgba(255,68,68,0.25)":"1px solid transparent"}}
-                    onMouseEnter={e=>e.currentTarget.style.background="rgba(0,255,136,0.08)"}
-                    onMouseLeave={e=>e.currentTarget.style.background=chatUnreadFrom[u.name]>0?"rgba(255,68,68,0.07)":"transparent"}>
-                    <div style={{width:36,height:36,borderRadius:"50%",background:_roleColor(u.role)+"22",border:`1.5px solid ${_roleColor(u.role)}55`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"1rem",flexShrink:0}}>
-                      {_roleEmoji(u.role)}
-                    </div>
-                    <div style={{flex:1,minWidth:0}}>
-                      <div style={{color:"#e2e8f0",fontWeight:800,fontSize:"0.82rem"}}>{u.name}</div>
-                      <div style={{color:_roleColor(u.role),fontSize:"0.65rem",marginTop:"0.1rem",textTransform:"capitalize"}}>{u.role}{u.shift?` · ${u.shift} shift`:""}</div>
-                    </div>
-                    <div style={{position:"relative",display:"flex",alignItems:"center",justifyContent:"center",width:22,flexShrink:0}}>
-                      {chatUnreadFrom[u.name] > 0 ? (
-                        <span style={{background:"#ff4444",color:"#fff",borderRadius:"50%",minWidth:20,height:20,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"0.62rem",fontWeight:900,padding:"0 3px"}}>
-                          {chatUnreadFrom[u.name] > 9 ? "9+" : chatUnreadFrom[u.name]}
-                        </span>
-                      ) : (
-                        <span style={{color:"#334155",fontSize:"0.85rem"}}>›</span>
-                      )}
-                    </div>
-                  </div>
-                ))}
+            {chatableUsers.length === 0 ? (
+              <div style={{padding:"0.75rem",background:"rgba(15,23,42,0.5)",borderRadius:"10px",color:"#475569",fontSize:"0.75rem",textAlign:"center"}}>No other users in the system yet.</div>
+            ) : (
+              <div style={{position:"relative"}}>
+                <select
+                  defaultValue=""
+                  onChange={e => {
+                    const val = e.target.value;
+                    if (!val) return;
+                    const [role, name] = val.split("|");
+                    const u = chatableUsers.find(u => u.name === name) || {name, role};
+                    setChatContact({name:u.name, role:u.role});
+                    setChatUnreadFrom(prev => { const n={...prev}; delete n[u.name]; return n; });
+                    setChatView("conversation");
+                    e.target.value = "";
+                  }}
+                  style={{width:"100%",padding:"0.6rem 2rem 0.6rem 0.75rem",background:"#1e293b",border:"1px solid rgba(0,255,136,0.3)",borderRadius:"10px",color:"#e2e8f0",fontFamily:"'Space Mono','Courier New',monospace",fontSize:"0.8rem",outline:"none",cursor:"pointer",appearance:"none",WebkitAppearance:"none"}}>
+                  <option value="" style={{color:"#64748b",background:"#1e293b"}}>👤 Select someone to message…</option>
+                  {["warehouse","supervisor","admin","room"].filter(role => chatableUsers.some(u => u.role===role)).map(role => (
+                    <optgroup key={role} label={`${_roleEmoji(role)} ${role.charAt(0).toUpperCase()+role.slice(1)}`}>
+                      {chatableUsers.filter(u => u.role===role).map(u => (
+                        <option key={u.id||u.name} value={`${u.role}|${u.name}`} style={{background:"#1e293b",color:"#e2e8f0"}}>
+                          {u.name}{chatUnreadFrom[u.name]>0?` (${chatUnreadFrom[u.name]} new)`:""}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+                <div style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",color:"#00ff88",pointerEvents:"none",fontSize:"0.65rem"}}>▼</div>
               </div>
-            ));
+            )}
+          </div>
+
+          {/* ── Recent / Unread conversations ── */}
+          {(() => {
+            const recentContacts = chatableUsers.filter(u =>
+              chatUnreadFrom[u.name] > 0 ||
+              chatConvList.some(cv => cv.conversationId === convId(userName, u.name))
+            );
+            if (recentContacts.length === 0) return (
+              <div style={{padding:"0.75rem 0.5rem",textAlign:"center",color:"#334155",fontSize:"0.68rem"}}>— no recent chats —</div>
+            );
+            const sorted = [...recentContacts].sort((a,b) => {
+              const ua = chatUnreadFrom[a.name]||0, ub = chatUnreadFrom[b.name]||0;
+              if (ua !== ub) return ub - ua;
+              const ca = chatConvList.find(cv => cv.conversationId === convId(userName, a.name));
+              const cb = chatConvList.find(cv => cv.conversationId === convId(userName, b.name));
+              return new Date(cb?.sentAt||0) - new Date(ca?.sentAt||0);
+            });
+            return (
+              <div>
+                <div style={{padding:"0.1rem 0.25rem 0.4rem",color:"#64748b",fontWeight:900,fontSize:"0.62rem",textTransform:"uppercase",letterSpacing:"0.08em"}}>Recent</div>
+                {sorted.map(u => {
+                  const conv = chatConvList.find(cv => cv.conversationId === convId(userName, u.name));
+                  const unreadCnt = chatUnreadFrom[u.name]||0;
+                  return (
+                    <div key={u.id||u.name}
+                      onClick={() => { setChatContact({name:u.name,role:u.role}); setChatView("conversation"); setChatUnreadFrom(prev => { const n={...prev}; delete n[u.name]; return n; }); }}
+                      style={{display:"flex",alignItems:"center",gap:"0.65rem",padding:"0.6rem 0.5rem",borderRadius:"10px",cursor:"pointer",marginBottom:"0.3rem",transition:"background 0.15s",background:unreadCnt>0?"rgba(0,255,136,0.06)":"transparent",border:unreadCnt>0?"1px solid rgba(0,255,136,0.2)":"1px solid transparent"}}
+                      onMouseEnter={e=>e.currentTarget.style.background="rgba(0,255,136,0.08)"}
+                      onMouseLeave={e=>e.currentTarget.style.background=unreadCnt>0?"rgba(0,255,136,0.06)":"transparent"}>
+                      <div style={{width:34,height:34,borderRadius:"50%",background:_roleColor(u.role)+"22",border:`1.5px solid ${_roleColor(u.role)}55`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"0.9rem",flexShrink:0,position:"relative"}}>
+                        {_roleEmoji(u.role)}
+                        {unreadCnt>0 && <span style={{position:"absolute",top:-4,right:-4,background:"#ff4444",color:"#fff",borderRadius:"50%",width:16,height:16,fontSize:"0.55rem",fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center",border:"2px solid #0f172a"}}>{unreadCnt>9?"9+":unreadCnt}</span>}
+                      </div>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{color:unreadCnt>0?"#e2e8f0":"#94a3b8",fontWeight:unreadCnt>0?900:700,fontSize:"0.8rem"}}>{u.name}</div>
+                        {conv && <div style={{color:"#475569",fontSize:"0.64rem",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",marginTop:2}}>{conv.message}</div>}
+                      </div>
+                      <div style={{flexShrink:0,display:"flex",flexDirection:"column",alignItems:"flex-end",gap:"0.2rem"}}>
+                        {conv && <span style={{color:"#475569",fontSize:"0.6rem"}}>{_fmtTime(conv.sentAt)}</span>}
+                        <span style={{color:"#334155",fontSize:"0.8rem"}}>›</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
           })()}
         </div>
       );
@@ -2375,12 +2407,17 @@
                 )}
                 {/* Break button — warehouse staff only */}
                 {userRole === "warehouse" && (
-                  myActiveBreak ? (
-                    <button className="wd-nav-btn" onClick={() => endBreak(myActiveBreak)}
-                      style={{background:'linear-gradient(135deg,#ff9f43,#e67e22)',border:'none',color:'#fff',animation:'pulse 1.5s ease-in-out infinite',position:'relative'}}>
-                      🍵 {fmtCountdown(breakSecsLeft(myActiveBreak.startedAt))} — Back?
-                    </button>
-                  ) : (
+                  myActiveBreak ? (() => {
+                      const _bSecs = breakSecsLeft(myActiveBreak.startedAt);
+                      const _bOver = _bSecs <= 0;
+                      const _bElMins = Math.floor(breakSecsElapsed(myActiveBreak.startedAt)/60);
+                      return (
+                        <button className="wd-nav-btn" onClick={() => endBreak(myActiveBreak)}
+                          style={{background:_bOver?'linear-gradient(135deg,#ff4444,#cc2222)':'linear-gradient(135deg,#ff9f43,#e67e22)',border:'none',color:'#fff',animation:'pulse 1.5s ease-in-out infinite',position:'relative'}}>
+                          {_bOver ? `⚠️ ${_bElMins}m OVERDUE — Back?` : `🍵 ${fmtCountdown(_bSecs)} — Back?`}
+                        </button>
+                      );
+                    })() : (
                     <button className="wd-nav-btn" onClick={startBreak}
                       style={{background:'transparent',border:'1px solid rgba(255,159,67,0.5)',color:'#ff9f43'}}>
                       🍵 Break
