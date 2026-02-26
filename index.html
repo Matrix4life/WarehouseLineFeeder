@@ -266,8 +266,8 @@
      **********************************************************************/
     const CONFIG = {
       ENABLE_SUPABASE: true, // <- set true for real multi-user across devices
-      SUPABASE_URL: "https://vryxhveadpvhgvhyyary.supabase.co",
-      SUPABASE_ANON_KEY: "sb_publishable_vKIZKhITzYfAJqfg-O-Zbw_4UXI1U8e",
+      SUPABASE_URL: "https://hzcgdtsyamejgkahtqyb.supabase.co",
+      SUPABASE_ANON_KEY: "sb_publishable_6bgN37a4HK5vgjX1yyHJlg_GUABLqfl",
       STORAGE_KEY: "warehouse-requests-v3",
       CHAT_KEY: "warehouse-chat-v1",
       REFRESH_MS: 2500, // polling fallback; realtime will override
@@ -768,6 +768,51 @@
       return adapter;
     }
 
+    // ── Standalone countdown components (module scope — hooks allowed) ──────
+    function BreakCountdown({ startedAt, breakMins, onEnd }) {
+      const [, tick] = React.useState(0);
+      React.useEffect(() => {
+        const t = setInterval(() => tick(n => n + 1), 1000);
+        return () => clearInterval(t);
+      }, []);
+      const elapsed = (Date.now() - new Date(startedAt).getTime()) / 1000;
+      const secsLeft = Math.max(0, Math.floor(breakMins * 60 - elapsed));
+      const overdue = elapsed >= breakMins * 60;
+      const elMins = Math.floor(elapsed / 60);
+      const m = Math.floor(secsLeft / 60), s = secsLeft % 60;
+      return (
+        <button onClick={onEnd}
+          style={{padding:"0.45rem 0.85rem",borderRadius:"10px",fontFamily:"'Space Mono','Courier New',monospace",fontWeight:900,fontSize:"0.78rem",cursor:"pointer",border:"none",color:"#fff",animation:"pulse 1.5s ease-in-out infinite",
+            background: overdue ? "linear-gradient(135deg,#ff4444,#cc2222)" : "linear-gradient(135deg,#ff9f43,#e67e22)"}}>
+          {overdue ? `⚠️ ${elMins}m OVERDUE — Back?` : `🍵 ${m}:${String(s).padStart(2,"0")} — Back?`}
+        </button>
+      );
+    }
+
+    function BreakRowCountdown({ b, breakMins }) {
+      const [, tick] = React.useState(0);
+      React.useEffect(() => {
+        const t = setInterval(() => tick(n => n + 1), 1000);
+        return () => clearInterval(t);
+      }, []);
+      const elapsed = (Date.now() - new Date(b.startedAt).getTime()) / 1000;
+      const secsLeft = Math.max(0, Math.floor(breakMins * 60 - elapsed));
+      const overdue = elapsed >= breakMins * 60;
+      const elMins = Math.floor(elapsed / 60), elSecs = Math.floor(elapsed % 60);
+      const m = Math.floor(secsLeft / 60), s = secsLeft % 60;
+      return overdue ? (
+        <div style={{textAlign:"right",flexShrink:0}}>
+          <div style={{color:"#ff4444",fontWeight:900,fontSize:"0.8rem",animation:"pulse 1s infinite"}}>⚠️ OVERDUE</div>
+          <div style={{color:"#ff4444",fontSize:"0.65rem"}}>{elMins}m {elSecs}s out</div>
+        </div>
+      ) : (
+        <div style={{textAlign:"right",flexShrink:0}}>
+          <div style={{color:"#ff9f43",fontWeight:900,fontSize:"0.85rem"}}>{m}:{String(s).padStart(2,"0")}</div>
+          <div style={{color:"#64748b",fontSize:"0.6rem"}}>remaining</div>
+        </div>
+      );
+    }
+
     function WarehouseDeliveryApp() {
       // Screen routing: login | form | picklist | board | dashboard
       const [screen, setScreen] = useState(() => {
@@ -864,11 +909,7 @@
       const [breakPanelOpen, setBreakPanelOpen] = useState(false);
       const [breakHistoryRange, setBreakHistoryRange] = useState({ from:"", to:"" });
       const [breakSelectedWorker, setBreakSelectedWorker] = useState(""); // admin: filter by person
-      const [breakTick, setBreakTick] = useState(0);     // 1-second heartbeat for countdowns
-      useEffect(() => {
-        const t = setInterval(() => setBreakTick(n => n + 1), 1000);
-        return () => clearInterval(t);
-      }, []);
+      // breakTick removed — countdowns now use isolated BreakCountdown component (no full re-render)
       // ──────────────────────────────────────────────────────────────────
 
       // ── CHAT STATE ────────────────────────────────────────────────────
@@ -1923,29 +1964,14 @@
                 {activeBreaks.length === 0 ? (
                   <div style={{padding:"0.85rem",background:"rgba(15,23,42,0.5)",borderRadius:"10px",color:"#475569",fontSize:"0.78rem",textAlign:"center"}}>Everyone is working 💪</div>
                 ) : activeBreaks.map(b => {
-                  const secs = breakSecsLeft(b.startedAt);
-                  const overdue = secs <= 0;
-                  const elapsed = breakSecsElapsed(b.startedAt);
                   return (
-                    <div key={b.id} style={{marginBottom:"0.5rem",padding:"0.75rem",background:overdue?"rgba(255,68,68,0.12)":"rgba(255,159,67,0.08)",border:`1px solid ${overdue?"rgba(255,68,68,0.5)":"rgba(255,159,67,0.3)"}`,borderRadius:"12px",display:"flex",alignItems:"center",gap:"0.65rem"}}>
-                      <div style={{width:36,height:36,borderRadius:"50%",background:overdue?"rgba(255,68,68,0.2)":"rgba(255,159,67,0.15)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"1.1rem",flexShrink:0}}>📦</div>
+                    <div key={b.id} style={{marginBottom:"0.5rem",padding:"0.75rem",background:"rgba(255,159,67,0.08)",border:"1px solid rgba(255,159,67,0.3)",borderRadius:"12px",display:"flex",alignItems:"center",gap:"0.65rem"}}>
+                      <div style={{width:36,height:36,borderRadius:"50%",background:"rgba(255,159,67,0.15)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"1.1rem",flexShrink:0}}>📦</div>
                       <div style={{flex:1,minWidth:0}}>
                         <div style={{color:"#e2e8f0",fontWeight:900,fontSize:"0.82rem"}}>{b.workerName}</div>
                         <div style={{color:"#64748b",fontSize:"0.65rem",marginTop:"0.1rem"}}>Started {fmtTime(b.startedAt)}</div>
                       </div>
-                      <div style={{textAlign:"right",flexShrink:0}}>
-                        {overdue ? (
-                          <>
-                            <div style={{color:"#ff4444",fontWeight:900,fontSize:"0.8rem",animation:"pulse 1s infinite"}}>⚠️ OVERDUE</div>
-                            <div style={{color:"#ff4444",fontSize:"0.65rem"}}>{Math.floor(elapsed/60)}m {elapsed%60}s out</div>
-                          </>
-                        ) : (
-                          <>
-                            <div style={{color:"#ff9f43",fontWeight:900,fontSize:"0.85rem"}}>{fmtCountdown(secs)}</div>
-                            <div style={{color:"#64748b",fontSize:"0.6rem"}}>remaining</div>
-                          </>
-                        )}
-                      </div>
+                      <BreakRowCountdown b={b} breakMins={BREAK_MINS} />
                     </div>
                   );
                 })}
@@ -2185,6 +2211,7 @@
             );
           })()}
         </div>
+      // eslint-disable-next-line react-hooks/exhaustive-deps
       );
 
       // ── Conversation View ─────────────────────────────────────────────
@@ -2419,17 +2446,13 @@
                 )}
                 {/* Break button — warehouse staff only */}
                 {userRole === "warehouse" && (
-                  myActiveBreak ? (() => {
-                      const _bSecs = breakSecsLeft(myActiveBreak.startedAt);
-                      const _bOver = _bSecs <= 0;
-                      const _bElMins = Math.floor(breakSecsElapsed(myActiveBreak.startedAt)/60);
-                      return (
-                        <button className="wd-nav-btn" onClick={() => endBreak(myActiveBreak)}
-                          style={{background:_bOver?'linear-gradient(135deg,#ff4444,#cc2222)':'linear-gradient(135deg,#ff9f43,#e67e22)',border:'none',color:'#fff',animation:'pulse 1.5s ease-in-out infinite',position:'relative'}}>
-                          {_bOver ? `⚠️ ${_bElMins}m OVERDUE — Back?` : `🍵 ${fmtCountdown(_bSecs)} — Back?`}
-                        </button>
-                      );
-                    })() : (
+                  myActiveBreak ? (
+                    <BreakCountdown
+                      startedAt={myActiveBreak.startedAt}
+                      breakMins={BREAK_MINS}
+                      onEnd={() => endBreak(myActiveBreak)}
+                    />
+                  ) : (
                     <button className="wd-nav-btn" onClick={startBreak}
                       style={{background:'transparent',border:'1px solid rgba(255,159,67,0.5)',color:'#ff9f43'}}>
                       🍵 Break
