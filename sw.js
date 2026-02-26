@@ -1,51 +1,106 @@
-// Minimal PWA service worker (app-shell only).
-// NOTE: This does NOT cache Supabase/API data to avoid conflicts.
-// Works on https or localhost.
-//
-// ── HOW TO PUSH UPDATES WITHOUT HARD RESETS ───────────────────────────────
-// 1. Bump APP_VERSION below (e.g. v9 → v10) whenever you deploy new HTML
-// 2. Upload both WarehouseLineFeeder.html + sw.js
-// 3. Devices auto-update next time the user switches back to the tab
-//    (the app calls reg.update() on every visibilitychange)
-// ─────────────────────────────────────────────────────────────────────────
-const APP_VERSION = 'v16'; // ← bump this on every deploy
-const CACHE_NAME  = 'warehouse-pwa-' + APP_VERSION;
+// ─────────────────────────────────────────────────────────────────────────────
+// Warehouse Delivery System — Service Worker
+// AUTO-UPDATE: bump CACHE_VERSION on every deploy to force immediate refresh
+// Vercel automatically serves the new sw.js on each push — this triggers
+// the updatefound → SKIP_WAITING → controllerchange → reload chain in the app
+// ─────────────────────────────────────────────────────────────────────────────
+const CACHE_VERSION = "wds-v1.0";
+const CACHE_NAME = `wds-cache-${CACHE_VERSION}`;
 
-const APP_SHELL = [
-  './',
-  './index.html',
-  './manifest.json',
-  './icon-192.png',
-  './icon-512.png'
+const PRECACHE_URLS = [
+  "./",
+  "./index.html",
+  "./manifest.json",
+  "./icons/icon-192.png",
+  "./icons/icon-512.png"
 ];
 
-self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL).catch(() => {}))
-  );
-  self.skipWaiting(); // activate immediately, don't wait for old tabs to close
-});
+const CDN_HOSTS = ["unpkg.com", "cdn.jsdelivr.net"];
 
-self.addEventListener('activate', (event) => {
+// ── Install: cache shell, activate immediately ────────────────────────────────
+self.addEventListener("install", (event) => {
+  // skipWaiting so a freshly installed SW activates without waiting for tabs to close
+  self.skipWaiting();
   event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
+    caches.open(CACHE_NAME).then((cache) =>
+      cache.addAll(PRECACHE_URLS).catch((err) =>
+        console.warn("[SW] Pre-cache failed:", err)
+      )
     )
   );
-  self.clients.claim(); // take control of all open tabs right away
 });
 
-self.addEventListener('fetch', (event) => {
-  const url = new URL(event.request.url);
-  // Only handle same-origin requests; let CDNs (React/Babel/Supabase) pass through.
-  if (url.origin !== self.location.origin) return;
-  event.respondWith(
-    caches.match(event.request).then((cached) => cached || fetch(event.request))
+// ── Activate: take control of all clients immediately, clear old caches ───────
+self.addEventListener("activate", (event) => {
+  event.waitUntil(
+    Promise.all([
+      // Claim all open tabs immediately so they use the new SW right away
+      self.clients.claim(),
+      // Delete any old cache versions
+      caches.keys().then((keys) =>
+        Promise.all(
+          keys
+            .filter((k) => k.startsWith("wds-cache-") && k !== CACHE_NAME)
+            .map((k) => {
+              console.log("[SW] Clearing old cache:", k);
+              return caches.delete(k);
+            })
+        )
+      )
+    ])
   );
 });
 
-// Allows the page to trigger immediate activation of a waiting SW
-// (sent by the visibilitychange handler in the HTML)
-self.addEventListener('message', (event) => {
-  if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
+// ── Fetch: network-first for app shell, cache-first for CDN ──────────────────
+self.addEventListener("fetch", (event) => {
+  const url = new URL(event.request.url);
+
+  // Always bypass SW for Supabase — must be live
+  if (url.hostname.includes("supabase.co")) return;
+
+  // CDN resources: cache-first (they're versioned by unpkg so safe to cache)
+  if (CDN_HOSTS.some((h) => url.hostname.includes(h))) {
+    event.respondWith(
+      caches.match(event.request).then((cached) => {
+        if (cached) return cached;
+        return fetch(event.request).then((res) => {
+          if (res.ok) {
+            caches.open(CACHE_NAME).then((c) => c.put(event.request, res.clone()));
+          }
+          return res;
+        });
+      })
+    );
+    return;
+  }
+
+  // App shell: network-first so updates always land immediately
+  // Falls back to cache only when truly offline
+  if (url.origin === self.location.origin) {
+    event.respondWith(
+      fetch(event.request)
+        .then((res) => {
+          if (res.ok) {
+            caches.open(CACHE_NAME).then((c) => c.put(event.request, res.clone()));
+          }
+          return res;
+        })
+        .catch(() =>
+          caches.match(event.request).then((cached) => {
+            if (cached) return cached;
+            if (event.request.mode === "navigate") {
+              return caches.match("./index.html");
+            }
+          })
+        )
+    );
+    return;
+  }
+});
+
+// ── Message: manual skip-waiting trigger from app ─────────────────────────────
+self.addEventListener("message", (event) => {
+  if (event.data === "SKIP_WAITING") {
+    self.skipWaiting();
+  }
 });
