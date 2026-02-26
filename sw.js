@@ -8,7 +8,7 @@
 // 3. Devices auto-update next time the user switches back to the tab
 //    (the app calls reg.update() on every visibilitychange)
 // ─────────────────────────────────────────────────────────────────────────
-const APP_VERSION = 'v13'; // ← bump this on every deploy
+const APP_VERSION = 'v14'; // ← bump this on every deploy
 const CACHE_NAME  = 'warehouse-pwa-' + APP_VERSION;
 
 const APP_SHELL = [
