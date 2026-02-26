@@ -125,11 +125,19 @@
 
   <!-- PWA -->
   <link rel="manifest" href="./manifest.json">
-  <link rel="icon" type="image/svg+xml" href="./favicon.svg">
   <meta name="theme-color" content="#00ff88">
-  <link rel="apple-touch-icon" href="./icon-192.png">
-  <meta name="mobile-web-app-capable" content="yes">
+
+  <!-- iOS standalone -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="WH Delivery">
+  <link rel="apple-touch-icon" href="./icons/icon-192.png">
+  <link rel="apple-touch-icon" sizes="152x152" href="./icons/icon-152.png">
+
+  <!-- Android / general -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="application-name" content="WH Delivery">
+  <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png">
 
 </head>
 <body>
@@ -266,8 +274,8 @@
      **********************************************************************/
     const CONFIG = {
       ENABLE_SUPABASE: true, // <- set true for real multi-user across devices
-      SUPABASE_URL: "https://hzcgdtsyamejgkahtqyb.supabase.co",
-      SUPABASE_ANON_KEY: "sb_publishable_6bgN37a4HK5vgjX1yyHJlg_GUABLqfl",
+      SUPABASE_URL: "https://vryxhveadpvhgvhyyary.supabase.co",
+      SUPABASE_ANON_KEY: "sb_publishable_vKIZKhITzYfAJqfg-O-Zbw_4UXI1U8e",
       STORAGE_KEY: "warehouse-requests-v3",
       CHAT_KEY: "warehouse-chat-v1",
       REFRESH_MS: 2500, // polling fallback; realtime will override
@@ -4666,10 +4674,48 @@ ${filteredArchive.map(r => `<tr>
   </script>
 
   <script>
-    // PWA service worker (works on https or localhost)
+    // ── Auto-updating Service Worker ─────────────────────────────────────────
     if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
-        navigator.serviceWorker.register('./sw.js').catch(() => {});
+      window.addEventListener('load', async () => {
+        try {
+          const reg = await navigator.serviceWorker.register('./sw.js');
+
+          // When a NEW service worker is found (you pushed an update to Vercel):
+          reg.addEventListener('updatefound', () => {
+            const newSW = reg.installing;
+            if (!newSW) return;
+
+            newSW.addEventListener('statechange', () => {
+              // New SW finished installing and is waiting to take over
+              if (newSW.state === 'installed' && navigator.serviceWorker.controller) {
+                // Tell the new SW to skip the waiting phase immediately
+                newSW.postMessage('SKIP_WAITING');
+              }
+            });
+          });
+
+          // When the SW takes control (after skipWaiting), reload every open tab
+          let refreshing = false;
+          navigator.serviceWorker.addEventListener('controllerchange', () => {
+            if (refreshing) return;
+            refreshing = true;
+            // Small delay so the cache is fully populated before reload
+            setTimeout(() => window.location.reload(), 400);
+          });
+
+          // Poll for updates every 5 minutes while the app is open
+          // This catches pushes to Vercel even if the tab stays open all day
+          setInterval(() => reg.update(), 5 * 60 * 1000);
+
+          // Also check immediately when the tab becomes visible again
+          // (e.g. phone was locked, user comes back)
+          document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') reg.update();
+          });
+
+        } catch (err) {
+          console.warn('[SW] Registration failed:', err);
+        }
       });
     }
   </script>
