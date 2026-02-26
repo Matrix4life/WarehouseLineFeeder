@@ -645,7 +645,7 @@
           }));
         },
         async sendChatMessage({ conversationId, senderName, senderRole, recipientName, message }) {
-          const id = Date.now();
+          const id = Date.now() * 1000 + Math.floor(Math.random() * 1000); // prevent PK collision on rapid sends
           const msg = { id, conversationId, senderName, senderRole, recipientName, message, sentAt: nowIso() };
           if (!useSupabase) {
             const raw = localStorage.getItem(CONFIG.CHAT_KEY);
@@ -1054,7 +1054,7 @@
             setNotificationsEnabled(await requestNotifyPermission());
             const adapter = createAdapter({
               onRemoteChange: loadAll,
-              onChatChange: () => loadChatMessages(chatChannelRef.current)
+              onChatChange: () => { if (chatContactRef.current) loadChatMessages(chatContactRef.current); }
             });
             adapterRef.current = adapter;
             setConnectionMode(adapter.kind);
@@ -1138,7 +1138,12 @@
         try {
           const cid = convId(me, contact.name);
           const msgs = await adapter.loadChatMessages(cid);
-          setChatMessages(Array.isArray(msgs) ? msgs : []);
+          const fresh = Array.isArray(msgs) ? msgs : [];
+          // Only update state if message count or last id changed — prevents scroll twitch
+          setChatMessages(prev => {
+            if (prev.length === fresh.length && prev[prev.length-1]?.id === fresh[fresh.length-1]?.id) return prev;
+            return fresh;
+          });
           if (!chatTableReady) { setChatTableReady(true); chatTableReadyRef.current = true; }
         } catch(e) { _chatHandleError(e); }
         setChatLoading(false);
@@ -1154,12 +1159,10 @@
         } catch(e) { _chatHandleError(e); }
       };
 
-      // When chat opens: load admin conv list if applicable
+      // When chat opens: refresh conv list, but DON'T reset view/contact/messages
+      // so re-opening the panel keeps you exactly where you were
       useEffect(() => {
         if (!chatOpen) return;
-        setChatView("list");
-        setChatContact(null);
-        setChatMessages([]);
         if ((userRole === "admin" || userRole === "supervisor") && chatTableReadyRef.current) {
           loadAdminConvList();
         }
@@ -1186,10 +1189,15 @@
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [chatOpen, chatView]);
 
-      // Scroll to bottom on new messages
+      // Scroll to bottom ONLY when new messages actually arrive (count increases)
+      const _chatMsgCountRef = useRef(0);
       useEffect(() => {
         if (chatOpen && chatView === "conversation") {
-          chatEndRef.current?.scrollIntoView({ behavior:"smooth" });
+          const newCount = chatMessages.length;
+          if (newCount > _chatMsgCountRef.current) {
+            chatEndRef.current?.scrollIntoView({ behavior:"smooth" });
+          }
+          _chatMsgCountRef.current = newCount;
         }
       }, [chatMessages, chatOpen, chatView]);
 
@@ -1208,7 +1216,11 @@
             message: msg
           });
           setChatMessages(prev => [...prev, newMsg]);
-        } catch(err) { console.error("Chat send error:", err); }
+        } catch(err) {
+          console.error("Chat send error:", err);
+          _showToast("❌", "Message failed to send", err?.message || "Check your connection", "#ff4444", _onNotif);
+          setChatInput(msg); // restore the message so they can retry
+        }
       };
 
       // Which users can this person message?
