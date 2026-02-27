@@ -1307,16 +1307,23 @@
         if (!adapter) return;
         try {
           const convs = await adapter.loadAllConversations();
-          setChatConvList(Array.isArray(convs) ? convs : []);
+          const all = Array.isArray(convs) ? convs : [];
+          const me = _wdUser || userName;
+          const myRole = userRole;
+          // Admin/supervisor: see all conversations
+          // Warehouse/room: only see their own conversations
+          const filtered = (myRole === "admin" || myRole === "supervisor")
+            ? all
+            : all.filter(cv => cv.conversationId.includes(me));
+          setChatConvList(filtered);
           if (!chatTableReady) { setChatTableReady(true); chatTableReadyRef.current = true; }
         } catch(e) { _chatHandleError(e); }
       };
 
-      // When chat opens: refresh conv list, but DON'T reset view/contact/messages
-      // so re-opening the panel keeps you exactly where you were
+      // When chat opens: refresh conv list for ALL roles so Recent shows up
       useEffect(() => {
         if (!chatOpen) return;
-        if ((userRole === "admin" || userRole === "supervisor") && chatTableReadyRef.current) {
+        if (chatTableReadyRef.current) {
           loadAdminConvList();
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1369,6 +1376,8 @@
             message: msg
           });
           setChatMessages(prev => [...prev, newMsg]);
+          // Refresh conv list so this convo appears in Recent for all roles
+          if (chatTableReadyRef.current) loadAdminConvList();
         } catch(err) {
           console.error("Chat send error:", err);
           _showToast("❌", "Message failed to send", err?.message || "Check your connection", "#ff4444", _onNotif);
