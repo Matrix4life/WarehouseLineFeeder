@@ -1345,16 +1345,18 @@
         const claimed = requests.filter(r => r.status === "claimed").length;
         const inprog = requests.filter(r => r.status === "in_progress").length;
         const cancelled = requests.filter(r => r.status === "cancelled").length;
-        // Done resets daily — only count today's completions
+        // Done: count today's completions from BOTH active and archived requests
+        // (completed requests get moved to archivedRequests so must include both)
         const todayStart = new Date();
         todayStart.setHours(0, 0, 0, 0);
-        const completed = requests.filter(r =>
+        const allReqs = [...requests, ...archivedRequests];
+        const completed = allReqs.filter(r =>
           r.status === "completed" &&
           r.completedAt &&
           new Date(r.completedAt) >= todayStart
         ).length;
         return { total, pending, claimed, inprog, completed, cancelled };
-      }, [requests]);
+      }, [requests, archivedRequests]);
 
       // ── BREAK HELPERS (pure functions, no state) ─────────────────────
       const breakElapsed     = (since) => Math.floor((Date.now() - new Date(since).getTime()) / 60000);
