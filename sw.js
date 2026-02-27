@@ -4,7 +4,7 @@
 // Vercel automatically serves the new sw.js on each push — this triggers
 // the updatefound → SKIP_WAITING → controllerchange → reload chain in the app
 // ─────────────────────────────────────────────────────────────────────────────
-const CACHE_VERSION = "wds-v1.0";
+const CACHE_VERSION = "wds-v1.1";
 const CACHE_NAME = `wds-cache-${CACHE_VERSION}`;
 
 const PRECACHE_URLS = [
