@@ -696,6 +696,21 @@
           });
           return Object.values(map).sort((a,b) => b.sentAt > a.sentAt ? 1 : -1);
         },
+        async deleteChatConversation(conversationId) {
+          if (!useSupabase) {
+            const raw = localStorage.getItem(CONFIG.CHAT_KEY);
+            const all = safeJsonParse(raw, []);
+            const filtered = (Array.isArray(all) ? all : []).filter(m => m.conversationId !== conversationId);
+            localStorage.setItem(CONFIG.CHAT_KEY, JSON.stringify(filtered));
+            bc?.postMessage({ type:"chat_updated" });
+            return;
+          }
+          const { error } = await supabaseClient
+            .from("warehouse_chat")
+            .delete()
+            .eq("conversation_id", conversationId);
+          if (error) throw error;
+        },
         // ── BREAKS ────────────────────────────────────────────────────────
         async loadBreaks({ from, to } = {}) {
           const KEY = "wd_breaks_v1";
@@ -939,6 +954,7 @@
       const [chatLoading, setChatLoading] = useState(false);
       const [chatTableReady, setChatTableReady] = useState(true);
       const [chatConvList, setChatConvList] = useState([]); // admin: all convs
+      const [monitorConvId, setMonitorConvId] = useState(null); // admin monitoring a conv between other users
       const chatEndRef = useRef(null);
       const chatInputRef = useRef(null);
       const chatContactRef = useRef(null);
@@ -1178,6 +1194,24 @@
         if (is404) { setChatTableReady(false); chatTableReadyRef.current = false; }
       };
 
+      const deleteChatConv = async (contactName) => {
+        const cid = convId(userName, contactName);
+        try {
+          await adapterRef.current.deleteChatConversation(cid);
+          // Clear from local state
+          setChatConvList(prev => prev.filter(cv => cv.conversationId !== cid));
+          setChatUnreadFrom(prev => { const n={...prev}; delete n[contactName]; return n; });
+          // If currently viewing this conversation, go back to list
+          if (chatContact?.name === contactName) {
+            setChatContact(null);
+            setChatView("list");
+            setChatMessages([]);
+          }
+        } catch(err) {
+          console.error("Delete chat failed:", err);
+        }
+      };
+
       const loadChatMessages = async (contact) => {
         const adapter = adapterRef.current;
         const me = _wdUser || userName;
@@ -1185,7 +1219,8 @@
         if (!chatTableReadyRef.current) return;
         setChatLoading(true);
         try {
-          const cid = convId(me, contact.name);
+          // When admin monitors a conv between two OTHER users, use the real convId directly
+          const cid = contact._monitorConvId || convId(me, contact.name);
           const msgs = await adapter.loadChatMessages(cid);
           const fresh = Array.isArray(msgs) ? msgs : [];
           // Only update state if message count or last id changed — prevents scroll twitch
@@ -1358,6 +1393,15 @@
         return { total, pending, claimed, inprog, completed, cancelled };
       }, [requests, archivedRequests]);
 
+      // Format minutes as "Xh Ym" when >= 60, else just "Ym"
+      const fmtMins = (mins) => {
+        if (!mins || mins <= 0) return "0m";
+        if (mins < 60) return `${mins}m`;
+        const h = Math.floor(mins / 60);
+        const m = mins % 60;
+        return m > 0 ? `${h}h ${m}m` : `${h}h`;
+      };
+
       // ── BREAK HELPERS (pure functions, no state) ─────────────────────
       const breakElapsed     = (since) => Math.floor((Date.now() - new Date(since).getTime()) / 60000);
       const breakSecsElapsed = (since) => Math.floor((Date.now() - new Date(since).getTime()) / 1000);
@@ -1527,7 +1571,7 @@
           setTimeout(() => setSuccessMsg(""), 2500);
 
           setFormData(defaultForm());
-          setTimeout(() => setRoute("picklist"), 150);
+          // Stay on the form — room users submit multiple requests in a row
         } catch (error) {
           console.error("Failed to submit request:", error);
           setSuccessMsg(`❌ Error: Failed to submit request`);
@@ -2123,10 +2167,15 @@
                 return (
                   <div key={conv.conversationId}
                     onClick={() => {
-                      // Admin opens a monitored conversation (read-only for external convs)
+                      // Admin monitors a conversation — may be between two OTHER users
+                      // Pass the real conversationId so loadChatMessages uses it directly
                       const otherName = parts.find(p => p !== userName) || parts[0];
                       const otherUser = users.find(u => u.name === otherName) || {name: otherName, role:"unknown"};
-                      setChatContact(otherUser);
+                      const isExternalConv = !parts.includes(userName);
+                      const contact = isExternalConv
+                        ? { ...otherUser, _monitorConvId: conv.conversationId, _monitorLabel: parts.join(" ↔ ") }
+                        : otherUser;
+                      setChatContact(contact);
                       setChatView("conversation");
                     }}
                     style={{display:"flex",alignItems:"center",gap:"0.6rem",padding:"0.65rem 0.6rem",borderRadius:"10px",cursor:"pointer",marginBottom:"0.3rem",background:"rgba(167,139,250,0.06)",border:"1px solid rgba(167,139,250,0.15)"}}
@@ -2207,22 +2256,36 @@
                   const unreadCnt = chatUnreadFrom[u.name]||0;
                   return (
                     <div key={u.id||u.name}
-                      onClick={() => { setChatContact({name:u.name,role:u.role}); setChatView("conversation"); setChatUnreadFrom(prev => { const n={...prev}; delete n[u.name]; return n; }); }}
-                      style={{display:"flex",alignItems:"center",gap:"0.65rem",padding:"0.6rem 0.5rem",borderRadius:"10px",cursor:"pointer",marginBottom:"0.3rem",transition:"background 0.15s",background:unreadCnt>0?"rgba(0,255,136,0.06)":"transparent",border:unreadCnt>0?"1px solid rgba(0,255,136,0.2)":"1px solid transparent"}}
+                      style={{display:"flex",alignItems:"center",gap:"0.65rem",padding:"0.6rem 0.5rem",borderRadius:"10px",marginBottom:"0.3rem",transition:"background 0.15s",background:unreadCnt>0?"rgba(0,255,136,0.06)":"transparent",border:unreadCnt>0?"1px solid rgba(0,255,136,0.2)":"1px solid transparent"}}
                       onMouseEnter={e=>e.currentTarget.style.background="rgba(0,255,136,0.08)"}
                       onMouseLeave={e=>e.currentTarget.style.background=unreadCnt>0?"rgba(0,255,136,0.06)":"transparent"}>
-                      <div style={{width:34,height:34,borderRadius:"50%",background:_roleColor(u.role)+"22",border:`1.5px solid ${_roleColor(u.role)}55`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"0.9rem",flexShrink:0,position:"relative"}}>
-                        {_roleEmoji(u.role)}
-                        {unreadCnt>0 && <span style={{position:"absolute",top:-4,right:-4,background:"#ff4444",color:"#fff",borderRadius:"50%",width:16,height:16,fontSize:"0.55rem",fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center",border:"2px solid #0f172a"}}>{unreadCnt>9?"9+":unreadCnt}</span>}
+                      {/* Clickable area — open conversation */}
+                      <div onClick={() => { setChatContact({name:u.name,role:u.role}); setChatView("conversation"); setChatUnreadFrom(prev => { const n={...prev}; delete n[u.name]; return n; }); }}
+                        style={{display:"flex",alignItems:"center",gap:"0.65rem",flex:1,minWidth:0,cursor:"pointer"}}>
+                        <div style={{width:34,height:34,borderRadius:"50%",background:_roleColor(u.role)+"22",border:`1.5px solid ${_roleColor(u.role)}55`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"0.9rem",flexShrink:0,position:"relative"}}>
+                          {_roleEmoji(u.role)}
+                          {unreadCnt>0 && <span style={{position:"absolute",top:-4,right:-4,background:"#ff4444",color:"#fff",borderRadius:"50%",width:16,height:16,fontSize:"0.55rem",fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center",border:"2px solid #0f172a"}}>{unreadCnt>9?"9+":unreadCnt}</span>}
+                        </div>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{color:unreadCnt>0?"#e2e8f0":"#94a3b8",fontWeight:unreadCnt>0?900:700,fontSize:"0.8rem"}}>{u.name}</div>
+                          {conv && <div style={{color:"#475569",fontSize:"0.64rem",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",marginTop:2}}>{conv.message}</div>}
+                        </div>
+                        <div style={{flexShrink:0,display:"flex",flexDirection:"column",alignItems:"flex-end",gap:"0.2rem"}}>
+                          {conv && <span style={{color:"#475569",fontSize:"0.6rem"}}>{_fmtTime(conv.sentAt)}</span>}
+                          <span style={{color:"#334155",fontSize:"0.8rem"}}>›</span>
+                        </div>
                       </div>
-                      <div style={{flex:1,minWidth:0}}>
-                        <div style={{color:unreadCnt>0?"#e2e8f0":"#94a3b8",fontWeight:unreadCnt>0?900:700,fontSize:"0.8rem"}}>{u.name}</div>
-                        {conv && <div style={{color:"#475569",fontSize:"0.64rem",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",marginTop:2}}>{conv.message}</div>}
-                      </div>
-                      <div style={{flexShrink:0,display:"flex",flexDirection:"column",alignItems:"flex-end",gap:"0.2rem"}}>
-                        {conv && <span style={{color:"#475569",fontSize:"0.6rem"}}>{_fmtTime(conv.sentAt)}</span>}
-                        <span style={{color:"#334155",fontSize:"0.8rem"}}>›</span>
-                      </div>
+                      {/* Delete button */}
+                      {conv && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); if(window.confirm(`Delete chat with ${u.name}? This cannot be undone.`)) deleteChatConv(u.name); }}
+                          title="Delete conversation"
+                          style={{flexShrink:0,background:"rgba(255,68,68,0.08)",border:"1px solid rgba(255,68,68,0.25)",borderRadius:"7px",color:"#ff4444",width:28,height:28,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",fontSize:"0.75rem",opacity:0.6,transition:"opacity 0.15s"}}
+                          onMouseEnter={e=>e.currentTarget.style.opacity="1"}
+                          onMouseLeave={e=>e.currentTarget.style.opacity="0.6"}>
+                          🗑
+                        </button>
+                      )}
                     </div>
                   );
                 })}
@@ -2248,9 +2311,21 @@
                   {_roleEmoji(chatContact.role)}
                 </div>
                 <div style={{flex:1,minWidth:0}}>
-                  <div style={{color:"#e2e8f0",fontWeight:900,fontSize:"0.82rem"}}>{chatContact.name}</div>
-                  <div style={{color:_roleColor(chatContact.role),fontSize:"0.62rem",textTransform:"capitalize"}}>{chatContact.role}</div>
+                  <div style={{color:"#e2e8f0",fontWeight:900,fontSize:"0.82rem"}}>
+                    {chatContact._monitorLabel || chatContact.name}
+                  </div>
+                  <div style={{color:chatContact._monitorLabel?"#a78bfa":_roleColor(chatContact.role),fontSize:"0.62rem",textTransform:"capitalize"}}>
+                    {chatContact._monitorLabel ? "👁 monitoring" : chatContact.role}
+                  </div>
                 </div>
+                {!chatContact._monitorLabel && (
+                  <button
+                    onClick={() => { if(window.confirm(`Delete chat with ${chatContact.name}? This cannot be undone.`)) deleteChatConv(chatContact.name); }}
+                    title="Delete conversation"
+                    style={{flexShrink:0,background:"rgba(255,68,68,0.1)",border:"1px solid rgba(255,68,68,0.3)",borderRadius:"8px",color:"#ff4444",padding:"0.25rem 0.55rem",cursor:"pointer",fontWeight:900,fontSize:"0.8rem"}}>
+                    🗑
+                  </button>
+                )}
               </>
             )}
           </div>
@@ -2636,7 +2711,9 @@
         const thisWeek = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
         const thisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
         
-        const filteredReqs = requests.filter(r => {
+        // Include archived requests — completed orders may be archived
+        const allReqs = [...requests, ...archivedRequests];
+        const filteredReqs = allReqs.filter(r => {
           const submitted = new Date(r.submittedAt);
           if (timeFilter === "today") return submitted >= today;
           if (timeFilter === "week") return submitted >= thisWeek;
@@ -2842,7 +2919,7 @@
                         <div style={{ display:'flex', gap:'1rem' }}>
                           <div>
                             <div style={{ color:'#64748b', fontSize:'0.75rem' }}>Avg Time</div>
-                            <div style={{ color:'#00ff88', fontSize:'1.3rem', fontWeight:900 }}>{staff.avgTime}<span style={{ fontSize:'0.8rem' }}>min</span></div>
+                            <div style={{ color:'#00ff88', fontSize:'1.3rem', fontWeight:900 }}>{fmtMins(staff.avgTime)}</div>
                           </div>
                         </div>
                       </div>
@@ -2891,7 +2968,8 @@
         const thisWeek = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
         const thisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
         
-        const completedReqs = requests.filter(r => r.status === "completed");
+        // Include archived requests — completed orders get archived after daily cutoff
+        const completedReqs = [...requests, ...archivedRequests].filter(r => r.status === "completed");
         
         const filteredCompletedReqs = completedReqs.filter(r => {
           const completed = new Date(r.completedAt);
@@ -3052,7 +3130,7 @@ ${sortedCompleted.map(r => {
                 
                 <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
                   <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>Avg Complete Time</div>
-                  <div style={{ color:'#00ff88', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{avgTime}<span style={{ fontSize:'1.2rem', color:'#8b9dc3' }}>min</span></div>
+                  <div style={{ color:'#00ff88', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{fmtMins(avgTime)}</div>
                 </div>
               </div>
 
@@ -3121,7 +3199,7 @@ ${sortedCompleted.map(r => {
                               </td>
                               <td style={cellStyle}>
                                 <div style={{ fontWeight:900, color: timeColor, fontSize:'1.1rem' }}>
-                                  {timeMin}<span style={{ fontSize:'0.75rem' }}>min</span>
+                                  {fmtMins(timeMin)}
                                 </div>
                               </td>
                               <td style={cellStyle}>
