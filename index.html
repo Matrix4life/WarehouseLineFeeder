@@ -352,6 +352,9 @@
       SLA_MINUTES_WARN: 5,
       SLA_MINUTES_BAD: 10,
       SLA_MINUTES_CRIT: 20,
+      PICK_SLA_WARN: 3,    // ⚡ Warehouse pick time green threshold (mins)
+      PICK_SLA_BAD: 7,     // ⚡ Warehouse pick time yellow threshold
+      PICK_SLA_CRIT: 12,   // ⚡ Warehouse pick time red threshold
       ROOMS: ["Bistro", "Salad", "Apple", "MasterPack", "Boxes", "Film/Labels", "Other", "******", "Loading", "Putaway" ],
       // Rooms that are warehouse-internal only — hidden from room profile request form
       WAREHOUSE_ONLY_ROOMS: ["Other", "Loading", "******", "Putaway"],
@@ -1288,6 +1291,7 @@
       const [assignRoom, setAssignRoom] = useState("");
       const [assignDuration, setAssignDuration] = useState("day");
       const [shiftFilter, setShiftFilter] = useState("all"); // all | 1st | 2nd
+      const [dashRoomFilter, setDashRoomFilter] = useState("all"); // all | specific room
       const [assignSort, setAssignSort] = useState("shift"); // shift | room | name
       // Login error
       const [loginError, setLoginError] = useState("");
@@ -1798,9 +1802,12 @@
       const canSuperuser = userRole === "superuser";
 
       // Dynamic SLA thresholds (from settings, with CONFIG fallbacks)
-      const SLA_WARN = settingsVal("sla_minutes_warn", CONFIG.SLA_MINUTES_WARN);
-      const SLA_BAD  = settingsVal("sla_minutes_bad", CONFIG.SLA_MINUTES_BAD);
-      const SLA_CRIT = settingsVal("sla_minutes_crit", CONFIG.SLA_MINUTES_CRIT);
+      const SLA_WARN      = settingsVal("sla_minutes_warn", CONFIG.SLA_MINUTES_WARN);
+      const SLA_BAD       = settingsVal("sla_minutes_bad",  CONFIG.SLA_MINUTES_BAD);
+      const SLA_CRIT      = settingsVal("sla_minutes_crit", CONFIG.SLA_MINUTES_CRIT);
+      const PICK_SLA_WARN = settingsVal("pick_sla_warn", CONFIG.PICK_SLA_WARN);
+      const PICK_SLA_BAD  = settingsVal("pick_sla_bad",  CONFIG.PICK_SLA_BAD);
+      const PICK_SLA_CRIT = settingsVal("pick_sla_crit", CONFIG.PICK_SLA_CRIT);
 
       const slaBadge = (req)=> {
         const submittedAt = req.submittedAt || req.submitted_at || nowIso();
@@ -1963,10 +1970,9 @@
         if (!canWarehouseAct) return;
         try {
           await adapterRef.current.updatePartial(id, (r)=> {
-            if (r.status === "completed" || r.status === "cancelled") return r;
-            // Only claimant (or supervisor) can start
+            // Must be claimed first — no skipping steps
+            if (r.status !== "claimed") return r;
             if (r.claimedBy && r.claimedBy !== userName && !canSupervisor) return r;
-            if (!r.claimedBy) { r.claimedBy = userName; r.claimedAt = nowIso(); }
             r.status = "in_progress";
             r.startedAt = r.startedAt || nowIso();
             r.lastUpdatedAt = nowIso();
@@ -1983,7 +1989,8 @@
         try {
           let completedRow = null;
           await adapterRef.current.updatePartial(id, (r)=> {
-            if (r.status === "completed" || r.status === "cancelled") return r;
+            // Must be in_progress — no skipping steps
+            if (r.status !== "in_progress") return r;
             if (r.claimedBy && r.claimedBy !== userName && !canSupervisor) return r;
             r.status = "completed";
             r.completedAt = nowIso();
@@ -2478,7 +2485,7 @@
           )}
 
           {/* ── Admin / Supervisor: All Conversations Monitor ── */}
-          {(userRole==="admin"||userRole==="supervisor") && chatTableReady && (
+          {(userRole==="admin"||userRole==="supervisor"||userRole==="superuser") && chatTableReady && (
             <div style={{marginBottom:"0.75rem"}}>
               <div style={{padding:"0.4rem 0.6rem",color:"#a78bfa",fontWeight:900,fontSize:"0.65rem",textTransform:"uppercase",letterSpacing:"0.07em"}}>
                 👁 Monitor All Conversations
@@ -3055,10 +3062,11 @@
         const allReqs = [...requests, ...archivedRequests];
         const filteredReqs = allReqs.filter(r => {
           const submitted = new Date(r.submittedAt);
-          if (timeFilter === "today") return submitted >= today;
-          if (timeFilter === "week") return submitted >= thisWeek;
-          if (timeFilter === "month") return submitted >= thisMonth;
-          return true; // all
+          if (timeFilter === "today" && submitted < today) return false;
+          if (timeFilter === "week"  && submitted < thisWeek) return false;
+          if (timeFilter === "month" && submitted < thisMonth) return false;
+          if (dashRoomFilter !== "all" && r.room !== dashRoomFilter) return false;
+          return true;
         });
 
         // Calculate stats
@@ -3101,26 +3109,47 @@
         
         // Room KPI  = submittedAt → completedAt  (full customer wait)
         // Warehouse KPI = claimedAt  → completedAt  (actual pick time)
+        // Excluded roles from staff performance
+        const EXCLUDED_ROLES = new Set(["admin","supervisor","superuser"]);
+        const userRoleMap = {};
+        users.forEach(u => { userRoleMap[u.name] = u.role; });
+
         const byStaff = {};
         completedReqs.forEach(r => {
-          const staff = r.completedBy || r.claimedBy || "Unknown";
-          if (!byStaff[staff]) byStaff[staff] = { count:0, roomTotal:0, pickTotal:0, pickCount:0 };
-          byStaff[staff].count++;
-          byStaff[staff].roomTotal += (new Date(r.completedAt) - new Date(r.submittedAt)) / 60000;
+          const staffName = r.completedBy || r.claimedBy || "Unknown";
+          // Exclude admin/supervisor/superuser from staff performance
+          if (EXCLUDED_ROLES.has(userRoleMap[staffName])) return;
+          const staffUser = users.find(u => u.name === staffName);
+          const staffShift = staffUser?.shift || "none";
+          if (!byStaff[staffName]) byStaff[staffName] = { count:0, roomTotal:0, pickTotal:0, pickCount:0, shift: staffShift };
+          byStaff[staffName].count++;
+          byStaff[staffName].roomTotal += (new Date(r.completedAt) - new Date(r.submittedAt)) / 60000;
           if (r.claimedAt) {
             const pickMs = new Date(r.completedAt) - new Date(r.claimedAt);
-            if (pickMs > 0) { byStaff[staff].pickTotal += pickMs / 60000; byStaff[staff].pickCount++; }
+            if (pickMs > 0) { byStaff[staffName].pickTotal += pickMs / 60000; byStaff[staffName].pickCount++; }
           }
         });
-        const topStaff = Object.entries(byStaff)
+        const makeTopStaff = (shiftKey) => Object.entries(byStaff)
+          .filter(([, d]) => shiftKey === "all" || d.shift === shiftKey)
           .map(([name, data]) => ({
             name,
-            count:      data.count,
+            count:       data.count,
+            shift:       data.shift,
             avgRoomTime: Math.round(data.roomTotal / data.count),
             avgPickTime: data.pickCount > 0 ? Math.round(data.pickTotal / data.pickCount) : null,
           }))
-          .sort((a, b) => b.count - a.count)
+          // Sort by pick time ASC — shortest pick time = best performer
+          // Workers with no pick time data go to the bottom
+          .sort((a,b) => {
+            if (a.avgPickTime === null && b.avgPickTime === null) return a.avgRoomTime - b.avgRoomTime;
+            if (a.avgPickTime === null) return 1;
+            if (b.avgPickTime === null) return -1;
+            return a.avgPickTime - b.avgPickTime;
+          })
           .slice(0, 5);
+        const topStaff1st = makeTopStaff("1st");
+        const topStaff2nd = makeTopStaff("2nd");
+        const topStaff    = makeTopStaff("all"); // kept for backwards compat
 
         // Overall warehouse average pick time (all staff, today)
         const pickReqs = completedReqs.filter(r => r.claimedAt &&
@@ -3129,6 +3158,27 @@
           ? Math.round(pickReqs.reduce((s,r) =>
               s + (new Date(r.completedAt) - new Date(r.claimedAt)) / 60000, 0) / pickReqs.length)
           : 0;
+
+        // Room analytics for dashboard
+        const dashRoomStats = (() => {
+          const byRoom = {};
+          filteredReqs.forEach(r => {
+            if (!byRoom[r.room]) byRoom[r.room] = { total:0, completed:0, pending:0, inProgress:0, times:[] };
+            byRoom[r.room].total++;
+            if (r.status === "completed") {
+              byRoom[r.room].completed++;
+              if (r.submittedAt && r.completedAt)
+                byRoom[r.room].times.push((new Date(r.completedAt) - new Date(r.submittedAt)) / 60000);
+            }
+            if (r.status === "pending") byRoom[r.room].pending++;
+            if (r.status === "in_progress" || r.status === "claimed") byRoom[r.room].inProgress++;
+          });
+          return Object.entries(byRoom).map(([room, s]) => ({
+            room, ...s,
+            avgTime: s.times.length > 0 ? Math.round(s.times.reduce((a,b)=>a+b,0)/s.times.length) : 0
+          })).sort((a,b) => b.total - a.total);
+        })();
+        const maxDashRoomTotal = dashRoomStats.length > 0 ? dashRoomStats[0].total : 1;
         
         // Requests by status for chart
         const statusData = [
@@ -3146,20 +3196,36 @@
               <TopBar title="Analytics Dashboard" subtitle={`👤 ${userName} (${userRole}) • ${connectionMode === "supabase" ? "Supabase ready" : "Local + kiosk mode"}`} />
 
 
-              {/* Time Filter */}
-              <div style={{ marginBottom:'1.5rem', display:'flex', gap:'0.75rem', flexWrap:'wrap' }}>
-                {["today", "week", "month", "all"].map(filter => (
-                  <button key={filter} onClick={() => setTimeFilter(filter)}
-                    style={{
-                      padding:'0.6rem 1.2rem', borderRadius:'10px',
-                      background: timeFilter === filter ? 'linear-gradient(135deg, #00ff88 0%, #00cc6f 100%)' : 'rgba(15,23,42,0.85)',
-                      border: timeFilter === filter ? 'none' : '1px solid #334155',
-                      color: timeFilter === filter ? '#0a0e1a' : '#8b9dc3',
-                      fontWeight:900, cursor:'pointer', textTransform:'uppercase', fontSize:'0.8rem'
-                    }}>
-                    {filter === "all" ? "All Time" : filter === "week" ? "This Week" : filter === "month" ? "This Month" : "Today"}
-                  </button>
-                ))}
+              {/* Filters: Time + Room */}
+              <div style={{ marginBottom:'1.5rem', display:'flex', flexDirection:'column', gap:'0.6rem' }}>
+                {/* Time filter */}
+                <div style={{ display:'flex', gap:'0.6rem', flexWrap:'wrap', alignItems:'center' }}>
+                  <span style={{ color:'#475569', fontSize:'0.72rem', textTransform:'uppercase', letterSpacing:'0.08em', minWidth:'38px' }}>Time</span>
+                  {["today","week","month","all"].map(filter => (
+                    <button key={filter} onClick={() => setTimeFilter(filter)}
+                      style={{ padding:'0.5rem 1rem', borderRadius:'10px',
+                        background: timeFilter===filter ? 'linear-gradient(135deg,#00ff88,#00cc6f)' : 'rgba(15,23,42,0.85)',
+                        border: timeFilter===filter ? 'none' : '1px solid #334155',
+                        color: timeFilter===filter ? '#0a0e1a' : '#8b9dc3',
+                        fontWeight:900, cursor:'pointer', textTransform:'uppercase', fontSize:'0.78rem' }}>
+                      {filter==="all"?"All Time":filter==="week"?"This Week":filter==="month"?"This Month":"Today"}
+                    </button>
+                  ))}
+                </div>
+                {/* Room filter */}
+                <div style={{ display:'flex', gap:'0.5rem', flexWrap:'wrap', alignItems:'center' }}>
+                  <span style={{ color:'#475569', fontSize:'0.72rem', textTransform:'uppercase', letterSpacing:'0.08em', minWidth:'38px' }}>Room</span>
+                  {["all", ...Object.keys(CONFIG.ROOM_COLORS).filter(r => r !== "*******" && !CONFIG.WAREHOUSE_ONLY_ROOMS.includes(r))].map(room => (
+                    <button key={room} onClick={() => setDashRoomFilter(room)}
+                      style={{ padding:'0.4rem 0.8rem', borderRadius:'8px',
+                        background: dashRoomFilter===room ? (room==="all" ? 'linear-gradient(135deg,#38bdf8,#0284c7)' : CONFIG.ROOM_COLORS[room]||'#38bdf8') : 'rgba(15,23,42,0.85)',
+                        border: dashRoomFilter===room ? 'none' : '1px solid #334155',
+                        color: dashRoomFilter===room ? '#0a0e1a' : '#8b9dc3',
+                        fontWeight:900, cursor:'pointer', fontSize:'0.75rem' }}>
+                      {room==="all"?"All Rooms":room}
+                    </button>
+                  ))}
+                </div>
               </div>
 
               {/* Stats Cards */}
@@ -3189,7 +3255,7 @@
 
                 <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(255,159,67,0.3)', borderRadius:'14px', padding:'1.5rem' }}>
                   <div style={{ color:'#ff9f43', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>⚡ Warehouse Pick Time</div>
-                  <div style={{ color:'#ff9f43', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{avgPickTime > 0 ? fmtMins(avgPickTime) : '—'}</div>
+                  <div style={{ color: avgPickTime===0?'#64748b':avgPickTime<=PICK_SLA_WARN?'#00ff88':avgPickTime<=PICK_SLA_BAD?'#fbbf24':'#ff4444', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{avgPickTime > 0 ? fmtMins(avgPickTime) : '—'}</div>
                   <div style={{ color:'#64748b', fontSize:'0.72rem', marginTop:'0.25rem' }}>Claim → Delivered · {pickReqs.length} picks</div>
                 </div>
                 
@@ -3261,43 +3327,115 @@
                 </div>
               </div>
 
-              {/* Staff Performance */}
-              {topStaff.length > 0 && (
+              {/* Staff Performance — top 5 per shift */}
+              {(topStaff1st.length > 0 || topStaff2nd.length > 0) && (
                 <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem', marginBottom:'1.5rem' }}>
                   <div style={{ display:'flex', alignItems:'baseline', gap:'1.5rem', marginBottom:'1.5rem', flexWrap:'wrap' }}>
                     <div style={{ color:'#00ff88', fontWeight:900, fontSize:'1.1rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>🏆 Staff Performance</div>
                     <div style={{ fontSize:'0.7rem', color:'#475569' }}>
-                      <span style={{ color:'#00ff88' }}>🏭 Room Wait</span> = customer submits → delivered &nbsp;|&nbsp;
-                      <span style={{ color:'#ff9f43' }}>⚡ Pick Time</span> = warehouse claims → done
+                      <span style={{ color:'#00ff88' }}>🏭 Room Wait</span> = submit → delivered &nbsp;|&nbsp;
+                      <span style={{ color:'#ff9f43' }}>⚡ Pick Time</span> = claim → done &nbsp;·&nbsp; Top 5 per shift
                     </div>
                   </div>
-                  <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(250px, 1fr))', gap:'1rem' }}>
-                    {topStaff.map((staff, idx) => (
-                      <div key={staff.name} style={{ background:'rgba(0,255,136,0.05)', border:'1px solid rgba(0,255,136,0.15)', borderRadius:'10px', padding:'1rem' }}>
+                  {(() => {
+                    const StaffCard = ({staff, idx, shiftColor}) => (
+                      <div key={staff.name} style={{ background:`rgba(${shiftColor==="#00ff88"?"0,255,136":"167,139,250"},0.04)`, border:`1px solid rgba(${shiftColor==="#00ff88"?"0,255,136":"167,139,250"},0.15)`, borderRadius:'10px', padding:'1rem' }}>
                         <div style={{ display:'flex', alignItems:'center', gap:'0.75rem', marginBottom:'0.75rem' }}>
-                          <span style={{ fontSize:'1.5rem' }}>{idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : '👤'}</span>
+                          <span style={{ fontSize:'1.4rem' }}>{idx===0?'🥇':idx===1?'🥈':idx===2?'🥉':'👤'}</span>
                           <div>
-                            <div style={{ color:'#e2e8f0', fontWeight:900, fontSize:'1rem' }}>{staff.name}</div>
-                            <div style={{ color:'#8b9dc3', fontSize:'0.8rem' }}>{staff.count} completed</div>
+                            <div style={{ color:'#e2e8f0', fontWeight:900, fontSize:'0.95rem' }}>{staff.name}</div>
+                            <div style={{ color:'#8b9dc3', fontSize:'0.75rem' }}>{staff.count} completed</div>
                           </div>
                         </div>
-                        <div style={{ display:'flex', gap:'1.25rem' }}>
+                        <div style={{ display:'flex', gap:'1rem' }}>
                           <div>
-                            <div style={{ color:'#64748b', fontSize:'0.72rem', marginBottom:'0.15rem' }}>🏭 Room Wait</div>
-                            <div style={{ color:'#00ff88', fontSize:'1.2rem', fontWeight:900 }}>{fmtMins(staff.avgRoomTime)}</div>
-                            <div style={{ color:'#475569', fontSize:'0.6rem' }}>submit→done</div>
+                            <div style={{ color:'#64748b', fontSize:'0.68rem', marginBottom:'0.1rem' }}>🏭 Room Wait</div>
+                            <div style={{ color:'#00ff88', fontSize:'1.15rem', fontWeight:900 }}>{fmtMins(staff.avgRoomTime)}</div>
                           </div>
                           {staff.avgPickTime !== null && (
-                            <div style={{ borderLeft:'1px solid #1e293b', paddingLeft:'1.25rem' }}>
-                              <div style={{ color:'#64748b', fontSize:'0.72rem', marginBottom:'0.15rem' }}>⚡ Pick Time</div>
-                              <div style={{ color:'#ff9f43', fontSize:'1.2rem', fontWeight:900 }}>{fmtMins(staff.avgPickTime)}</div>
-                              <div style={{ color:'#475569', fontSize:'0.6rem' }}>claim→done</div>
+                            <div style={{ borderLeft:'1px solid #1e293b', paddingLeft:'1rem' }}>
+                              <div style={{ color:'#64748b', fontSize:'0.68rem', marginBottom:'0.1rem' }}>⚡ Pick Time</div>
+                              <div style={{ color: staff.avgPickTime<=PICK_SLA_WARN?'#00ff88':staff.avgPickTime<=PICK_SLA_BAD?'#fbbf24':'#ff4444', fontSize:'1.15rem', fontWeight:900 }}>{fmtMins(staff.avgPickTime)}</div>
                             </div>
                           )}
                         </div>
                       </div>
-                    ))}
+                    );
+                    return (
+                      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(320px,1fr))', gap:'1.5rem' }}>
+                        {topStaff1st.length > 0 && (
+                          <div>
+                            <div style={{ color:'#00ff88', fontWeight:900, fontSize:'0.82rem', textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:'0.75rem', paddingBottom:'0.4rem', borderBottom:'1px solid rgba(0,255,136,0.2)' }}>🟢 1st Shift</div>
+                            <div style={{ display:'flex', flexDirection:'column', gap:'0.6rem' }}>
+                              {topStaff1st.map((s,i) => <StaffCard key={s.name} staff={s} idx={i} shiftColor="#00ff88" />)}
+                            </div>
+                          </div>
+                        )}
+                        {topStaff2nd.length > 0 && (
+                          <div>
+                            <div style={{ color:'#a78bfa', fontWeight:900, fontSize:'0.82rem', textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:'0.75rem', paddingBottom:'0.4rem', borderBottom:'1px solid rgba(167,139,250,0.2)' }}>🟣 2nd Shift</div>
+                            <div style={{ display:'flex', flexDirection:'column', gap:'0.6rem' }}>
+                              {topStaff2nd.map((s,i) => <StaffCard key={s.name} staff={s} idx={i} shiftColor="#a78bfa" />)}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
+
+              {/* Room Analytics */}
+              {dashRoomStats.length > 0 && (
+                <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(56,189,248,0.2)', borderRadius:'14px', padding:'1.5rem', marginBottom:'1.5rem' }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'1.25rem', flexWrap:'wrap', gap:'0.75rem' }}>
+                    <div style={{ color:'#38bdf8', fontWeight:900, fontSize:'1.1rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>📊 Room Analytics</div>
+                    <div style={{ fontSize:'0.72rem', color:'#475569' }}>
+                      {dashRoomFilter !== "all" ? `Filtered: ${dashRoomFilter}` : `${dashRoomStats.length} rooms`}
+                    </div>
                   </div>
+                  <div style={{ overflowX:'auto' }}>
+                    <table style={{ width:'100%', borderCollapse:'collapse' }}>
+                      <thead>
+                        <tr style={{ background:'rgba(56,189,248,0.08)' }}>
+                          {["Room","Total","Done","Pending","Active","Avg Wait","Rate","Activity"].map(h => (
+                            <th key={h} style={{ padding:'0.6rem 0.8rem', textAlign:'left', color:'#38bdf8', fontSize:'0.72rem', textTransform:'uppercase', letterSpacing:'0.05em', fontWeight:900, whiteSpace:'nowrap' }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {dashRoomStats.map((room, idx) => {
+                          const rate = room.total > 0 ? Math.round((room.completed/room.total)*100) : 0;
+                          const tColor = room.avgTime <= SLA_WARN ? '#00ff88' : room.avgTime <= SLA_BAD ? '#fbbf24' : '#ff4444';
+                          const rColor = rate >= 80 ? '#00ff88' : rate >= 50 ? '#fbbf24' : '#ff4444';
+                          return (
+                            <tr key={room.room} style={{ borderBottom: idx < dashRoomStats.length-1 ? '1px solid #1e293b' : 'none', background: idx%2===0 ? 'transparent' : 'rgba(56,189,248,0.02)', cursor:'pointer' }}
+                              onClick={() => setDashRoomFilter(dashRoomFilter === room.room ? "all" : room.room)}>
+                              <td style={{ padding:'0.65rem 0.8rem' }}>
+                                <div style={{ fontWeight:900, display:'flex', alignItems:'center', gap:'0.4rem' }}>
+                                  <div style={{ width:'8px', height:'8px', borderRadius:'50%', background: CONFIG.ROOM_COLORS[room.room]||'#38bdf8', flexShrink:0 }} />
+                                  {room.room}
+                                  {dashRoomFilter === room.room && <span style={{ color:'#38bdf8', fontSize:'0.65rem' }}>●</span>}
+                                </div>
+                              </td>
+                              <td style={{ padding:'0.65rem 0.8rem' }}><div style={{ fontWeight:900, color:'#38bdf8', fontSize:'1.05rem' }}>{room.total}</div></td>
+                              <td style={{ padding:'0.65rem 0.8rem' }}><div style={{ color:'#00ff88', fontWeight:700 }}>{room.completed}</div></td>
+                              <td style={{ padding:'0.65rem 0.8rem' }}><div style={{ color:'#fbbf24', fontWeight:700 }}>{room.pending}</div></td>
+                              <td style={{ padding:'0.65rem 0.8rem' }}><div style={{ color:'#a78bfa', fontWeight:700 }}>{room.inProgress}</div></td>
+                              <td style={{ padding:'0.65rem 0.8rem' }}><div style={{ fontWeight:900, color:tColor }}>{room.avgTime > 0 ? fmtMins(room.avgTime) : '—'}</div></td>
+                              <td style={{ padding:'0.65rem 0.8rem' }}><div style={{ fontWeight:900, color:rColor }}>{rate}%</div></td>
+                              <td style={{ padding:'0.65rem 0.8rem' }}>
+                                <div style={{ background:'#1e293b', height:'6px', borderRadius:'3px', overflow:'hidden', width:'80px' }}>
+                                  <div style={{ background:'linear-gradient(90deg,#38bdf8,#7dd3fc)', height:'100%', width:`${(room.total/maxDashRoomTotal)*100}%` }} />
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div style={{ marginTop:'0.6rem', fontSize:'0.65rem', color:'#334155' }}>Click a row to filter dashboard by that room</div>
                 </div>
               )}
 
@@ -3645,6 +3783,13 @@ ${sortedCompleted.map(r => {
               { key:"sla_minutes_bad", label:"Bad", unit:"min", desc:"Turns yellow — needs attention", min:1, max:120, type:"number" },
               { key:"sla_minutes_crit", label:"Critical", unit:"min", desc:"Turns red with fire — overdue", min:1, max:180, type:"number" },
             ]},
+          { id:"pick_sla", title:"Warehouse Pick SLA", icon:"⚡", color:"#ff9f43",
+            desc:"Target time from when warehouse claims a pick to marking it done",
+            items:[
+              { key:"pick_sla_warn", label:"Good", unit:"min", desc:"At or under this = green (fast pick)", min:1, max:30, type:"number" },
+              { key:"pick_sla_bad",  label:"Slow", unit:"min", desc:"Above good threshold = yellow (slowing down)", min:1, max:60, type:"number" },
+              { key:"pick_sla_crit", label:"Critical", unit:"min", desc:"Above this = red (too slow)", min:1, max:120, type:"number" },
+            ]},
           { id:"breaks", title:"Break Duration", icon:"🍵", color:"#ff9f43",
             desc:"How long warehouse workers get for breaks",
             items:[
@@ -3675,6 +3820,7 @@ ${sortedCompleted.map(r => {
 
         const DEFAULTS = {
           sla_minutes_warn:"5", sla_minutes_bad:"10", sla_minutes_crit:"20",
+          pick_sla_warn:"3", pick_sla_bad:"7", pick_sla_crit:"12",
           break_duration_min:"15", backlog_green_max:"3", backlog_yellow_max:"8",
           poll_interval_ms:"2500", supabase_poll_ms:"10000", auto_archive_hour:"0",
           shift_1_start:"06:00", shift_1_end:"14:00", shift_2_start:"14:00", shift_2_end:"22:00",
@@ -3693,9 +3839,12 @@ ${sortedCompleted.map(r => {
         const grp = SETTING_GROUPS.find(g => g.id === activeSettingsTab);
 
         const settingsErrors = [];
-        const w = parseInt(curEdit.sla_minutes_warn), b = parseInt(curEdit.sla_minutes_bad), c = parseInt(curEdit.sla_minutes_crit);
+        const w = parseInt(curEdit.sla_minutes_warn), b = parseInt(curEdit.sla_minutes_bad), c2 = parseInt(curEdit.sla_minutes_crit);
         if (w >= b) settingsErrors.push("SLA Warning must be less than Bad");
-        if (b >= c) settingsErrors.push("SLA Bad must be less than Critical");
+        if (b >= c2) settingsErrors.push("SLA Bad must be less than Critical");
+        const pw2 = parseInt(curEdit.pick_sla_warn), pb2 = parseInt(curEdit.pick_sla_bad), pc2 = parseInt(curEdit.pick_sla_crit);
+        if (pw2 >= pb2) settingsErrors.push("Pick SLA Good must be less than Slow");
+        if (pb2 >= pc2) settingsErrors.push("Pick SLA Slow must be less than Critical");
         if (parseInt(curEdit.backlog_green_max) >= parseInt(curEdit.backlog_yellow_max)) settingsErrors.push("Backlog Green Max must be less than Yellow Max");
 
         const handleSaveSettings = async () => {
@@ -3893,35 +4042,6 @@ ${sortedCompleted.map(r => {
         const thisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
         const thisYear = new Date(now.getFullYear(), 0, 1);
 
-        const getRoomStats = (filterFn) => {
-          const filtered = requests.filter(filterFn);
-          const byRoom = {};
-          filtered.forEach(r => {
-            if (!byRoom[r.room]) byRoom[r.room] = { total:0, completed:0, pending:0, inProgress:0, times:[] };
-            byRoom[r.room].total++;
-            if (r.status === 'completed') {
-              byRoom[r.room].completed++;
-              if (r.submittedAt && r.completedAt)
-                byRoom[r.room].times.push((new Date(r.completedAt) - new Date(r.submittedAt)) / 60000);
-            }
-            if (r.status === 'pending') byRoom[r.room].pending++;
-            if (r.status === 'in_progress' || r.status === 'claimed') byRoom[r.room].inProgress++;
-          });
-          return Object.entries(byRoom).map(([room, s]) => ({
-            room, ...s,
-            avgTime: s.times.length > 0 ? Math.round(s.times.reduce((a,b)=>a+b,0)/s.times.length) : 0
-          })).sort((a,b) => b.total - a.total);
-        };
-
-        const roomStats = getRoomStats(r => {
-          const submitted = new Date(r.submittedAt);
-          if (adminTimeFilter === "day") return submitted >= today;
-          if (adminTimeFilter === "week") return submitted >= thisWeek;
-          if (adminTimeFilter === "month") return submitted >= thisMonth;
-          if (adminTimeFilter === "year") return submitted >= thisYear;
-          return true;
-        });
-        const maxRoomTotal = roomStats.length > 0 ? roomStats[0].total : 1;
 
         const handleCreateUser = () => {
           const name = newUserName.trim();
@@ -3969,17 +4089,6 @@ ${sortedCompleted.map(r => {
           setTimeout(() => setSuccessMsg(""), 3000);
         };
 
-        const exportRoomCSV = () => {
-          const headers = ["Room","Total","Completed","Pending","In Progress","Avg Time (min)","Completion %"];
-          const rows = roomStats.map(r => [r.room, r.total, r.completed, r.pending, r.inProgress, r.avgTime,
-            r.total > 0 ? Math.round((r.completed/r.total)*100) : 0]);
-          const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
-          const blob = new Blob([csv], { type:'text/csv' });
-          const a = document.createElement('a');
-          a.href = URL.createObjectURL(blob);
-          a.download = `room-stats-${adminTimeFilter}-${new Date().toISOString().split('T')[0]}.csv`;
-          a.click();
-        };
 
         const roleColors = { room:'#8b9dc3', warehouse:'#fbbf24', supervisor:'#a78bfa', admin:'#ff4444', superuser:'#ff4444' };
         const roleEmojis = { room:'🍽️', warehouse:'📦', supervisor:'🧭', admin:'🔧', superuser:'🔧' };
@@ -4404,65 +4513,6 @@ ${sortedCompleted.map(r => {
                   </div>
                 );
               })()}
-
-              {/* ═══ ROOM ANALYTICS ═══ */}
-              <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(255,68,68,0.2)', borderRadius:'14px', padding:'1.5rem', marginBottom:'1.5rem' }}>
-                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'1.25rem', flexWrap:'wrap', gap:'1rem' }}>
-                  <div style={{ color:'#ff4444', fontWeight:900, fontSize:'1.3rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>📊 Room Analytics</div>
-                  <button onClick={exportRoomCSV} disabled={roomStats.length === 0}
-                    style={{ padding:'0.6rem 1.2rem', borderRadius:'8px', background: roomStats.length > 0 ? 'linear-gradient(135deg,#ff4444,#cc3333)' : '#334155', border:'none', color:'#fff', fontWeight:900, cursor: roomStats.length > 0 ? 'pointer' : 'not-allowed', textTransform:'uppercase', fontSize:'0.8rem' }}>
-                    📥 Export CSV
-                  </button>
-                </div>
-                <div style={{ display:'flex', gap:'0.6rem', flexWrap:'wrap', marginBottom:'1.25rem' }}>
-                  {["day","week","month","year","all"].map(f => (
-                    <button key={f} onClick={() => setAdminTimeFilter(f)}
-                      style={{ padding:'0.5rem 1rem', borderRadius:'8px', background: adminTimeFilter===f ? 'linear-gradient(135deg,#ff4444,#cc3333)' : 'rgba(15,23,42,0.85)',
-                        border: adminTimeFilter===f ? 'none' : '1px solid #334155', color: adminTimeFilter===f ? '#fff' : '#8b9dc3',
-                        fontWeight:900, cursor:'pointer', textTransform:'uppercase', fontSize:'0.78rem' }}>
-                      {f==="all"?"All Time":f==="day"?"Today":f==="week"?"This Week":f==="month"?"This Month":"This Year"}
-                    </button>
-                  ))}
-                </div>
-                {roomStats.length === 0 ? (
-                  <div style={{ padding:'2rem', textAlign:'center', color:'#64748b' }}>No data for this period</div>
-                ) : (
-                  <div style={{ overflowX:'auto' }}>
-                    <table style={{ width:'100%', borderCollapse:'collapse' }}>
-                      <thead>
-                        <tr style={{ background:'rgba(255,68,68,0.1)' }}>
-                          {["Room","Total","Completed","Pending","In Progress","Avg Time","Rate","Activity"].map(h => (
-                            <th key={h} style={headerStyle}>{h}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {roomStats.map((room, idx) => {
-                          const rate = room.total > 0 ? Math.round((room.completed/room.total)*100) : 0;
-                          const tColor = room.avgTime <= 5 ? '#00ff88' : room.avgTime <= 10 ? '#fbbf24' : '#ff4444';
-                          const rColor = rate >= 80 ? '#00ff88' : rate >= 50 ? '#fbbf24' : '#ff4444';
-                          return (
-                            <tr key={room.room} style={{ borderBottom: idx < roomStats.length-1 ? '1px solid #334155' : 'none', background: idx%2===0 ? 'transparent' : 'rgba(255,68,68,0.02)' }}>
-                              <td style={cellStyle}><div style={{ fontWeight:900, display:'flex', alignItems:'center', gap:'0.4rem' }}><MapPin size={14} color="#ff4444" />{room.room}</div></td>
-                              <td style={cellStyle}><div style={{ fontWeight:900, color:'#ff4444', fontSize:'1.1rem' }}>{room.total}</div></td>
-                              <td style={cellStyle}><div style={{ color:'#00ff88', fontWeight:700 }}>{room.completed}</div></td>
-                              <td style={cellStyle}><div style={{ color:'#fbbf24', fontWeight:700 }}>{room.pending}</div></td>
-                              <td style={cellStyle}><div style={{ color:'#38bdf8', fontWeight:700 }}>{room.inProgress}</div></td>
-                              <td style={cellStyle}><div style={{ fontWeight:900, color:tColor }}>{room.avgTime > 0 ? `${room.avgTime}min` : '—'}</div></td>
-                              <td style={cellStyle}><div style={{ fontWeight:900, color:rColor }}>{rate}%</div></td>
-                              <td style={cellStyle}>
-                                <div style={{ background:'#1e293b', height:'8px', borderRadius:'4px', overflow:'hidden', width:'100px' }}>
-                                  <div style={{ background:'linear-gradient(90deg,#ff4444,#ff6666)', height:'100%', width:`${(room.total/maxRoomTotal)*100}%` }} />
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
 
               {/* ═══ REQUEST MANAGEMENT + ARCHIVE ═══ */}
               <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(255,68,68,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
@@ -5219,7 +5269,7 @@ ${filteredArchive.map(r => `<tr>
                                         ↩ Unclaim
                                       </button>
                                     )}
-                                    {(req.status === "claimed" || req.status === "pending") && (
+                                    {req.status === "claimed" && (
                                       <button disabled={!canActThis} onClick={()=> startRequest(req.id)}
                                         style={{ opacity: canActThis ? 1 : 0.45, padding:'0.45rem 0.9rem', background:'#a78bfa', border:'none', borderRadius:'8px', fontWeight:900, cursor: canActThis ? 'pointer' : 'not-allowed', fontSize:'0.85rem', color:'#0a0e1a' }}>
                                         Start
@@ -5233,7 +5283,7 @@ ${filteredArchive.map(r => `<tr>
                                         ↩ Un-Start
                                       </button>
                                     )}
-                                    {(req.status === "in_progress" || req.status === "claimed") && (
+                                    {req.status === "in_progress" && (
                                       <button disabled={!canActThis} onClick={()=> completeRequest(req.id)}
                                         style={{ opacity: canActThis ? 1 : 0.45, padding:'0.45rem 0.9rem', background:'linear-gradient(135deg,#00ff88,#00cc6f)', border:'none', borderRadius:'8px', fontWeight:900, cursor: canActThis ? 'pointer' : 'not-allowed', fontSize:'0.85rem', color:'#0a0e1a', display:'inline-flex', alignItems:'center', gap:'0.25rem' }}>
                                         <CheckCircle size={14} color="#0a0e1a" /> Done
