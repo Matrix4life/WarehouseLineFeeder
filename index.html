@@ -540,8 +540,36 @@
       if (navigator.vibrate) { try { navigator.vibrate(pattern); } catch(e) {} }
     }
 
+    // Custom sounds set by superuser — keyed by notification type
+    // Updated by React via useEffect whenever sysSettings changes
+    window._wdCustomSounds = {};
+
+    function _playCustomSound(dataUrl) {
+      try {
+        const audio = new Audio(dataUrl);
+        audio.volume = 0.75;
+        audio.play().catch(() => {});
+      } catch(e) { console.warn("[Audio] custom sound failed:", e); }
+    }
+
     function _notifyAV(type) {
       if (localStorage.getItem("wd_mute_av") === "1") return;
+      // Check for superuser-uploaded custom sound first
+      const customSound = window._wdCustomSounds[type];
+      if (customSound) {
+        _playCustomSound(customSound);
+        // Still vibrate even with custom sound
+        const vibrateMap = {
+          high_priority: [150, 80, 150, 80, 150],
+          completed:     [100],
+          cancelled:     [200, 100, 200],
+          chat:          [80],
+          break:         [120, 60, 120],
+        };
+        _vibrate(vibrateMap[type] || [100, 50, 100]);
+        return;
+      }
+      // Fall back to built-in AIM tones
       switch(type) {
         case "high_priority": _playDing("high");    _vibrate([150, 80, 150, 80, 150]); break;
         case "completed":     _playDing("done");    _vibrate([100]);                   break;
@@ -551,6 +579,9 @@
         default:              _playDing("default"); _vibrate([100, 50, 100]);           break;
       }
     }
+    // Expose audio helpers so React JSX sound preview buttons can reach them
+    window._playDing = _playDing;
+    window._playCustomSound = _playCustomSound;
     // ─────────────────────────────────────────────────────────────────────────
 
     // ── Web Push Subscription Helpers ────────────────────────────────────────
@@ -1214,6 +1245,12 @@
         if (json !== _prevSettingsJson.current) {
           _prevSettingsJson.current = json;
           setSysSettings(s || {});
+          // Push custom sounds to plain-JS layer so _notifyAV can use them
+          const sounds = {};
+          ["new_request","high_priority","completed","cancelled","chat","break"].forEach(type => {
+            if (s && s[`sound_${type}`]) sounds[type] = s[`sound_${type}`];
+          });
+          window._wdCustomSounds = sounds;
         }
       };
       // Superuser settings screen state
@@ -3868,6 +3905,9 @@ ${sortedCompleted.map(r => {
               { key:"shift_2_start", label:"2nd Shift Start", unit:"", desc:"When second shift begins", type:"time" },
               { key:"shift_2_end", label:"2nd Shift End", unit:"", desc:"When second shift ends", type:"time" },
             ]},
+          { id:"sounds", title:"Notification Sounds", icon:"🔊", color:"#a78bfa",
+            desc:"Upload custom sounds for each notification type. Stored in Supabase — applies instantly to all devices.",
+            items:[] },
           { id:"system", title:"System Timing", icon:"⚙️", color:"#64748b",
             desc:"Polling intervals and automated operations",
             items:[
@@ -4065,6 +4105,83 @@ ${sortedCompleted.map(r => {
                       </div>
                     </div>
                   )}
+
+                  {/* ── Custom Notification Sounds Panel ── */}
+                  {activeSettingsTab==="sounds" && (() => {
+                    const SOUND_TYPES = [
+                      { key:"new_request",   label:"New Request",    icon:"📦", desc:"Warehouse gets a new delivery request" },
+                      { key:"high_priority", label:"High Priority",  icon:"🔥", desc:"Urgent / high priority request arrives" },
+                      { key:"completed",     label:"Delivered",      icon:"✅", desc:"Order marked as delivered / done" },
+                      { key:"cancelled",     label:"Cancelled",      icon:"❌", desc:"Request was cancelled" },
+                      { key:"chat",          label:"Chat Message",   icon:"💬", desc:"New chat message received" },
+                      { key:"break",         label:"Break Started",  icon:"🍵", desc:"Warehouse worker starts a break" },
+                    ];
+                    return (
+                      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(320px,1fr))",gap:"1rem",marginTop:"0.5rem"}}>
+                        {SOUND_TYPES.map(st => {
+                          const settingKey = `sound_${st.key}`;
+                          const hasCustom = !!(sysSettings[settingKey]);
+                          return (
+                            <div key={st.key} style={{background:"rgba(167,139,250,0.04)",border:`1px solid ${hasCustom?"rgba(167,139,250,0.4)":"#1e293b"}`,borderRadius:"12px",padding:"1.1rem"}}>
+                              {/* Header */}
+                              <div style={{display:"flex",alignItems:"center",gap:"0.6rem",marginBottom:"0.5rem"}}>
+                                <span style={{fontSize:"1.3rem"}}>{st.icon}</span>
+                                <div>
+                                  <div style={{color:"#e2e8f0",fontWeight:900,fontSize:"0.9rem"}}>{st.label}</div>
+                                  <div style={{color:"#64748b",fontSize:"0.68rem"}}>{st.desc}</div>
+                                </div>
+                                {hasCustom && <span style={{marginLeft:"auto",padding:"0.15rem 0.5rem",background:"rgba(167,139,250,0.2)",borderRadius:"6px",color:"#a78bfa",fontSize:"0.6rem",fontWeight:900,whiteSpace:"nowrap"}}>CUSTOM</span>}
+                              </div>
+                              {/* Action row */}
+                              <div style={{display:"flex",gap:"0.5rem",flexWrap:"wrap",alignItems:"center",marginTop:"0.75rem"}}>
+                                {/* Upload button */}
+                                <label style={{padding:"0.45rem 0.85rem",borderRadius:"8px",background:"rgba(167,139,250,0.15)",border:"1px solid rgba(167,139,250,0.35)",color:"#a78bfa",fontWeight:900,fontSize:"0.78rem",cursor:"pointer",whiteSpace:"nowrap"}}>
+                                  📁 Upload
+                                  <input type="file" accept="audio/*" style={{display:"none"}} onChange={async (e) => {
+                                    const file = e.target.files[0];
+                                    if (!file) return;
+                                    if (file.size > 512000) { alert("File too large — max 500 KB. Tip: use a short MP3 (1-2 seconds)."); e.target.value=""; return; }
+                                    const reader = new FileReader();
+                                    reader.onload = async (ev) => {
+                                      const dataUrl = ev.target.result;
+                                      // Save to Supabase — broadcasts to all devices via Realtime
+                                      await adapterRef.current.saveSetting(settingKey, dataUrl, userName);
+                                      const fresh = await adapterRef.current.loadSettings();
+                                      _updateSysSettings(fresh);
+                                    };
+                                    reader.readAsDataURL(file);
+                                    e.target.value="";
+                                  }}/>
+                                </label>
+                                {/* Preview button */}
+                                <button onClick={() => {
+                                  if (hasCustom) {
+                                    window._playCustomSound(sysSettings[settingKey]);
+                                  } else {
+                                    const dingMap = {new_request:"default",high_priority:"high",completed:"done",cancelled:"cancelled",chat:"chat",break:"break"};
+                                    window._playDing(dingMap[st.key]||"default");
+                                  }
+                                }} style={{padding:"0.45rem 0.85rem",borderRadius:"8px",background:"rgba(56,189,248,0.1)",border:"1px solid rgba(56,189,248,0.3)",color:"#38bdf8",fontWeight:900,fontSize:"0.78rem",cursor:"pointer",whiteSpace:"nowrap"}}>
+                                  ▶ Preview
+                                </button>
+                                {/* Reset to default */}
+                                {hasCustom && (
+                                  <button onClick={async () => {
+                                    if (!confirm(`Reset "${st.label}" to the default AIM sound?`)) return;
+                                    await adapterRef.current.saveSetting(settingKey, "", userName);
+                                    const fresh = await adapterRef.current.loadSettings();
+                                    _updateSysSettings(fresh);
+                                  }} style={{padding:"0.45rem 0.75rem",borderRadius:"8px",background:"transparent",border:"1px solid rgba(255,68,68,0.3)",color:"#ff4444",fontWeight:900,fontSize:"0.78rem",cursor:"pointer",whiteSpace:"nowrap"}}>
+                                    ↺ Reset
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
 
