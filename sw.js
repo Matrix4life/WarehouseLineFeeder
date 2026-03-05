@@ -4,9 +4,8 @@
 // Vercel automatically serves the new sw.js on each push — this triggers
 // the updatefound → SKIP_WAITING → controllerchange → reload chain in the app
 // ─────────────────────────────────────────────────────────────────────────────
-const CACHE_VERSION = "wds-v1.1";
+const CACHE_VERSION = "wds-v1.2";
 const CACHE_NAME = `wds-cache-${CACHE_VERSION}`;
-
 const PRECACHE_URLS = [
   "./",
   "./index.html",
@@ -14,12 +13,10 @@ const PRECACHE_URLS = [
   "./icons/icon-192.png",
   "./icons/icon-512.png"
 ];
-
 const CDN_HOSTS = ["unpkg.com", "cdn.jsdelivr.net"];
 
 // ── Install: cache shell, activate immediately ────────────────────────────────
 self.addEventListener("install", (event) => {
-  // skipWaiting so a freshly installed SW activates without waiting for tabs to close
   self.skipWaiting();
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) =>
@@ -34,9 +31,7 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     Promise.all([
-      // Claim all open tabs immediately so they use the new SW right away
       self.clients.claim(),
-      // Delete any old cache versions
       caches.keys().then((keys) =>
         Promise.all(
           keys
@@ -54,11 +49,7 @@ self.addEventListener("activate", (event) => {
 // ── Fetch: network-first for app shell, cache-first for CDN ──────────────────
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
-
-  // Always bypass SW for Supabase — must be live
   if (url.hostname.includes("supabase.co")) return;
-
-  // CDN resources: cache-first (they're versioned by unpkg so safe to cache)
   if (CDN_HOSTS.some((h) => url.hostname.includes(h))) {
     event.respondWith(
       caches.match(event.request).then((cached) => {
@@ -73,9 +64,6 @@ self.addEventListener("fetch", (event) => {
     );
     return;
   }
-
-  // App shell: network-first so updates always land immediately
-  // Falls back to cache only when truly offline
   if (url.origin === self.location.origin) {
     event.respondWith(
       fetch(event.request)
@@ -100,7 +88,46 @@ self.addEventListener("fetch", (event) => {
 
 // ── Message: manual skip-waiting trigger from app ─────────────────────────────
 self.addEventListener("message", (event) => {
-  if (event.data === "SKIP_WAITING") {
+  if (event.data === "SKIP_WAITING" || event.data?.type === "SKIP_WAITING") {
     self.skipWaiting();
   }
+});
+
+// ── Push: fires even when app is closed/locked ────────────────────────────────
+self.addEventListener("push", (event) => {
+  let data = { title: "Warehouse Update", body: "Tap to open", icon: "./icons/icon-192.png" };
+  if (event.data) {
+    try { data = { ...data, ...event.data.json() }; }
+    catch(e) { data.body = event.data.text(); }
+  }
+  const vibrate = {
+    high_priority: [150, 80, 150, 80, 150],
+    completed:     [100],
+    chat:          [80],
+    cancelled:     [200, 100, 200],
+  }[data.type] || [100, 50, 100];
+
+  event.waitUntil(
+    self.registration.showNotification(data.title, {
+      body:    data.body || "",
+      icon:    data.icon || "./icons/icon-192.png",
+      badge:   "./icons/icon-72.png",
+      tag:     data.tag || data.type || "wds",
+      vibrate,
+      data:    data.data || { url: "/" },
+      requireInteraction: data.type === "high_priority",
+    })
+  );
+});
+
+// ── Notification click: open/focus the app ────────────────────────────────────
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(clients => {
+      const existing = clients.find(c => c.url.includes(self.location.origin));
+      if (existing) return existing.focus();
+      return self.clients.openWindow(event.notification.data?.url || "/");
+    })
+  );
 });
