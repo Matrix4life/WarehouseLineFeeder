@@ -348,6 +348,7 @@
       STORAGE_KEY: "warehouse-requests-v3",
       CHAT_KEY: "warehouse-chat-v1",
       REFRESH_MS: 2500, // polling fallback; realtime will override
+      VAPID_PUBLIC_KEY: 'BEPNdzUnQGAu3LaQ7Y86AfZ-jtGHUkV7wDKi_jHpP8T8zx5gXR4-Bcvf51arMLH95GNWMRItwqddEPUDY7iLptk',
       SLA_MINUTES_WARN: 5,
       SLA_MINUTES_BAD: 10,
       SLA_MINUTES_CRIT: 20,
@@ -450,6 +451,157 @@
     let _wdUserRole = ""; // kept current via useEffect
     let _toastTmr = null;
 
+    // ── Notification Sound + Vibration Engine ───────────────────────────────
+    let _audioCtx = null;
+
+    function _getAudioCtx() {
+      if (!_audioCtx) {
+        try { _audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) {}
+      }
+      if (_audioCtx && _audioCtx.state === "suspended") _audioCtx.resume();
+      return _audioCtx;
+    }
+
+    function _unlockAudio() {
+      const ctx = _getAudioCtx();
+      if (ctx && ctx.state === "suspended") ctx.resume();
+    }
+    document.addEventListener("touchstart", _unlockAudio, { once: true });
+    document.addEventListener("click", _unlockAudio, { once: true });
+
+    // Play a single sine-wave note (AIM-style building block)
+    function _aimNote(ctx, freq, startTime, duration, vol) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(freq, startTime);
+      gain.gain.setValueAtTime(0.0, startTime);
+      gain.gain.linearRampToValueAtTime(vol, startTime + 0.008);
+      gain.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(startTime);
+      osc.stop(startTime + duration + 0.05);
+    }
+
+    function _playDing(type = "default") {
+      const ctx = _getAudioCtx();
+      if (!ctx) return;
+      try {
+        const t = ctx.currentTime;
+
+        if (type === "chat") {
+          // Classic AIM "door knock" — the iconic duh-DUM
+          // Low note then higher note, second one slightly louder
+          _aimNote(ctx, 494, t,        0.18, 0.22); // Bb4 — the "duh"
+          _aimNote(ctx, 659, t + 0.13, 0.28, 0.32); // E5  — the "DUM"
+
+        } else if (type === "high") {
+          // AIM "new mail" urgency — rapid triple tap ascending
+          _aimNote(ctx, 659, t,        0.12, 0.25); // E5
+          _aimNote(ctx, 784, t + 0.10, 0.12, 0.28); // G5
+          _aimNote(ctx, 988, t + 0.20, 0.22, 0.35); // B5 — highest, loudest
+
+        } else if (type === "done") {
+          // AIM "buddy sign-on" — warm two-note chime, ascending
+          _aimNote(ctx, 523, t,        0.20, 0.22); // C5
+          _aimNote(ctx, 784, t + 0.16, 0.35, 0.28); // G5 — resolution
+
+        } else if (type === "cancelled") {
+          // AIM "buddy sign-off" — descending two-note
+          _aimNote(ctx, 659, t,        0.18, 0.25); // E5
+          _aimNote(ctx, 494, t + 0.14, 0.30, 0.20); // Bb4 — drops down
+
+        } else if (type === "break") {
+          // Single soft AIM-style ding
+          _aimNote(ctx, 659, t, 0.30, 0.22); // E5
+
+        } else {
+          // Default: AIM new message — single confident knock
+          _aimNote(ctx, 587, t,        0.16, 0.25); // D5
+          _aimNote(ctx, 740, t + 0.12, 0.25, 0.30); // F#5
+        }
+      } catch(e) { console.warn("[Audio] ding failed:", e); }
+    }
+
+    function _vibrate(pattern) {
+      if (navigator.vibrate) { try { navigator.vibrate(pattern); } catch(e) {} }
+    }
+
+    function _notifyAV(type) {
+      if (localStorage.getItem("wd_mute_av") === "1") return;
+      switch(type) {
+        case "high_priority": _playDing("high");    _vibrate([150, 80, 150, 80, 150]); break;
+        case "completed":     _playDing("done");    _vibrate([100]);                   break;
+        case "cancelled":     _playDing("default"); _vibrate([200, 100, 200]);          break;
+        case "chat":          _playDing("chat");    _vibrate([80]);                    break;
+        case "break":         _playDing("default"); _vibrate([120, 60, 120]);           break;
+        default:              _playDing("default"); _vibrate([100, 50, 100]);           break;
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // ── Web Push Subscription Helpers ────────────────────────────────────────
+    // Subscribe this device and store the subscription in Supabase
+    async function _subscribePush(userName, supabaseUrl, supabaseKey) {
+      if (!('serviceWorker' in navigator) || !('PushManager' in window)) return false;
+      try {
+        const reg = await navigator.serviceWorker.ready;
+        const existing = await reg.pushManager.getSubscription();
+        const sub = existing || await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: _urlB64ToUint8Array(CONFIG.VAPID_PUBLIC_KEY),
+        });
+        // Save to Supabase push_subscriptions table
+        const client = window.supabase?.createClient(supabaseUrl, supabaseKey);
+        if (!client) return false;
+        await client.from('push_subscriptions').upsert({
+          user_name:    userName,
+          subscription: JSON.stringify(sub),
+          user_agent:   navigator.userAgent.slice(0, 200),
+          updated_at:   new Date().toISOString(),
+        }, { onConflict: 'user_name,subscription' });
+        return true;
+      } catch(err) {
+        console.warn('[Push] subscribe failed:', err);
+        return false;
+      }
+    }
+
+    async function _unsubscribePush(userName, supabaseUrl, supabaseKey) {
+      if (!('serviceWorker' in navigator)) return;
+      try {
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.getSubscription();
+        if (sub) await sub.unsubscribe();
+        const client = window.supabase?.createClient(supabaseUrl, supabaseKey);
+        if (client) await client.from('push_subscriptions').delete().eq('user_name', userName);
+      } catch(err) { console.warn('[Push] unsubscribe failed:', err); }
+    }
+
+    function _urlB64ToUint8Array(base64String) {
+      const padding = '='.repeat((4 - base64String.length % 4) % 4);
+      const base64  = (base64String + padding).replace(/-/g,'+').replace(/_/g,'/');
+      const raw     = window.atob(base64);
+      return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+    }
+
+    // Trigger a push to targeted users via the Edge Function
+    async function _sendPush({ title, body, type, targetUsers }) {
+      if (!CONFIG.SUPABASE_URL || !CONFIG.SUPABASE_ANON_KEY) return;
+      try {
+        await fetch(`${CONFIG.SUPABASE_URL}/functions/v1/send-push`, {
+          method: 'POST',
+          headers: {
+            'Content-Type':  'application/json',
+            'Authorization': `Bearer ${CONFIG.SUPABASE_ANON_KEY}`,
+          },
+          body: JSON.stringify({ title, body, type, targetUsers }),
+        });
+      } catch(e) { /* best-effort, never block UI */ }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     function _showToast(icon, title, detail, color, onAdd) {
       const el = document.getElementById("wd-toast");
       if (!el) return;
@@ -539,6 +691,7 @@
               .on("postgres_changes", { event:"*", schema:"public", table:"warehouse_requests" }, () => onRemoteChange?.())
               .on("postgres_changes", { event:"*", schema:"public", table:"warehouse_users" }, () => onRemoteChange?.())
               .on("postgres_changes", { event:"*", schema:"public", table:"warehouse_assignments" }, () => onRemoteChange?.())
+              .on("postgres_changes", { event:"*", schema:"public", table:"warehouse_settings" }, () => onRemoteChange?.())
               .subscribe();
             unsub = ()=> supabaseClient.removeChannel(channel);
           } else {
@@ -650,6 +803,36 @@
           const { error } = await supabaseClient.from("warehouse_users").delete().eq("id", id);
           if (error) throw error;
           return true;
+        },
+
+
+        // ── SETTINGS ────────────────────────────────────────────────────
+        async loadSettings() {
+          if (!useSupabase) {
+            try { return JSON.parse(localStorage.getItem("wd_settings_v1") || "{}"); } catch { return {}; }
+          }
+          try {
+            const { data, error } = await supabaseClient.from("warehouse_settings").select("*");
+            if (error) { console.warn("loadSettings:", error.message); return {}; }
+            const map = {};
+            (data || []).forEach(row => { map[row.key] = row.value; });
+            return map;
+          } catch(e) { return {}; }
+        },
+        async saveSetting(key, value, updatedBy) {
+          if (!useSupabase) {
+            const all = JSON.parse(localStorage.getItem("wd_settings_v1") || "{}");
+            all[key] = String(value);
+            localStorage.setItem("wd_settings_v1", JSON.stringify(all));
+            return true;
+          }
+          const { error } = await supabaseClient.from("warehouse_settings").upsert({
+            key, value: String(value),
+            updated_at: new Date().toISOString(),
+            updated_by: updatedBy || "system"
+          });
+          if (error) console.error("saveSetting error:", error);
+          return !error;
         },
 
         // ── ASSIGNMENTS ───────────────────────────────────────────────────
@@ -929,6 +1112,9 @@
       // is ONLY for the bell badge count and the history panel list.
       const [bellNotifs, setBellNotifs] = useState([]);
       const [notifPanelOpen, setNotifPanelOpen] = useState(false);
+      const [avMuted, setAvMuted] = useState(() => localStorage.getItem("wd_mute_av") === "1");
+      const toggleMute = () => setAvMuted(prev => { const next = !prev; localStorage.setItem("wd_mute_av", next?"1":"0"); return next; });
+      const [pushEnabled, setPushEnabled] = useState(() => localStorage.getItem("wd_push_enabled") === "1");
 
       // Keep module-level user tracker in sync
       useEffect(() => { _wdUser = userName; }, [userName]);
@@ -965,27 +1151,32 @@
             // Warehouse: notified on ALL new incoming requests
             if (req.status === "pending") {
               const pri = req.priority ? " \u{1F525} HIGH PRIORITY" : "";
-              _showToast("\u{1F4E6}", "New Request: " + lbl, rm + pri, "#fbbf24", _onNotif);
+              _notifyAV("new_request"); _showToast("\u{1F4E6}", "New Request: " + lbl, rm + pri, "#fbbf24", _onNotif);
+              _sendPush({title:"📦 New Request: "+lbl, body:rm+pri, type:"new_request"});
             }
 
-          } else if (_wdUserRole === "supervisor" || _wdUserRole === "admin") {
+          } else if (_wdUserRole === "supervisor" || _wdUserRole === "admin" || _wdUserRole === "superuser") {
             // Supervisor/Admin: high priority new requests + all completions + all cancellations
             if (req.status === "pending" && req.priority) {
-              _showToast("\u{1F525}", "HIGH PRIORITY: " + lbl, "New request \u00b7 " + rm, "#ff4444", _onNotif);
+              _notifyAV("high_priority"); _showToast("\u{1F525}", "HIGH PRIORITY: " + lbl, "New request \u00b7 " + rm, "#ff4444", _onNotif);
+              _sendPush({title:"🔥 HIGH PRIORITY: "+lbl, body:"New request · "+rm, type:"high_priority"});
             } else if (req.status === "completed") {
-              _showToast("\u2705", lbl + " \u2014 Delivered", "Completed by " + (req.completedBy||"warehouse") + " \u00b7 " + rm, "#00ff88", _onNotif);
+              _notifyAV("completed"); _showToast("\u2705", lbl + " \u2014 Delivered", "Completed by " + (req.completedBy||"warehouse") + " \u00b7 " + rm, "#00ff88", _onNotif);
+              _sendPush({title:"✅ Delivered: "+lbl, body:"Completed by "+(req.completedBy||"warehouse")+" · "+rm, type:"completed", targetUsers: req.submittedBy ? [req.submittedBy] : undefined});
             } else if (req.status === "cancelled") {
-              _showToast("\u274c", lbl + " \u2014 Cancelled", "Cancelled \u00b7 " + rm + " \u00b7 by " + (req.cancelledBy||"warehouse"), "#ff4444", _onNotif);
+              _notifyAV("cancelled"); _showToast("\u274c", lbl + " \u2014 Cancelled", "Cancelled \u00b7 " + rm + " \u00b7 by " + (req.cancelledBy||"warehouse"), "#ff4444", _onNotif);
             }
 
           } else if (_wdUserRole === "room") {
             // Room profile: ONLY notified when their OWN submitted request is completed
             if (req.submittedBy !== _wdUser) return;
             if (req.status === "completed") {
-              _showToast("\u2705", "Order Delivered! " + lbl, "Your order for " + rm + " is done \u2014 picked up by warehouse", "#00ff88", _onNotif);
+              _notifyAV("completed"); _showToast("\u2705", "Order Delivered! " + lbl, "Your order for " + rm + " is done \u2014 picked up by warehouse", "#00ff88", _onNotif);
+              _sendPush({title:"✅ Order Delivered! "+lbl, body:"Your order for "+rm+" is done", type:"completed", targetUsers:[userName]});
             }
             if (req.status === "cancelled") {
-              _showToast("\u274c", "Order Cancelled: " + lbl, rm + " \u2014 contact your supervisor", "#ff4444", _onNotif);
+              _notifyAV("cancelled"); _showToast("\u274c", "Order Cancelled: " + lbl, rm + " \u2014 contact your supervisor", "#ff4444", _onNotif);
+              _sendPush({title:"❌ Order Cancelled: "+lbl, body:rm+" — contact your supervisor", type:"cancelled", targetUsers:[userName]});
             }
           }
         });
@@ -995,8 +1186,31 @@
       const [editingId, setEditingId] = useState(null);
       const [editQty, setEditQty] = useState(0);
 
+      // ── DYNAMIC SETTINGS (from Supabase warehouse_settings table) ──
+      const [sysSettings, setSysSettings] = useState({});
+      const _prevSettingsJson = useRef("{}");
+      const settingsVal = (key, fallback) => {
+        const v = sysSettings[key];
+        if (v === undefined || v === null) return fallback;
+        const n = Number(v);
+        return isNaN(n) ? v : n;
+      };
+      const _updateSysSettings = (s) => {
+        const json = JSON.stringify(s || {});
+        if (json !== _prevSettingsJson.current) {
+          _prevSettingsJson.current = json;
+          setSysSettings(s || {});
+        }
+      };
+      // Superuser settings screen state
+      const [editSettings, setEditSettings] = useState({});
+      const [dirtyKeys, setDirtyKeys] = useState({});
+      const [activeSettingsTab, setActiveSettingsTab] = useState("sla");
+      const [settingsSaving, setSettingsSaving] = useState(false);
+      const [settingsSaved, setSettingsSaved] = useState(false);
+
       // ── BREAK TRACKING STATE ───────────────────────────────────────────
-      const BREAK_MINS = 15;
+      const BREAK_MINS = settingsVal("break_duration_min", 15);
       const [breaks, setBreaks] = useState([]);          // all break records loaded
       const [breakPanelOpen, setBreakPanelOpen] = useState(false);
       const [breakHistoryRange, setBreakHistoryRange] = useState({ from:"", to:"" });
@@ -1175,6 +1389,14 @@
             setUsers(Array.isArray(u) ? u : []);
             setAssignments(Array.isArray(a) ? a : []);
           }
+
+          // Load dynamic settings
+          if (adapter.loadSettings) {
+            try {
+              const s = await adapter.loadSettings();
+              _updateSysSettings(s);
+            } catch(e) { console.error("loadSettings error:", e); }
+          }
           setLoading(false);
         } catch (error) {
           console.error("Failed to load data:", error);
@@ -1226,6 +1448,8 @@
                 // Message is for us (we're recipient) but panel is closed / different convo
                 if (msg.recipientName === me) {
                   setChatUnreadFrom(prev => ({ ...prev, [msg.senderName]: (prev[msg.senderName]||0) + 1 }));
+                  _notifyAV("chat");
+                  _sendPush({title:"💬 "+msg.senderName, body:msg.message?.slice(0,80)||"New message", type:"chat", targetUsers:[msg.recipientName]});
                 }
               });
             } catch(e) { /* table not created yet — silently ignore */ }
@@ -1267,18 +1491,16 @@
         const cid = convId(userName, contactName);
         try {
           await adapterRef.current.deleteChatConversation(cid);
-          // Clear from local state
+          // Persist deletion timestamp — prevents conversation reappearing on next poll
+          const deleted = JSON.parse(localStorage.getItem("wd_deleted_convs") || "{}");
+          deleted[cid] = new Date().toISOString();
+          localStorage.setItem("wd_deleted_convs", JSON.stringify(deleted));
           setChatConvList(prev => prev.filter(cv => cv.conversationId !== cid));
           setChatUnreadFrom(prev => { const n={...prev}; delete n[contactName]; return n; });
-          // If currently viewing this conversation, go back to list
           if (chatContact?.name === contactName) {
-            setChatContact(null);
-            setChatView("list");
-            setChatMessages([]);
+            setChatContact(null); setChatView("list"); setChatMessages([]);
           }
-        } catch(err) {
-          console.error("Delete chat failed:", err);
-        }
+        } catch(err) { console.error("Delete chat failed:", err); }
       };
 
       const loadChatMessages = async (contact) => {
@@ -1310,11 +1532,17 @@
           const all = Array.isArray(convs) ? convs : [];
           const me = _wdUser || userName;
           const myRole = userRole;
-          // Admin/supervisor: see all conversations
-          // Warehouse/room: only see their own conversations
+          // Filter deleted convs — unless a new message arrived after the deletion
+          const deleted = JSON.parse(localStorage.getItem("wd_deleted_convs") || "{}");
+          const visible = all.filter(cv => {
+            const delAt = deleted[cv.conversationId];
+            if (!delAt) return true; // not deleted
+            return cv.sentAt > delAt; // new msg after deletion → show again
+          });
+          // Admin/supervisor: see all; Warehouse/room: only their own
           const filtered = (myRole === "admin" || myRole === "supervisor")
-            ? all
-            : all.filter(cv => cv.conversationId.includes(me));
+            ? visible
+            : visible.filter(cv => cv.conversationId.includes(me));
           setChatConvList(filtered);
           if (!chatTableReady) { setChatTableReady(true); chatTableReadyRef.current = true; }
         } catch(e) { _chatHandleError(e); }
@@ -1382,6 +1610,17 @@
           console.error("Chat send error:", err);
           _showToast("❌", "Message failed to send", err?.message || "Check your connection", "#ff4444", _onNotif);
           setChatInput(msg); // restore the message so they can retry
+        }
+      };
+
+      const togglePush = async () => {
+        if (!CONFIG.ENABLE_SUPABASE || !CONFIG.SUPABASE_URL) return;
+        if (pushEnabled) {
+          await _unsubscribePush(userName, CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
+          localStorage.setItem("wd_push_enabled","0"); setPushEnabled(false);
+        } else {
+          const ok = await _subscribePush(userName, CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
+          if (ok) { localStorage.setItem("wd_push_enabled","1"); setPushEnabled(true); }
         }
       };
 
@@ -1497,14 +1736,14 @@
           const data = await adapterRef.current?.loadBreaks(opts);
           if (Array.isArray(data)) {
             // Detect new active breaks for supervisor notifications
-            if (_wdUserRole === "supervisor" || _wdUserRole === "admin") {
+            if (_wdUserRole === "supervisor" || _wdUserRole === "admin" || _wdUserRole === "superuser") {
               const prevActive = _prevActiveBreaksRef.current;
               const newActive = data.filter(b => !b.endedAt);
               newActive.forEach(b => {
                 if (!prevActive.find(p => p.id === b.id)) {
                   // New break started
                   if (b.workerName !== _wdUser) { // don't toast your own
-                    _showToast("🍵", `${b.workerName} on break`, "Back in 15 mins", "#ff9f43", _onNotif);
+                    _notifyAV("break"); _showToast("🍵", `${b.workerName} on break`, "Back in 15 mins", "#ff9f43", _onNotif);
                   }
                 }
               });
@@ -1553,17 +1792,23 @@
       // The worker must manually tap "Back?" to end their break.
       // ──────────────────────────────────────────────────────────────────
 
-      const canWarehouseAct = userRole === "warehouse" || userRole === "supervisor" || userRole === "admin";
-      const canSupervisor = userRole === "supervisor" || userRole === "admin";
-      const canAdmin = userRole === "admin";
+      const canWarehouseAct = userRole === "warehouse" || userRole === "supervisor" || userRole === "admin" || userRole === "superuser";
+      const canSupervisor = userRole === "supervisor" || userRole === "admin" || userRole === "superuser";
+      const canAdmin = userRole === "admin" || userRole === "superuser";
+      const canSuperuser = userRole === "superuser";
+
+      // Dynamic SLA thresholds (from settings, with CONFIG fallbacks)
+      const SLA_WARN = settingsVal("sla_minutes_warn", CONFIG.SLA_MINUTES_WARN);
+      const SLA_BAD  = settingsVal("sla_minutes_bad", CONFIG.SLA_MINUTES_BAD);
+      const SLA_CRIT = settingsVal("sla_minutes_crit", CONFIG.SLA_MINUTES_CRIT);
 
       const slaBadge = (req)=> {
         const submittedAt = req.submittedAt || req.submitted_at || nowIso();
         const mins = msToMins(Date.now() - new Date(submittedAt).getTime());
         let bg = "#1e293b", fg="#8b9dc3", label=`${mins}m`;
-        if (mins >= CONFIG.SLA_MINUTES_CRIT) { bg="#ff4444"; fg="#fff"; label=`${mins}m 🔥`; }
-        else if (mins >= CONFIG.SLA_MINUTES_BAD) { bg="#fbbf24"; fg="#0a0e1a"; label=`${mins}m`; }
-        else if (mins >= CONFIG.SLA_MINUTES_WARN) { bg="#22c55e"; fg="#0a0e1a"; label=`${mins}m`; }
+        if (mins >= SLA_CRIT) { bg="#ff4444"; fg="#fff"; label=`${mins}m 🔥`; }
+        else if (mins >= SLA_BAD) { bg="#fbbf24"; fg="#0a0e1a"; label=`${mins}m`; }
+        else if (mins >= SLA_WARN) { bg="#22c55e"; fg="#0a0e1a"; label=`${mins}m`; }
         return { bg, fg, label };
       };
 
@@ -1933,8 +2178,8 @@
       if (screen === "login") {
         const noUsers = users.length === 0;
         const matchedUser = users.find(u => u.name.toLowerCase().trim() === tempName.toLowerCase().trim());
-        const roleEmoji = { admin:'🔧', supervisor:'🧭', warehouse:'📦', room:'🍽️' };
-        const roleColor = { admin:'#ff4444', supervisor:'#a78bfa', warehouse:'#fbbf24', room:'#8b9dc3' };
+        const roleEmoji = { superuser:'🔧', admin:'🔧', supervisor:'🧭', warehouse:'📦', room:'🍽️' };
+        const roleColor = { superuser:'#ff4444', admin:'#ff4444', supervisor:'#a78bfa', warehouse:'#fbbf24', room:'#8b9dc3' };
 
         const handleSignIn = () => {
           setLoginError("");
@@ -1967,7 +2212,8 @@
           setUserRole(matchedUser.role);
           localStorage.setItem("wd_userName", matchedUser.name);
           localStorage.setItem("wd_userRole", matchedUser.role);
-          if (matchedUser.role === "admin") setRoute("admin");
+          if (matchedUser.role === "superuser") setRoute("admin");
+          else if (matchedUser.role === "admin") setRoute("admin");
           else if (matchedUser.role === "room") setRoute("form");
           else setRoute("picklist");
         };
@@ -2215,8 +2461,8 @@
       // Key principle: rendering as variables inside the parent component means
       // React reconciles elements in-place on re-render — input stays focused.
 
-      const _roleColor = (role) => role==="warehouse"?"#38bdf8":role==="supervisor"?"#a78bfa":role==="admin"?"#ff4444":"#00ff88";
-      const _roleEmoji = (role) => role==="warehouse"?"📦":role==="supervisor"?"🧭":role==="admin"?"🔧":"🍽️";
+      const _roleColor = (role) => role==="superuser"?"#ff4444":role==="warehouse"?"#38bdf8":role==="supervisor"?"#a78bfa":role==="admin"?"#ff4444":"#00ff88";
+      const _roleEmoji = (role) => role==="superuser"?"🔧":role==="warehouse"?"📦":role==="supervisor"?"🧭":role==="admin"?"🔧":"🍽️";
       const _fmtTime   = (iso) => { try { return new Date(iso).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"}); } catch{return "";} };
 
       // ── Contact List View ─────────────────────────────────────────────
@@ -2516,9 +2762,19 @@
                 <div style={{position:'fixed',top:'4.5rem',right:'1rem',width:320,maxWidth:'calc(100vw - 2rem)',background:'#0f172a',border:'1.5px solid rgba(0,255,136,0.28)',borderRadius:'14px',zIndex:9998,boxShadow:'0 18px 50px rgba(0,0,0,0.8)',fontFamily:"'Space Mono',monospace",display:'flex',flexDirection:'column',maxHeight:'65vh',overflow:'hidden'}}>
                   <div style={{padding:'0.8rem 1rem',borderBottom:'1px solid #1e293b',display:'flex',alignItems:'center',justifyContent:'space-between',flexShrink:0}}>
                     <span style={{fontSize:'0.72rem',fontWeight:700,color:'#00ff88',letterSpacing:'0.08em',textTransform:'uppercase'}}>\uD83D\uDD14 Notifications</span>
-                    <div style={{display:'flex',gap:'0.65rem',alignItems:'center'}}>
+                    <div style={{display:'flex',gap:'0.4rem',alignItems:'center'}}>
                       {bellNotifs.some(n=>n.unread) && (
                         <button onClick={()=>setBellNotifs(p=>p.map(n=>({...n,unread:false})))} style={{fontSize:'0.6rem',color:'#64748b',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',textTransform:'uppercase'}}>Mark all read</button>
+                      )}
+                      <button onClick={toggleMute} title={avMuted?"Unmute":"Mute"}
+                        style={{background:avMuted?'rgba(255,68,68,0.12)':' rgba(0,255,136,0.08)',border:'1px solid '+(avMuted?'rgba(255,68,68,0.4)':' rgba(0,255,136,0.25)'),borderRadius:'7px',color:avMuted?'#ff4444':'#00ff88',padding:'0.2rem 0.45rem',cursor:'pointer',fontSize:'0.72rem',fontFamily:'inherit',fontWeight:900}}>
+                        {avMuted?'🔇 Muted':'🔔 Sound'}
+                      </button>
+                      {'Notification' in window && (
+                        <button onClick={togglePush} title={pushEnabled?"Disable push":"Enable push"}
+                          style={{background:pushEnabled?'rgba(0,255,136,0.08)':' rgba(100,116,139,0.1)',border:'1px solid '+(pushEnabled?'rgba(0,255,136,0.3)':' rgba(100,116,139,0.3)'),borderRadius:'7px',color:pushEnabled?'#00ff88':'#64748b',padding:'0.2rem 0.45rem',cursor:'pointer',fontSize:'0.72rem',fontFamily:'inherit',fontWeight:900}}>
+                          {pushEnabled?'📲 On':'📵 Off'}
+                        </button>
                       )}
                       <button onClick={()=>setNotifPanelOpen(false)} style={{background:'none',border:'none',color:'#475569',cursor:'pointer',fontSize:'1rem',padding:0}}>✕</button>
                     </div>
@@ -2578,13 +2834,13 @@
 
               {/* Row 2: Nav buttons — wrap naturally on small screens */}
               <div className="wd-nav">
-                {(userRole==="room"||userRole==="supervisor"||userRole==="admin") && (
+                {(userRole==="room"||userRole==="supervisor"||userRole==="admin"||userRole==="superuser") && (
                   <button className="wd-nav-btn" onClick={()=>setRoute("form")}
                     style={{background:'linear-gradient(135deg,#00ff88,#00cc6f)',border:'none',color:'#0a0e1a'}}>
                     + New
                   </button>
                 )}
-                {(userRole==="warehouse"||userRole==="supervisor"||userRole==="admin") && (
+                {(userRole==="warehouse"||userRole==="supervisor"||userRole==="admin"||userRole==="superuser") && (
                   <button className="wd-nav-btn" onClick={()=>setRoute("picklist")}
                     style={{background:'transparent',border:'1px solid rgba(0,255,136,0.4)',color:'#00ff88'}}>
                     Pick List
@@ -2594,7 +2850,7 @@
                   style={{background:'transparent',border:'1px solid rgba(0,255,136,0.25)',color:'#8b9dc3'}}>
                   Board
                 </button>
-                {(userRole==="supervisor"||userRole==="admin") && (
+                {(userRole==="supervisor"||userRole==="admin"||userRole==="superuser") && (
                   <button className="wd-nav-btn" onClick={()=>setRoute("dashboard")}
                     style={{background:'transparent',border:'1px solid rgba(0,255,136,0.25)',color:'#00ff88'}}>
                     Dashboard
@@ -2614,6 +2870,12 @@
                   <button className="wd-nav-btn" onClick={()=>setRoute("admin")}
                     style={{background:'transparent',border:'1px solid rgba(255,68,68,0.5)',color:'#ff4444'}}>
                     Admin
+                  </button>
+                )}
+                {canSuperuser && (
+                  <button className="wd-nav-btn" onClick={()=>setRoute("settings")}
+                    style={{background:'transparent',border:'1px solid rgba(255,68,68,0.5)',color:'#ff4444'}}>
+                    ⚙️ Settings
                   </button>
                 )}
                 {/* Break button — warehouse staff only */}
@@ -2825,7 +3087,7 @@
         const slaCompliant = completedReqs.filter(r => {
           const start = new Date(r.submittedAt);
           const end = new Date(r.completedAt);
-          return (end - start) / 60000 <= CONFIG.SLA_MINUTES_WARN;
+          return (end - start) / 60000 <= SLA_WARN;
         }).length;
         const slaRate = completedReqs.length > 0 ? Math.round((slaCompliant / completedReqs.length) * 100) : 0;
         
@@ -2837,24 +3099,36 @@
         const topRooms = Object.entries(byRoom).sort((a, b) => b[1] - a[1]).slice(0, 5);
         const maxRoomCount = topRooms.length > 0 ? topRooms[0][1] : 1;
         
-        // Staff performance (completed requests)
+        // Room KPI  = submittedAt → completedAt  (full customer wait)
+        // Warehouse KPI = claimedAt  → completedAt  (actual pick time)
         const byStaff = {};
         completedReqs.forEach(r => {
           const staff = r.completedBy || r.claimedBy || "Unknown";
-          if (!byStaff[staff]) byStaff[staff] = { count: 0, totalTime: 0 };
+          if (!byStaff[staff]) byStaff[staff] = { count:0, roomTotal:0, pickTotal:0, pickCount:0 };
           byStaff[staff].count++;
-          const start = new Date(r.submittedAt);
-          const end = new Date(r.completedAt);
-          byStaff[staff].totalTime += (end - start) / 60000;
+          byStaff[staff].roomTotal += (new Date(r.completedAt) - new Date(r.submittedAt)) / 60000;
+          if (r.claimedAt) {
+            const pickMs = new Date(r.completedAt) - new Date(r.claimedAt);
+            if (pickMs > 0) { byStaff[staff].pickTotal += pickMs / 60000; byStaff[staff].pickCount++; }
+          }
         });
         const topStaff = Object.entries(byStaff)
           .map(([name, data]) => ({
             name,
-            count: data.count,
-            avgTime: Math.round(data.totalTime / data.count)
+            count:      data.count,
+            avgRoomTime: Math.round(data.roomTotal / data.count),
+            avgPickTime: data.pickCount > 0 ? Math.round(data.pickTotal / data.pickCount) : null,
           }))
           .sort((a, b) => b.count - a.count)
           .slice(0, 5);
+
+        // Overall warehouse average pick time (all staff, today)
+        const pickReqs = completedReqs.filter(r => r.claimedAt &&
+          (new Date(r.completedAt) - new Date(r.claimedAt)) > 0);
+        const avgPickTime = pickReqs.length > 0
+          ? Math.round(pickReqs.reduce((s,r) =>
+              s + (new Date(r.completedAt) - new Date(r.claimedAt)) / 60000, 0) / pickReqs.length)
+          : 0;
         
         // Requests by status for chart
         const statusData = [
@@ -2908,8 +3182,15 @@
                 </div>
                 
                 <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
-                  <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>Avg Complete Time</div>
-                  <div style={{ color:'#00ff88', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{avgCompletionTime}<span style={{ fontSize:'1.2rem', color:'#8b9dc3' }}>min</span></div>
+                  <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>🏭 Room Wait Time</div>
+                  <div style={{ color:'#00ff88', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{fmtMins(avgCompletionTime)}</div>
+                  <div style={{ color:'#64748b', fontSize:'0.72rem', marginTop:'0.25rem' }}>Submit → Delivered</div>
+                </div>
+
+                <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(255,159,67,0.3)', borderRadius:'14px', padding:'1.5rem' }}>
+                  <div style={{ color:'#ff9f43', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>⚡ Warehouse Pick Time</div>
+                  <div style={{ color:'#ff9f43', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{avgPickTime > 0 ? fmtMins(avgPickTime) : '—'}</div>
+                  <div style={{ color:'#64748b', fontSize:'0.72rem', marginTop:'0.25rem' }}>Claim → Delivered · {pickReqs.length} picks</div>
                 </div>
                 
                 <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
@@ -2920,7 +3201,7 @@
                 <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
                   <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>SLA Compliance</div>
                   <div style={{ color: slaRate >= 90 ? '#00ff88' : slaRate >= 75 ? '#fbbf24' : '#ff4444', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{slaRate}%</div>
-                  <div style={{ color:'#64748b', fontSize:'0.8rem', marginTop:'0.3rem' }}>{slaCompliant} of {completedReqs.length} under {CONFIG.SLA_MINUTES_WARN}min</div>
+                  <div style={{ color:'#64748b', fontSize:'0.8rem', marginTop:'0.3rem' }}>{slaCompliant} of {completedReqs.length} under {SLA_WARN}min</div>
                 </div>
               </div>
 
@@ -2983,7 +3264,13 @@
               {/* Staff Performance */}
               {topStaff.length > 0 && (
                 <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem', marginBottom:'1.5rem' }}>
-                  <div style={{ color:'#00ff88', fontWeight:900, fontSize:'1.1rem', marginBottom:'1.5rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>🏆 Staff Performance</div>
+                  <div style={{ display:'flex', alignItems:'baseline', gap:'1.5rem', marginBottom:'1.5rem', flexWrap:'wrap' }}>
+                    <div style={{ color:'#00ff88', fontWeight:900, fontSize:'1.1rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>🏆 Staff Performance</div>
+                    <div style={{ fontSize:'0.7rem', color:'#475569' }}>
+                      <span style={{ color:'#00ff88' }}>🏭 Room Wait</span> = customer submits → delivered &nbsp;|&nbsp;
+                      <span style={{ color:'#ff9f43' }}>⚡ Pick Time</span> = warehouse claims → done
+                    </div>
+                  </div>
                   <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(250px, 1fr))', gap:'1rem' }}>
                     {topStaff.map((staff, idx) => (
                       <div key={staff.name} style={{ background:'rgba(0,255,136,0.05)', border:'1px solid rgba(0,255,136,0.15)', borderRadius:'10px', padding:'1rem' }}>
@@ -2994,11 +3281,19 @@
                             <div style={{ color:'#8b9dc3', fontSize:'0.8rem' }}>{staff.count} completed</div>
                           </div>
                         </div>
-                        <div style={{ display:'flex', gap:'1rem' }}>
+                        <div style={{ display:'flex', gap:'1.25rem' }}>
                           <div>
-                            <div style={{ color:'#64748b', fontSize:'0.75rem' }}>Avg Time</div>
-                            <div style={{ color:'#00ff88', fontSize:'1.3rem', fontWeight:900 }}>{fmtMins(staff.avgTime)}</div>
+                            <div style={{ color:'#64748b', fontSize:'0.72rem', marginBottom:'0.15rem' }}>🏭 Room Wait</div>
+                            <div style={{ color:'#00ff88', fontSize:'1.2rem', fontWeight:900 }}>{fmtMins(staff.avgRoomTime)}</div>
+                            <div style={{ color:'#475569', fontSize:'0.6rem' }}>submit→done</div>
                           </div>
+                          {staff.avgPickTime !== null && (
+                            <div style={{ borderLeft:'1px solid #1e293b', paddingLeft:'1.25rem' }}>
+                              <div style={{ color:'#64748b', fontSize:'0.72rem', marginBottom:'0.15rem' }}>⚡ Pick Time</div>
+                              <div style={{ color:'#ff9f43', fontSize:'1.2rem', fontWeight:900 }}>{fmtMins(staff.avgPickTime)}</div>
+                              <div style={{ color:'#475569', fontSize:'0.6rem' }}>claim→done</div>
+                            </div>
+                          )}
                         </div>
                       </div>
                     ))}
@@ -3070,12 +3365,17 @@
 
         // Calculate stats
         const totalCompleted = sortedCompleted.length;
-        const avgTime = sortedCompleted.length > 0 
-          ? Math.round(sortedCompleted.reduce((sum, r) => {
-              const start = new Date(r.submittedAt);
-              const end = new Date(r.completedAt);
-              return sum + (end - start) / 60000;
-            }, 0) / sortedCompleted.length)
+        // Room KPI: full customer wait (submit → delivered)
+        const avgTime = sortedCompleted.length > 0
+          ? Math.round(sortedCompleted.reduce((sum, r) =>
+              sum + (new Date(r.completedAt) - new Date(r.submittedAt)) / 60000, 0) / sortedCompleted.length)
+          : 0;
+        // Warehouse KPI: actual pick time (claim → delivered)
+        const pickable = sortedCompleted.filter(r => r.claimedAt &&
+          (new Date(r.completedAt) - new Date(r.claimedAt)) > 0);
+        const avgPickTimeCompleted = pickable.length > 0
+          ? Math.round(pickable.reduce((sum, r) =>
+              sum + (new Date(r.completedAt) - new Date(r.claimedAt)) / 60000, 0) / pickable.length)
           : 0;
 
         const buildRows = (data) => data.map(r => {
@@ -3207,8 +3507,15 @@ ${sortedCompleted.map(r => {
                 </div>
                 
                 <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
-                  <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>Avg Complete Time</div>
+                  <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>🏭 Room Wait Time</div>
                   <div style={{ color:'#00ff88', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{fmtMins(avgTime)}</div>
+                  <div style={{ color:'#64748b', fontSize:'0.72rem', marginTop:'0.25rem' }}>Submit → Delivered</div>
+                </div>
+
+                <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(255,159,67,0.3)', borderRadius:'14px', padding:'1.5rem' }}>
+                  <div style={{ color:'#ff9f43', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>⚡ Warehouse Pick Time</div>
+                  <div style={{ color:'#ff9f43', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{avgPickTimeCompleted > 0 ? fmtMins(avgPickTimeCompleted) : '—'}</div>
+                  <div style={{ color:'#64748b', fontSize:'0.72rem', marginTop:'0.25rem' }}>Claim → Delivered · {pickable.length} picks</div>
                 </div>
               </div>
 
@@ -3248,6 +3555,8 @@ ${sortedCompleted.map(r => {
                           const end = new Date(req.completedAt);
                           const timeMin = Math.round((end - start) / 60000);
                           const timeColor = timeMin <= 5 ? '#00ff88' : timeMin <= 10 ? '#fbbf24' : '#ff4444';
+                          const pickMin = req.claimedAt ? Math.round((end - new Date(req.claimedAt)) / 60000) : null;
+                          const pickColor = pickMin === null ? '#64748b' : pickMin <= 3 ? '#00ff88' : pickMin <= 7 ? '#fbbf24' : '#ff4444';
 
                           return (
                             <tr key={req.id} style={{ borderBottom: idx < sortedCompleted.length - 1 ? '1px solid #334155' : 'none', background: idx % 2 === 0 ? 'transparent' : 'rgba(0,255,136,0.02)' }}>
@@ -3276,9 +3585,14 @@ ${sortedCompleted.map(r => {
                                 <div style={{ fontSize:'0.75rem', color:'#00ff88' }}>{req.completedBy}</div>
                               </td>
                               <td style={cellStyle}>
-                                <div style={{ fontWeight:900, color: timeColor, fontSize:'1.1rem' }}>
-                                  {fmtMins(timeMin)}
+                                <div style={{ fontWeight:900, color: timeColor, fontSize:'1rem' }}>
+                                  🏭 {fmtMins(timeMin)}
                                 </div>
+                                {pickMin !== null && (
+                                  <div style={{ fontWeight:900, color: pickColor, fontSize:'0.85rem', marginTop:'0.15rem' }}>
+                                    ⚡ {fmtMins(pickMin)}
+                                  </div>
+                                )}
                               </td>
                               <td style={cellStyle}>
                                 <div style={{ fontSize:'0.85rem', color:'#8b9dc3' }}>{req.claimedBy || '—'}</div>
@@ -3305,6 +3619,260 @@ ${sortedCompleted.map(r => {
       }
 
       // ADMIN PANEL (Admin-only: user management + room analytics)
+
+      // ═══════════════════════════════════════════════════════════════════
+      // SUPERUSER SETTINGS SCREEN
+      // ═══════════════════════════════════════════════════════════════════
+      if (screen === "settings") {
+        if (!canSuperuser) {
+          return (
+            <div style={{ minHeight:'100vh', ...bg, padding:'1.5rem', display:'flex', alignItems:'center', justifyContent:'center' }}>
+              <div style={gridOverlay} />
+              <div style={{ textAlign:'center', color:'#ff4444', position:'relative', zIndex:1 }}>
+                <h2>🔒 Access Restricted</h2>
+                <p style={{color:'#8b9dc3'}}>You do not have permission to access this area.</p>
+                <button onClick={()=> setRoute("admin")} style={{ padding:'0.7rem 1.5rem', background:'linear-gradient(135deg,#ff4444,#cc3333)', border:'none', borderRadius:'8px', color:'#fff', fontWeight:900, cursor:'pointer', marginTop:'1rem' }}>Back to Admin</button>
+              </div>
+            </div>
+          );
+        }
+
+        const SETTING_GROUPS = [
+          { id:"sla", title:"SLA Thresholds", icon:"🎯", color:"#00ff88",
+            desc:"Controls color badges on requests and SLA compliance calculations",
+            items:[
+              { key:"sla_minutes_warn", label:"Warning", unit:"min", desc:"Turns green — request is aging", min:1, max:60, type:"number" },
+              { key:"sla_minutes_bad", label:"Bad", unit:"min", desc:"Turns yellow — needs attention", min:1, max:120, type:"number" },
+              { key:"sla_minutes_crit", label:"Critical", unit:"min", desc:"Turns red with fire — overdue", min:1, max:180, type:"number" },
+            ]},
+          { id:"breaks", title:"Break Duration", icon:"🍵", color:"#ff9f43",
+            desc:"How long warehouse workers get for breaks",
+            items:[
+              { key:"break_duration_min", label:"Break Length", unit:"min", desc:"Countdown timer duration for worker breaks", min:5, max:60, type:"number" },
+            ]},
+          { id:"backlog", title:"Backlog Thresholds", icon:"📊", color:"#38bdf8",
+            desc:"Controls backlog counter color coding on analytics dashboard",
+            items:[
+              { key:"backlog_green_max", label:"Green Max", unit:"reqs", desc:"At or below this count = green (healthy)", min:1, max:50, type:"number" },
+              { key:"backlog_yellow_max", label:"Yellow Max", unit:"reqs", desc:"At or below this = yellow. Above = red.", min:1, max:100, type:"number" },
+            ]},
+          { id:"shifts", title:"Shift Schedule", icon:"🕐", color:"#a78bfa",
+            desc:"Defines shift boundaries for analytics grouping and scheduling",
+            items:[
+              { key:"shift_1_start", label:"1st Shift Start", unit:"", desc:"When first shift begins", type:"time" },
+              { key:"shift_1_end", label:"1st Shift End", unit:"", desc:"When first shift ends", type:"time" },
+              { key:"shift_2_start", label:"2nd Shift Start", unit:"", desc:"When second shift begins", type:"time" },
+              { key:"shift_2_end", label:"2nd Shift End", unit:"", desc:"When second shift ends", type:"time" },
+            ]},
+          { id:"system", title:"System Timing", icon:"⚙️", color:"#64748b",
+            desc:"Polling intervals and automated operations",
+            items:[
+              { key:"poll_interval_ms", label:"Local Poll Rate", unit:"ms", desc:"Fallback polling interval (non-Supabase mode)", min:1000, max:30000, type:"number" },
+              { key:"supabase_poll_ms", label:"Supabase Poll Rate", unit:"ms", desc:"Backup polling interval when using Supabase realtime", min:5000, max:60000, type:"number" },
+              { key:"auto_archive_hour", label:"Auto-Archive Hour", unit:"h (0-23)", desc:"Hour of day to auto-archive (0 = midnight)", min:0, max:23, type:"number" },
+            ]},
+        ];
+
+        const DEFAULTS = {
+          sla_minutes_warn:"5", sla_minutes_bad:"10", sla_minutes_crit:"20",
+          break_duration_min:"15", backlog_green_max:"3", backlog_yellow_max:"8",
+          poll_interval_ms:"2500", supabase_poll_ms:"10000", auto_archive_hour:"0",
+          shift_1_start:"06:00", shift_1_end:"14:00", shift_2_start:"14:00", shift_2_end:"22:00",
+        };
+
+        // Initialize edit state from live settings on first render
+        const curEdit = Object.keys(editSettings).length > 0 ? editSettings : { ...DEFAULTS, ...sysSettings };
+        const updateSetting = (key, val) => {
+          const next = { ...curEdit, [key]: val };
+          setEditSettings(next);
+          setDirtyKeys(prev => ({ ...prev, [key]: true }));
+          setSettingsSaved(false);
+        };
+
+        const hasDirty = Object.keys(dirtyKeys).length > 0;
+        const grp = SETTING_GROUPS.find(g => g.id === activeSettingsTab);
+
+        const settingsErrors = [];
+        const w = parseInt(curEdit.sla_minutes_warn), b = parseInt(curEdit.sla_minutes_bad), c = parseInt(curEdit.sla_minutes_crit);
+        if (w >= b) settingsErrors.push("SLA Warning must be less than Bad");
+        if (b >= c) settingsErrors.push("SLA Bad must be less than Critical");
+        if (parseInt(curEdit.backlog_green_max) >= parseInt(curEdit.backlog_yellow_max)) settingsErrors.push("Backlog Green Max must be less than Yellow Max");
+
+        const handleSaveSettings = async () => {
+          setSettingsSaving(true);
+          try {
+            for (const key of Object.keys(dirtyKeys)) {
+              await adapterRef.current.saveSetting(key, curEdit[key], userName);
+            }
+            const fresh = await adapterRef.current.loadSettings();
+            _updateSysSettings(fresh);
+            setDirtyKeys({});
+            setSettingsSaved(true);
+            setTimeout(() => setSettingsSaved(false), 3000);
+          } catch(e) { console.error("Save settings error:", e); }
+          setSettingsSaving(false);
+        };
+
+        // SLA Preview
+        const SLAPreviewInline = () => {
+          const pw=parseInt(curEdit.sla_minutes_warn)||5, pb=parseInt(curEdit.sla_minutes_bad)||10, pc=parseInt(curEdit.sla_minutes_crit)||20;
+          const examples=[{m:Math.max(1,pw-2),l:"Normal"},{m:pw,l:"Warning"},{m:pb,l:"Bad"},{m:pc,l:"Critical"}];
+          return (
+            <div style={{display:"flex",gap:"0.5rem",flexWrap:"wrap",marginTop:"0.75rem"}}>
+              {examples.map(ex => {
+                let ebg="#1e293b",efg="#8b9dc3",sf="";
+                if(ex.m>=pc){ebg="#ff4444";efg="#fff";sf=" 🔥";}
+                else if(ex.m>=pb){ebg="#fbbf24";efg="#0a0e1a";}
+                else if(ex.m>=pw){ebg="#22c55e";efg="#0a0e1a";}
+                return (
+                  <div key={ex.l} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:"0.25rem"}}>
+                    <span style={{padding:"0.3rem 0.6rem",background:ebg,color:efg,borderRadius:"6px",fontSize:"0.75rem",fontWeight:900}}>{ex.m}m{sf}</span>
+                    <span style={{fontSize:"0.6rem",color:"#64748b",textTransform:"uppercase",letterSpacing:"0.05em"}}>{ex.l}</span>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        };
+
+        // Backlog Preview
+        const BacklogPreviewInline = () => {
+          const gm=parseInt(curEdit.backlog_green_max)||3, ym=parseInt(curEdit.backlog_yellow_max)||8;
+          return (
+            <div style={{display:"flex",gap:"0.75rem",marginTop:"0.75rem"}}>
+              {[{ct:gm,cl:"#00ff88",lb:"Healthy"},{ct:ym,cl:"#fbbf24",lb:"Warning"},{ct:ym+3,cl:"#ff4444",lb:"Critical"}].map(e=>(
+                <div key={e.lb} style={{textAlign:"center"}}>
+                  <div style={{fontSize:"1.5rem",fontWeight:900,color:e.cl}}>{e.ct}</div>
+                  <div style={{fontSize:"0.55rem",color:"#64748b",textTransform:"uppercase"}}>{e.lb}</div>
+                </div>
+              ))}
+            </div>
+          );
+        };
+
+        return (
+          <div style={{ minHeight:'100vh', ...bg, padding:'1.5rem', position:'relative', overflow:'hidden' }}>
+            <div style={gridOverlay} />
+            <div style={{ maxWidth:'1200px', margin:'0 auto', position:'relative', zIndex:1 }}>
+              <TopBar title="System Settings" subtitle={`🔧 ${userName} (admin) • ${connectionMode === "supabase" ? "Supabase ready" : "Local mode"}`} />
+
+              {/* Save Bar */}
+              {hasDirty && (
+                <div style={{position:"sticky",top:"0.75rem",zIndex:50,background:"rgba(10,14,26,0.95)",backdropFilter:"blur(12px)",border:settingsErrors.length>0?"1.5px solid #ff4444":"1.5px solid #ffd700",borderRadius:"12px",padding:"0.75rem 1rem",display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"1rem",gap:"1rem",flexWrap:"wrap"}}>
+                  <div>
+                    <span style={{color:settingsErrors.length>0?"#ff4444":"#ffd700",fontWeight:800,fontSize:"0.85rem"}}>{settingsErrors.length>0?"⚠️ Validation Error":`⚡ ${Object.keys(dirtyKeys).length} unsaved change${Object.keys(dirtyKeys).length>1?"s":""}`}</span>
+                    {settingsErrors.length>0&&<div style={{color:"#ff4444",fontSize:"0.7rem",marginTop:"0.2rem"}}>{settingsErrors.join(" • ")}</div>}
+                  </div>
+                  <div style={{display:"flex",gap:"0.5rem"}}>
+                    <button onClick={()=>{setEditSettings({});setDirtyKeys({});}} style={{padding:"0.5rem 1rem",borderRadius:"8px",border:"1px solid #475569",background:"transparent",color:"#8b9dc3",fontWeight:700,cursor:"pointer",fontSize:"0.8rem"}}>Discard</button>
+                    <button onClick={handleSaveSettings} disabled={settingsErrors.length>0||settingsSaving} style={{padding:"0.5rem 1.5rem",borderRadius:"8px",border:"none",background:settingsErrors.length>0?"#475569":"linear-gradient(135deg,#ffd700,#ffaa00)",color:"#0a0e1a",fontWeight:900,cursor:settingsErrors.length>0?"not-allowed":"pointer",fontSize:"0.8rem",opacity:settingsSaving?0.6:1}}>{settingsSaving?"Saving...":"Save All"}</button>
+                  </div>
+                </div>
+              )}
+
+              {/* Saved confirmation */}
+              {settingsSaved && !hasDirty && (
+                <div style={{padding:"0.75rem 1rem",background:"rgba(0,255,136,0.1)",border:"1px solid rgba(0,255,136,0.3)",borderRadius:"10px",color:"#00ff88",fontWeight:800,marginBottom:"1rem",fontSize:"0.85rem"}}>✅ Settings saved and synced to all devices</div>
+              )}
+
+              {/* Group Tabs */}
+              <div style={{display:"flex",gap:"0.5rem",marginBottom:"1.5rem",flexWrap:"wrap",overflowX:"auto",paddingBottom:"0.25rem"}}>
+                {SETTING_GROUPS.map(g => {
+                  const isActive = activeSettingsTab === g.id;
+                  const dc = g.items.filter(s => dirtyKeys[s.key]).length;
+                  return (
+                    <button key={g.id} onClick={() => setActiveSettingsTab(g.id)}
+                      style={{padding:"0.6rem 1rem",borderRadius:"10px",cursor:"pointer",background:isActive?`${g.color}18`:"rgba(15,23,42,0.6)",border:isActive?`1.5px solid ${g.color}60`:"1.5px solid #1e293b",color:isActive?g.color:"#64748b",fontWeight:800,fontSize:"0.78rem",whiteSpace:"nowrap",transition:"all 0.15s ease",position:"relative"}}>
+                      {g.icon} {g.title}
+                      {dc>0&&<span style={{position:"absolute",top:-4,right:-4,background:"#ffd700",color:"#0a0e1a",borderRadius:"50%",width:16,height:16,fontSize:"0.55rem",fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center",border:"2px solid #0a0e1a"}}>{dc}</span>}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Active Group Panel */}
+              {grp && (
+                <div style={{background:"rgba(15,23,42,0.85)",border:`1px solid ${grp.color}30`,borderRadius:"14px",padding:"1.5rem",marginBottom:"1.5rem"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:"0.5rem",marginBottom:"0.25rem"}}>
+                    <span style={{fontSize:"1.3rem"}}>{grp.icon}</span>
+                    <h2 style={{margin:0,fontSize:"1.2rem",fontWeight:900,color:grp.color}}>{grp.title}</h2>
+                  </div>
+                  <p style={{color:"#64748b",fontSize:"0.78rem",margin:"0 0 1.25rem 0"}}>{grp.desc}</p>
+
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))",gap:"1rem"}}>
+                    {grp.items.map(s => {
+                      const isDirty = dirtyKeys[s.key];
+                      return (
+                        <div key={s.key} style={{background:isDirty?"rgba(255,215,0,0.04)":"rgba(15,23,42,0.5)",border:isDirty?"1px solid rgba(255,215,0,0.25)":"1px solid #1e293b",borderRadius:"10px",padding:"1rem",transition:"border-color 0.15s ease"}}>
+                          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"0.5rem"}}>
+                            <label style={{color:"#e2e8f0",fontWeight:800,fontSize:"0.85rem"}}>{s.label}</label>
+                            {isDirty&&<span style={{padding:"0.1rem 0.4rem",background:"rgba(255,215,0,0.15)",borderRadius:"4px",color:"#ffd700",fontSize:"0.55rem",fontWeight:900}}>CHANGED</span>}
+                          </div>
+                          <p style={{color:"#64748b",fontSize:"0.7rem",margin:"0 0 0.6rem 0"}}>{s.desc}</p>
+                          <div style={{display:"flex",alignItems:"center",gap:"0.5rem"}}>
+                            {s.type==="time"?(
+                              <input type="time" value={curEdit[s.key]||""} onChange={e=>updateSetting(s.key,e.target.value)} style={{flex:1,padding:"0.6rem",background:"#0f172a",border:"1px solid #334155",borderRadius:"8px",color:"#e2e8f0",fontSize:"0.9rem",fontWeight:700,fontFamily:"inherit"}}/>
+                            ):(
+                              <React.Fragment>
+                                <input type="number" value={curEdit[s.key]||""} onChange={e=>updateSetting(s.key,e.target.value)} min={s.min} max={s.max} style={{width:"80px",padding:"0.6rem",background:"#0f172a",border:"1px solid #334155",borderRadius:"8px",color:"#e2e8f0",fontSize:"1rem",fontWeight:900,textAlign:"center",fontFamily:"inherit"}}/>
+                                <span style={{color:"#64748b",fontSize:"0.75rem",fontWeight:600}}>{s.unit}</span>
+                                <input type="range" value={curEdit[s.key]||0} onChange={e=>updateSetting(s.key,e.target.value)} min={s.min} max={s.max} style={{flex:1,accentColor:grp.color}}/>
+                              </React.Fragment>
+                            )}
+                          </div>
+                          {isDirty&&<div style={{marginTop:"0.4rem",fontSize:"0.65rem",color:"#475569"}}>Default: {DEFAULTS[s.key]}{s.unit?` ${s.unit}`:""}</div>}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Live Previews */}
+                  {activeSettingsTab==="sla"&&(
+                    <div style={{marginTop:"1.25rem",padding:"1rem",background:"rgba(0,255,136,0.04)",border:"1px solid rgba(0,255,136,0.15)",borderRadius:"10px"}}>
+                      <div style={{color:"#8b9dc3",fontSize:"0.7rem",fontWeight:800,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:"0.25rem"}}>Live Preview — Request badges will look like:</div>
+                      <SLAPreviewInline />
+                    </div>
+                  )}
+                  {activeSettingsTab==="backlog"&&(
+                    <div style={{marginTop:"1.25rem",padding:"1rem",background:"rgba(56,189,248,0.04)",border:"1px solid rgba(56,189,248,0.15)",borderRadius:"10px"}}>
+                      <div style={{color:"#8b9dc3",fontSize:"0.7rem",fontWeight:800,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:"0.25rem"}}>Live Preview — Backlog counter colors:</div>
+                      <BacklogPreviewInline />
+                    </div>
+                  )}
+                  {activeSettingsTab==="shifts"&&(
+                    <div style={{marginTop:"1.25rem",padding:"1rem",background:"rgba(167,139,250,0.04)",border:"1px solid rgba(167,139,250,0.15)",borderRadius:"10px"}}>
+                      <div style={{color:"#8b9dc3",fontSize:"0.7rem",fontWeight:800,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:"0.5rem"}}>Shift Timeline</div>
+                      <div style={{display:"flex",height:"32px",borderRadius:"8px",overflow:"hidden",border:"1px solid #334155"}}>
+                        <div style={{flex:1,background:"#1e293b",position:"relative"}}>
+                          <div style={{position:"absolute",left:`${(parseInt(curEdit.shift_1_start||"6")/24)*100}%`,width:`${((parseInt(curEdit.shift_1_end||"14")-parseInt(curEdit.shift_1_start||"6"))/24)*100}%`,height:"100%",background:"rgba(0,255,136,0.2)",borderLeft:"2px solid #00ff88",borderRight:"2px solid #00ff88",display:"flex",alignItems:"center",justifyContent:"center"}}>
+                            <span style={{fontSize:"0.6rem",color:"#00ff88",fontWeight:800}}>1ST</span>
+                          </div>
+                          <div style={{position:"absolute",left:`${(parseInt(curEdit.shift_2_start||"14")/24)*100}%`,width:`${((parseInt(curEdit.shift_2_end||"22")-parseInt(curEdit.shift_2_start||"14"))/24)*100}%`,height:"100%",background:"rgba(167,139,250,0.2)",borderLeft:"2px solid #a78bfa",borderRight:"2px solid #a78bfa",display:"flex",alignItems:"center",justifyContent:"center"}}>
+                            <span style={{fontSize:"0.6rem",color:"#a78bfa",fontWeight:800}}>2ND</span>
+                          </div>
+                        </div>
+                      </div>
+                      <div style={{display:"flex",justifyContent:"space-between",marginTop:"0.25rem"}}>
+                        {["00:00","06:00","12:00","18:00","24:00"].map(t=><span key={t} style={{fontSize:"0.55rem",color:"#475569"}}>{t}</span>)}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Reset to Defaults */}
+              <div style={{background:"rgba(15,23,42,0.6)",border:"1px solid #1e293b",borderRadius:"14px",padding:"1.25rem",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:"1rem"}}>
+                <div>
+                  <div style={{color:"#e2e8f0",fontWeight:800,fontSize:"0.9rem"}}>Reset All to Defaults</div>
+                  <div style={{color:"#64748b",fontSize:"0.75rem"}}>Restore original factory settings (still requires Save to apply)</div>
+                </div>
+                <button onClick={()=>{setEditSettings({...DEFAULTS});setDirtyKeys(Object.fromEntries(Object.keys(DEFAULTS).map(k=>[k,true])));}} style={{padding:"0.5rem 1rem",borderRadius:"8px",border:"1px solid rgba(255,68,68,0.3)",background:"transparent",color:"#ff4444",fontWeight:700,cursor:"pointer",fontSize:"0.8rem"}}>Reset Defaults</button>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
       if (screen === "admin") {
         if (!canAdmin) {
           return (
@@ -3413,8 +3981,8 @@ ${sortedCompleted.map(r => {
           a.click();
         };
 
-        const roleColors = { room:'#8b9dc3', warehouse:'#fbbf24', supervisor:'#a78bfa', admin:'#ff4444' };
-        const roleEmojis = { room:'🍽️', warehouse:'📦', supervisor:'🧭', admin:'🔧' };
+        const roleColors = { room:'#8b9dc3', warehouse:'#fbbf24', supervisor:'#a78bfa', admin:'#ff4444', superuser:'#ff4444' };
+        const roleEmojis = { room:'🍽️', warehouse:'📦', supervisor:'🧭', admin:'🔧', superuser:'🔧' };
 
         return (
           <div style={{ minHeight:'100vh', ...bg, padding:'1.5rem', position:'relative', overflow:'hidden' }}>
@@ -3465,7 +4033,7 @@ ${sortedCompleted.map(r => {
                     </div>
 
                     {/* Shift (hidden for admin role) */}
-                    {newUserRole !== "admin" && (
+                    {newUserRole !== "admin" && newUserRole !== "superuser" && (
                       <div style={{ flex:'1 1 140px', display:'flex', flexDirection:'column' }}>
                         <div style={{ color:'#8b9dc3', fontSize:'0.75rem', fontWeight:700, marginBottom:'0.4rem', textTransform:'uppercase', height:'1rem' }}>Shift</div>
                         <div style={{ display:'flex', gap:'0.4rem', flex:1 }}>
