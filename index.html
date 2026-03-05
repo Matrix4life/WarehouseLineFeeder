@@ -659,7 +659,7 @@
     // ──────────────────────────────────────────────────────────────────────
 
     // Data adapter (LocalStorage OR Supabase)
-    function createAdapter({ onRemoteChange, onChatChange }) {
+    function createAdapter({ onRemoteChange, onSettingsChange, onChatChange }) {
       const useSupabase = CONFIG.ENABLE_SUPABASE && CONFIG.SUPABASE_URL && CONFIG.SUPABASE_ANON_KEY && window.supabase;
       const supabaseClient = useSupabase ? window.supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY) : null;
 
@@ -734,7 +734,7 @@
               .on("postgres_changes", { event:"*", schema:"public", table:"warehouse_requests" }, () => onRemoteChange?.())
               .on("postgres_changes", { event:"*", schema:"public", table:"warehouse_users" }, () => onRemoteChange?.())
               .on("postgres_changes", { event:"*", schema:"public", table:"warehouse_assignments" }, () => onRemoteChange?.())
-              .on("postgres_changes", { event:"*", schema:"public", table:"warehouse_settings" }, () => onRemoteChange?.())
+              .on("postgres_changes", { event:"*", schema:"public", table:"warehouse_settings" }, () => onSettingsChange?.())
               .subscribe();
             unsub = ()=> supabaseClient.removeChannel(channel);
           } else {
@@ -1462,6 +1462,16 @@
             setNotificationsEnabled(await requestNotifyPermission());
             const adapter = createAdapter({
               onRemoteChange: loadAll,
+              onSettingsChange: async () => {
+                // warehouse_settings changed — reload ONLY settings (faster, no full loadAll)
+                try {
+                  const adapter = adapterRef.current;
+                  if (adapter && adapter.loadSettings) {
+                    const s = await adapter.loadSettings();
+                    _updateSysSettings(s);
+                  }
+                } catch(e) { console.error("loadSettingsOnly error:", e); }
+              },
               onChatChange: () => { if (chatContactRef.current) loadChatMessages(chatContactRef.current); }
             });
             adapterRef.current = adapter;
