@@ -471,6 +471,15 @@
     }
     document.addEventListener("touchstart", _unlockAudio, { once: true });
     document.addEventListener("click", _unlockAudio, { once: true });
+    // PWA install prompt events — keep React state in sync
+    window.addEventListener("wd-install-ready", () => {
+      const btn = document.getElementById("wd-install-btn");
+      if (btn) btn.style.display = "inline-flex";
+    });
+    window.addEventListener("wd-install-done", () => {
+      const btn = document.getElementById("wd-install-btn");
+      if (btn) btn.style.display = "none";
+    });
 
     // Play a single sine-wave note (AIM-style building block)
     function _aimNote(ctx, freq, startTime, duration, vol) {
@@ -1115,6 +1124,8 @@
       // is ONLY for the bell badge count and the history panel list.
       const [bellNotifs, setBellNotifs] = useState([]);
       const [notifPanelOpen, setNotifPanelOpen] = useState(false);
+      const [installReady, setInstallReady] = useState(!!window._deferredInstallPrompt);
+      const [appInstalled, setAppInstalled] = useState(false);
       const [avMuted, setAvMuted] = useState(() => localStorage.getItem("wd_mute_av") === "1");
       const toggleMute = () => setAvMuted(prev => { const next = !prev; localStorage.setItem("wd_mute_av", next?"1":"0"); return next; });
       const [pushEnabled, setPushEnabled] = useState(() => localStorage.getItem("wd_push_enabled") === "1");
@@ -2912,6 +2923,23 @@
                     )}
                   </button>
                 )}
+                {/* PWA Install button — only shows when browser fires beforeinstallprompt */}
+                {installReady && (
+                  <button id="wd-install-btn"
+                    onClick={() => {
+                      if (!window._deferredInstallPrompt) return;
+                      window._deferredInstallPrompt.prompt();
+                      window._deferredInstallPrompt.userChoice.then(choice => {
+                        if (choice.outcome === "accepted") {
+                          setInstallReady(false);
+                          window._deferredInstallPrompt = null;
+                        }
+                      });
+                    }}
+                    style={{padding:'0.45rem 0.9rem',borderRadius:'10px',background:'linear-gradient(135deg,#00ff88,#00cc6f)',border:'none',color:'#0a0e1a',fontWeight:900,cursor:'pointer',fontSize:'0.78rem',display:'inline-flex',alignItems:'center',gap:'0.35rem',whiteSpace:'nowrap'}}>
+                    📲 Install App
+                  </button>
+                )}
                 <button className="wd-nav-btn"
                   onClick={()=>{if(myActiveBreak)endBreak(myActiveBreak);setUserName("");setUserRole("");setTempName("");setTempRole("");_wdUser="";_wdUserRole="";setChatUnreadFrom({});setRoute("login");}}
                   style={{background:'transparent',border:'1px solid #64748b',color:'#64748b'}}>
@@ -3062,9 +3090,13 @@
         const allReqs = [...requests, ...archivedRequests];
         const filteredReqs = allReqs.filter(r => {
           const submitted = new Date(r.submittedAt);
-          if (timeFilter === "today" && submitted < today) return false;
-          if (timeFilter === "week"  && submitted < thisWeek) return false;
-          if (timeFilter === "month" && submitted < thisMonth) return false;
+          if (timeFilter === "today"  && submitted < today) return false;
+          if (timeFilter === "week"   && submitted < thisWeek) return false;
+          if (timeFilter === "month"  && submitted < thisMonth) return false;
+          if (timeFilter === "custom") {
+            if (exportDateFrom && submitted < new Date(exportDateFrom)) return false;
+            if (exportDateTo   && submitted > new Date(exportDateTo + "T23:59:59")) return false;
+          }
           if (dashRoomFilter !== "all" && r.room !== dashRoomFilter) return false;
           return true;
         });
@@ -3196,22 +3228,73 @@
               <TopBar title="Analytics Dashboard" subtitle={`👤 ${userName} (${userRole}) • ${connectionMode === "supabase" ? "Supabase ready" : "Local + kiosk mode"}`} />
 
 
-              {/* Filters: Time + Room */}
+              {/* Filters: Time + Room + Export */}
               <div style={{ marginBottom:'1.5rem', display:'flex', flexDirection:'column', gap:'0.6rem' }}>
-                {/* Time filter */}
-                <div style={{ display:'flex', gap:'0.6rem', flexWrap:'wrap', alignItems:'center' }}>
-                  <span style={{ color:'#475569', fontSize:'0.72rem', textTransform:'uppercase', letterSpacing:'0.08em', minWidth:'38px' }}>Time</span>
-                  {["today","week","month","all"].map(filter => (
-                    <button key={filter} onClick={() => setTimeFilter(filter)}
-                      style={{ padding:'0.5rem 1rem', borderRadius:'10px',
-                        background: timeFilter===filter ? 'linear-gradient(135deg,#00ff88,#00cc6f)' : 'rgba(15,23,42,0.85)',
-                        border: timeFilter===filter ? 'none' : '1px solid #334155',
-                        color: timeFilter===filter ? '#0a0e1a' : '#8b9dc3',
-                        fontWeight:900, cursor:'pointer', textTransform:'uppercase', fontSize:'0.78rem' }}>
-                      {filter==="all"?"All Time":filter==="week"?"This Week":filter==="month"?"This Month":"Today"}
-                    </button>
-                  ))}
+
+                {/* Row 1: Time filter + Export CSV */}
+                <div style={{ display:'flex', gap:'0.6rem', flexWrap:'wrap', alignItems:'center', justifyContent:'space-between' }}>
+                  <div style={{ display:'flex', gap:'0.6rem', flexWrap:'wrap', alignItems:'center' }}>
+                    <span style={{ color:'#475569', fontSize:'0.72rem', textTransform:'uppercase', letterSpacing:'0.08em', minWidth:'38px' }}>Time</span>
+                    {["today","week","month","all","custom"].map(filter => (
+                      <button key={filter} onClick={() => setTimeFilter(filter)}
+                        style={{ padding:'0.5rem 1rem', borderRadius:'10px',
+                          background: timeFilter===filter ? 'linear-gradient(135deg,#00ff88,#00cc6f)' : 'rgba(15,23,42,0.85)',
+                          border: timeFilter===filter ? 'none' : '1px solid #334155',
+                          color: timeFilter===filter ? '#0a0e1a' : '#8b9dc3',
+                          fontWeight:900, cursor:'pointer', textTransform:'uppercase', fontSize:'0.78rem' }}>
+                        {filter==="all"?"All Time":filter==="week"?"This Week":filter==="month"?"This Month":filter==="custom"?"Custom":"Today"}
+                      </button>
+                    ))}
+                  </div>
+                  {/* Export CSV button */}
+                  <button onClick={() => {
+                    const headers = ["ID","Item","Room","Qty","Priority","Submitted","Submitted By","Claimed By","Claimed At","Completed At","Completed By","Room Wait (min)","Pick Time (min)","Status","Comments"];
+                    const rows = filteredReqs.map(r => [
+                      r.id, r.item, r.room, r.qty + (r.adjQty?` adj:${r.adjQty}`:""),
+                      r.priority?"HIGH":"NORMAL",
+                      r.submittedAt ? new Date(r.submittedAt).toLocaleString() : "",
+                      r.submittedBy||"", r.claimedBy||"",
+                      r.claimedAt   ? new Date(r.claimedAt).toLocaleString()   : "",
+                      r.completedAt ? new Date(r.completedAt).toLocaleString() : "",
+                      r.completedBy||"",
+                      r.submittedAt && r.completedAt ? Math.round((new Date(r.completedAt)-new Date(r.submittedAt))/60000) : "",
+                      r.claimedAt   && r.completedAt ? Math.round((new Date(r.completedAt)-new Date(r.claimedAt))/60000)   : "",
+                      r.status, (r.comments||"").replace(/,/g,";")
+                    ]);
+                    const csv = [headers.join(","), ...rows.map(r => r.map(v => `"${String(v).replace(/"/g,"\"")}"`).join(","))].join("\n");
+                    const a = document.createElement("a");
+                    a.href = URL.createObjectURL(new Blob([csv],{type:"text/csv"}));
+                    const dateLabel = timeFilter==="custom" ? `${exportDateFrom||"start"}-to-${exportDateTo||"end"}` : timeFilter;
+                    const roomLabel = dashRoomFilter==="all" ? "all-rooms" : dashRoomFilter.replace(/\/| /g,"-");
+                    a.download = `dashboard-${dateLabel}-${roomLabel}-${new Date().toISOString().split("T")[0]}.csv`;
+                    a.click();
+                  }}
+                  disabled={filteredReqs.length === 0}
+                  style={{ padding:'0.5rem 1rem', borderRadius:'10px', fontWeight:900, fontSize:'0.78rem', cursor: filteredReqs.length>0?'pointer':'not-allowed',
+                    background: filteredReqs.length>0 ? 'linear-gradient(135deg,#00ff88,#00cc6f)' : '#1e293b',
+                    border:'none', color: filteredReqs.length>0 ? '#0a0e1a' : '#475569',
+                    display:'flex', alignItems:'center', gap:'0.4rem', whiteSpace:'nowrap' }}>
+                    📥 Export CSV {filteredReqs.length > 0 && `(${filteredReqs.length})`}
+                  </button>
                 </div>
+
+                {/* Custom date range row */}
+                {timeFilter === "custom" && (
+                  <div style={{ display:'flex', gap:'0.6rem', alignItems:'center', flexWrap:'wrap', paddingLeft:'46px' }}>
+                    <span style={{ color:'#64748b', fontSize:'0.72rem' }}>From</span>
+                    <input type="date" value={exportDateFrom} onChange={e=>setExportDateFrom(e.target.value)}
+                      style={{ padding:'0.4rem 0.7rem', borderRadius:'8px', background:'#1e293b', border:'1px solid #334155', color:'#e2e8f0', fontSize:'0.82rem', fontFamily:'inherit' }} />
+                    <span style={{ color:'#64748b', fontSize:'0.72rem' }}>To</span>
+                    <input type="date" value={exportDateTo} onChange={e=>setExportDateTo(e.target.value)}
+                      style={{ padding:'0.4rem 0.7rem', borderRadius:'8px', background:'#1e293b', border:'1px solid #334155', color:'#e2e8f0', fontSize:'0.82rem', fontFamily:'inherit' }} />
+                    {exportDateFrom && exportDateTo && (
+                      <span style={{ color:'#00ff88', fontSize:'0.72rem', fontWeight:900 }}>
+                        {Math.round((new Date(exportDateTo)-new Date(exportDateFrom))/86400000)+1} days
+                      </span>
+                    )}
+                  </div>
+                )}
+
                 {/* Room filter */}
                 <div style={{ display:'flex', gap:'0.5rem', flexWrap:'wrap', alignItems:'center' }}>
                   <span style={{ color:'#475569', fontSize:'0.72rem', textTransform:'uppercase', letterSpacing:'0.08em', minWidth:'38px' }}>Room</span>
@@ -3439,30 +3522,6 @@
                 </div>
               )}
 
-              {/* Supervisor Controls */}
-              <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.25rem' }}>
-                <div style={{ color:'#00ff88', fontWeight:900, textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:'1rem' }}>Supervisor Controls</div>
-                <div style={{ display:'flex', gap:'0.75rem', flexWrap:'wrap' }}>
-                  <button disabled={!canSupervisor} onClick={clearCompleted}
-                    style={{ opacity: canSupervisor ? 1 : 0.5, padding:'0.7rem 1rem', borderRadius:'10px', border:'1px solid rgba(0,255,136,0.35)', background:'transparent', color:'#00ff88', fontWeight:900, cursor: canSupervisor ? 'pointer' : 'not-allowed' }}>
-                    Clear Completed
-                  </button>
-                  <button disabled={!canSupervisor} onClick={clearAll}
-                    style={{ opacity: canSupervisor ? 1 : 0.5, padding:'0.7rem 1rem', borderRadius:'10px', border:'1px solid #ff4444', background:'transparent', color:'#ff4444', fontWeight:900, cursor: canSupervisor ? 'pointer' : 'not-allowed' }}>
-                    Clear ALL
-                  </button>
-                  <button onClick={loadAll}
-                    style={{ padding:'0.7rem 1rem', borderRadius:'10px', border:'1px solid #334155', background:'transparent', color:'#8b9dc3', fontWeight:900, cursor:'pointer' }}>
-                    Refresh Data
-                  </button>
-                </div>
-
-                {!canSupervisor && (
-                  <div style={{ marginTop:'0.8rem', color:'#64748b', fontSize:'0.85rem' }}>
-                    Supervisor role required for destructive actions.
-                  </div>
-                )}
-              </div>
             </div>
             {_breakPanelJsx}
             {_chatUI}
@@ -5459,6 +5518,24 @@ ${filteredArchive.map(r => `<tr>
   </script>
 
   <script>
+    // ── PWA Install Prompt ────────────────────────────────────────────────────
+    window._deferredInstallPrompt = null;
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault(); // suppress mini-bar, use our own button
+      window._deferredInstallPrompt = e;
+      // Signal React to show the install button
+      const btn = document.getElementById('wd-install-btn');
+      if (btn) btn.style.display = 'inline-flex';
+      // Also dispatch event so React state can react
+      window.dispatchEvent(new CustomEvent('wd-install-ready'));
+    });
+    window.addEventListener('appinstalled', () => {
+      window._deferredInstallPrompt = null;
+      const btn = document.getElementById('wd-install-btn');
+      if (btn) btn.style.display = 'none';
+      window.dispatchEvent(new CustomEvent('wd-install-done'));
+    });
+
     // ── Auto-updating Service Worker ─────────────────────────────────────────
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', async () => {
