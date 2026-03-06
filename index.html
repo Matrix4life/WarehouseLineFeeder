@@ -355,12 +355,12 @@
       PICK_SLA_WARN: 3,    // ⚡ Warehouse pick time green threshold (mins)
       PICK_SLA_BAD: 7,     // ⚡ Warehouse pick time yellow threshold
       PICK_SLA_CRIT: 12,   // ⚡ Warehouse pick time red threshold
-      ROOMS: ["Bistro", "Salad", "Apple", "MasterPack", "Boxes", "Film/Labels", "Other", "******", "Loading", "Putaway" ],
+      ROOMS: ["Bistro", "Salad", "Apple", "MasterPack", "Boxes", "Film/Labels", "Other", "******", "Loading", "Putaway", "Receiving" ],
       // Rooms that are warehouse-internal only — hidden from room profile request form
-      WAREHOUSE_ONLY_ROOMS: ["Other", "Loading", "******", "Putaway"],
+      WAREHOUSE_ONLY_ROOMS: ["Other", "Loading", "******", "Putaway", "Receiving"],
       // 🎨 ROOM COLORS - Edit these to change room header colors!
       ROOM_COLORS: {
-         "Bistro": "#38bdf8",         // Blue
+  "Bistro": "#38bdf8",         // Blue
   "Salad": "#00ff88",          // Green
   "Apple": "#ff4444",          // Red
   "MasterPack": "#a78bfa",     // Purple
@@ -369,7 +369,8 @@
   "Other": "#8b9dc3",          // Gray
   "*******": "#ff6b9d",        // Pink
   "Loading": "#00cc6f",        // Dark Green
-  "Putaway": "#0ea5e9"         // Dark Blue
+  "Putaway": "#0ea5e9",         // Dark Blue
+  "Receiving" : "#e9c80e"       // Yellow    
       }
     };
 
