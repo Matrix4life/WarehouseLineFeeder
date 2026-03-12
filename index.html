@@ -341,6 +341,23 @@
      * -- Enable realtime for warehouse_chat in Database -> Replication
      * -------------------------------------------------------------------
      **********************************************************************/
+
+    // ──────────────────────────────────────────────────────────────────────────────
+    // PERFORMANCE SCORING (Option 4: Percentage-Based Ranking)
+    // ──────────────────────────────────────────────────────────────────────────────
+    const DEFAULT_PERFORMANCE_WEIGHTS = {
+      items: 0.5,        // 50% weight: Items Completed
+      roomWait: 0.25,    // 25% weight: Room Wait time (lower is better)
+      pickTime: 0.25     // 25% weight: Pick Time (lower is better)
+    };
+
+    const DEFAULT_PERFORMANCE_TIERS = {
+      excellent: { min: 70, color: '#00ff88', label: 'Excellent' },
+      good:      { min: 50, color: '#38bdf8', label: 'Good' },
+      fair:      { min: 30, color: '#fbbf24', label: 'Fair' },
+      poor:      { min: 0,  color: '#ff4444', label: 'Needs Improvement' }
+    };
+
     const CONFIG = {
       ENABLE_SUPABASE: true, // <- set true for real multi-user across devices
       SUPABASE_URL: "https://vryxhveadpvhgvhyyary.supabase.co",
@@ -1310,6 +1327,10 @@
           return CONFIG.ROOMS;
         }
       });
+      // Sync selectedRooms to localStorage whenever it changes
+      useEffect(() => {
+        try { localStorage.setItem("wd_selectedRooms", JSON.stringify(selectedRooms)); } catch {}
+      }, [selectedRooms]);
       const [timeFilter, setTimeFilter] = useState("today"); // for dashboard analytics
       const [adminTimeFilter, setAdminTimeFilter] = useState("day"); // for admin panel
       const [archivedRequests, setArchivedRequests] = useState([]);
@@ -1324,6 +1345,13 @@
       });
       const [arcTo, setArcTo] = useState("");
       const [arcRoom, setArcRoom] = useState("");
+
+      // ──────────────────────────────────────────────────────────────────────────────
+      // PERFORMANCE SCORING STATE (Superuser only)
+      // ──────────────────────────────────────────────────────────────────────────────
+      const [performanceWeights, setPerformanceWeights] = useState(DEFAULT_PERFORMANCE_WEIGHTS);
+      const [performanceTiers, setPerformanceTiers] = useState(DEFAULT_PERFORMANCE_TIERS);
+      const [performanceShiftFilter, setPerformanceShiftFilter] = useState("all"); // "all"|"1st"|"2nd"
 
       // Users & Assignments — loaded from adapter (Supabase or localStorage)
       const [users, setUsers] = useState([]);
@@ -1708,6 +1736,8 @@
         let rows = [...requests];
 
         if (onlyActive) rows = rows.filter(r => r.status !== "completed" && r.status !== "cancelled");
+        // Filter by selected rooms
+        rows = rows.filter(r => selectedRooms.includes(r.room));
         if (q) {
           rows = rows.filter(r =>
             (r.item||"").toLowerCase().includes(q) ||
@@ -1733,7 +1763,7 @@
         });
 
         return rows;
-      }, [requests, onlyActive, search, sortMode]);
+      }, [requests, onlyActive, search, sortMode, selectedRooms]);
 
       // Grouping
       const grouped = useMemo(() => {
@@ -1780,6 +1810,57 @@
         const h = Math.floor(mins / 60);
         const m = mins % 60;
         return m > 0 ? `${h}h ${m}m` : `${h}h`;
+      };
+
+      // ──────────────────────────────────────────────────────────────────────────────
+      // PERFORMANCE SCORE CALCULATION (Option 4: Percentage-Based Ranking)
+      // ──────────────────────────────────────────────────────────────────────────────
+      /**
+       * Calculate performance score for a single staff member
+       * Score = 0-100% based on comparison to best performers
+       * 
+       * Metrics:
+       * - Items Completed (higher is better)
+       * - Room Wait Time (lower is better)
+       * - Pick Time (lower is better)
+       * 
+       * Formula:
+       * itemScore = (worker.items / maxItems) × 100
+       * waitScore = (minWait / worker.wait) × 100
+       * pickScore = (minPick / worker.pick) × 100
+       * finalScore = (itemScore × weight.items) + (waitScore × weight.roomWait) + (pickScore × weight.pickTime)
+       */
+      const calculatePerformanceScore = (staffData, allStaffList, weights) => {
+        if (!staffData || !allStaffList || allStaffList.length === 0) return 0;
+
+        // Find best in each category
+        const maxItems = Math.max(...allStaffList.map(s => s.count || 0), 1);
+        const minWait = Math.min(...allStaffList.map(s => s.avgRoomTime || Infinity), Infinity);
+        const minPick = Math.min(...allStaffList.map(s => s.avgPickTime || Infinity), Infinity);
+
+        // Score this worker against best (0-100)
+        const itemScore = (staffData.count / maxItems) * 100;
+        const waitScore = staffData.avgRoomTime > 0 ? (minWait / staffData.avgRoomTime) * 100 : 0;
+        const pickScore = staffData.avgPickTime > 0 ? (minPick / staffData.avgPickTime) * 100 : 0;
+
+        // Weighted average
+        const finalScore = 
+          (itemScore * weights.items) +
+          (waitScore * weights.roomWait) +
+          (pickScore * weights.pickTime);
+
+        return Math.min(Math.max(Math.round(finalScore), 0), 100); // Cap at 0-100%
+      };
+
+      // Get tier color based on score
+      const getTierColor = (score) => {
+        const tierSorted = Object.entries(performanceTiers)
+          .sort((a, b) => b[1].min - a[1].min);
+        
+        for (const [key, tier] of tierSorted) {
+          if (score >= tier.min) return tier.color;
+        }
+        return performanceTiers.poor.color;
       };
 
       // ── BREAK HELPERS (pure functions, no state) ─────────────────────
@@ -3016,14 +3097,247 @@
         );
       }
 
-      // BOARD (TV / Read-only)
+      // ─── REUSABLE ENHANCED HEADER COMPONENT ───
+      const EnhancedHeader = ({ title, description = "", showNav = true }) => (
+        <>
+          {/* Notification Panel Overlay */}
+          {notifPanelOpen && (
+            <>
+              <div style={{position:'fixed',inset:0,zIndex:9997}} onClick={()=>setNotifPanelOpen(false)}/>
+              <div style={{position:'fixed',top:'4.5rem',right:'1rem',width:320,maxWidth:'calc(100vw - 2rem)',background:'#0f172a',border:'1.5px solid rgba(0,255,136,0.28)',borderRadius:'14px',zIndex:9998,boxShadow:'0 18px 50px rgba(0,0,0,0.8)',fontFamily:"'Space Mono',monospace",display:'flex',flexDirection:'column',maxHeight:'65vh',overflow:'hidden'}}>
+                <div style={{padding:'0.8rem 1rem',borderBottom:'1px solid #1e293b',display:'flex',alignItems:'center',justifyContent:'space-between',flexShrink:0}}>
+                  <span style={{fontSize:'0.72rem',fontWeight:700,color:'#00ff88',letterSpacing:'0.08em',textTransform:'uppercase'}}>🔔 Notifications</span>
+                  <div style={{display:'flex',gap:'0.4rem',alignItems:'center'}}>
+                    {bellNotifs.some(n=>n.unread) && (
+                      <button onClick={()=>setBellNotifs(p=>p.map(n=>({...n,unread:false})))} style={{fontSize:'0.6rem',color:'#64748b',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',textTransform:'uppercase'}}>Mark all read</button>
+                    )}
+                    <button onClick={toggleMute} title={avMuted?"Unmute":"Mute"}
+                      style={{background:avMuted?'rgba(255,68,68,0.12)':' rgba(0,255,136,0.08)',border:'1px solid '+(avMuted?'rgba(255,68,68,0.4)':' rgba(0,255,136,0.25)'),borderRadius:'7px',color:avMuted?'#ff4444':'#00ff88',padding:'0.2rem 0.45rem',cursor:'pointer',fontSize:'0.72rem',fontFamily:'inherit',fontWeight:900}}>
+                      {avMuted?'🔇 Muted':'🔔 Sound'}
+                    </button>
+                    {'Notification' in window && (
+                      <button onClick={togglePush} title={pushEnabled?"Disable push":"Enable push"}
+                        style={{background:pushEnabled?'rgba(0,255,136,0.08)':' rgba(100,116,139,0.1)',border:'1px solid '+(pushEnabled?'rgba(0,255,136,0.3)':' rgba(100,116,139,0.3)'),borderRadius:'7px',color:pushEnabled?'#00ff88':'#64748b',padding:'0.2rem 0.45rem',cursor:'pointer',fontSize:'0.72rem',fontFamily:'inherit',fontWeight:900}}>
+                        {pushEnabled?'📲 On':'📵 Off'}
+                      </button>
+                    )}
+                    <button onClick={()=>setNotifPanelOpen(false)} style={{background:'none',border:'none',color:'#475569',cursor:'pointer',fontSize:'1rem',padding:0}}>✕</button>
+                  </div>
+                </div>
+                <div style={{overflowY:'auto',flex:1}}>
+                  {bellNotifs.length===0
+                    ? <div style={{padding:'1.5rem',textAlign:'center',color:'#475569',fontSize:'0.72rem'}}>No notifications yet</div>
+                    : bellNotifs.map(n=>(
+                      <div key={n.id} className="wd-nr" onClick={()=>setBellNotifs(p=>p.map(x=>x.id===n.id?{...x,unread:false}:x))}
+                        style={{padding:'0.75rem 1rem',borderBottom:'1px solid #1e293b',display:'flex',gap:'0.65rem',alignItems:'flex-start',background:n.unread?n.color+'0a':'transparent'}}>
+                        <div style={{width:8,height:8,minWidth:8,borderRadius:'50%',background:n.unread?n.color:'#334155',boxShadow:n.unread?'0 0 5px '+n.color:'none',marginTop:6,flexShrink:0}}/>
+                        <div style={{width:32,height:32,minWidth:32,borderRadius:8,background:n.color+'18',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'0.95rem',flexShrink:0}}>{n.icon}</div>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{fontSize:'0.77rem',fontWeight:700,color:'#e2e8f0',lineHeight:1.3}}>{n.title}</div>
+                          <div style={{fontSize:'0.65rem',color:'#64748b',marginTop:'0.1rem'}}>{n.detail}</div>
+                          <div style={{fontSize:'0.58rem',color:'#475569',marginTop:'0.1rem'}}>{new Date(n.time).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})}</div>
+                        </div>
+                      </div>
+                    ))
+                  }
+                </div>
+              </div>
+            </>
+          )}
+
+          <div style={{ marginBottom: showNav ? '1.5rem' : '1rem' }}>
+            {/* Top Row: Title, User Profile, Connection, Metrics */}
+            <div style={{ display:'flex', gap:'0.8rem', alignItems:'center', marginBottom: showNav ? '0.75rem' : 0, flexWrap:'wrap' }}>
+              {/* Title + Logo Box */}
+              <div style={{ display:'inline-flex', alignItems:'center', gap:'0.6rem', padding:'0.8rem 1.2rem', background:'linear-gradient(135deg, rgba(0,255,136,0.12) 0%, rgba(0,255,136,0.05) 100%)', border:'2px solid #00ff88', borderRadius:'12px', boxShadow:'0 0 20px rgba(0,255,136,0.2)' }}>
+                <Truck size={24} color="#00ff88" />
+                <div style={{ minWidth:0 }}>
+                  <div style={{ fontSize:'1.3rem', fontWeight:900, color:'#00ff88', textTransform:'uppercase', letterSpacing:'0.08em', lineHeight:1 }}>{title}</div>
+                  {description && <div style={{ fontSize:'0.7rem', color:'#8b9dc3', letterSpacing:'0.02em', marginTop:'0.2rem' }}>{description}</div>}
+                </div>
+              </div>
+
+              {/* User Profile Box */}
+              <div style={{ display:'inline-flex', alignItems:'center', gap:'0.5rem', padding:'0.6rem 0.9rem', background:'rgba(100,116,139,0.1)', border:'2px solid #334155', borderRadius:'10px' }}>
+                {(() => {
+                  const roleIcons = { room: '🍳', warehouse: '📦', supervisor: '👨‍💼', admin: '👨‍💼', superuser: '⚡' };
+                  return <span style={{ fontSize:'1.2rem' }}>{roleIcons[userRole] || '👤'}</span>;
+                })()}
+                <div style={{ minWidth:0 }}>
+                  <div style={{ fontSize:'0.9rem', fontWeight:900, color:'#e2e8f0', lineHeight:1 }}>{userName}</div>
+                  <div style={{ fontSize:'0.65rem', color:'#8b9dc3', textTransform:'uppercase', letterSpacing:'0.02em', marginTop:'0.15rem' }}>{userRole}</div>
+                </div>
+              </div>
+
+              {/* Connection Status Dot */}
+              <div style={{ display:'inline-flex', alignItems:'center', gap:'0.4rem', padding:'0.4rem 0.6rem', background:'rgba(15,23,42,0.6)', border:'1px solid #334155', borderRadius:'8px' }}>
+                <span style={{ width:10, height:10, borderRadius:'50%', background:connectionMode === "supabase" ? '#00ff88' : '#fbbf24', boxShadow:`0 0 10px ${connectionMode === "supabase" ? '#00ff88' : '#fbbf24'}` }} />
+              </div>
+
+              {/* Metrics */}
+              <div style={{ display:'flex', gap:'0.5rem', marginLeft:'auto', flexShrink:0 }}>
+                {[
+                  {label:"Pend", val:metrics.pending, color:"#fbbf24"},
+                  {label:"Claim",val:metrics.claimed, color:"#38bdf8"},
+                  {label:"Prog", val:metrics.inprog, color:"#a78bfa"},
+                  {label:"Done", val:metrics.completed, color:"#00ff88"}
+                ].map(m=>(
+                  <div key={m.label} style={{ textAlign:'center', padding:'0.35rem 0.5rem', background:'rgba(15,23,42,0.6)', border:'1px solid #334155', borderRadius:'6px', minWidth:46 }}>
+                    <div style={{fontSize:'1rem', fontWeight:900, color:m.color, lineHeight:1}}>{m.val}</div>
+                    <div style={{fontSize:'0.55rem', color:'#64748b', textTransform:'uppercase', marginTop:'0.15rem', letterSpacing:'0.02em'}}>{m.label}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Bottom Row: Navigation Buttons */}
+            {showNav && (
+              <div style={{ display:'flex', gap:'0.4rem', flexWrap:'wrap', alignItems:'center' }}>
+                {(userRole==="room"||userRole==="supervisor"||userRole==="admin"||userRole==="superuser") && (
+                  <button className="wd-nav-btn" onClick={()=>setRoute("form")}
+                    style={{background:'linear-gradient(135deg,#00ff88,#00cc6f)',border:'none',color:'#0a0e1a',fontWeight:900}}>
+                    + NEW
+                  </button>
+                )}
+                {(userRole==="warehouse"||userRole==="supervisor"||userRole==="admin"||userRole==="superuser") && (
+                  <button className="wd-nav-btn" onClick={()=>setRoute("picklist")}
+                    style={{background:'transparent',border:'1px solid rgba(0,255,136,0.4)',color:'#00ff88'}}>
+                    Pick List
+                  </button>
+                )}
+                <button className="wd-nav-btn" onClick={()=>setRoute("board")}
+                  style={{background:'transparent',border:'1px solid rgba(0,255,136,0.25)',color:'#8b9dc3'}}>
+                  Board
+                </button>
+                {(userRole==="supervisor"||userRole==="admin"||userRole==="superuser") && (
+                  <button className="wd-nav-btn" onClick={()=>setRoute("dashboard")}
+                    style={{background:'transparent',border:'1px solid rgba(0,255,136,0.25)',color:'#00ff88'}}>
+                    Dashboard
+                  </button>
+                )}
+                <button className="wd-nav-btn" onClick={()=>setRoute("completed")}
+                  style={{background:'transparent',border:'1px solid rgba(0,255,136,0.25)',color:'#00ff88'}}>
+                  Completed
+                </button>
+                {(userRole==="supervisor"||userRole==="admin"||userRole==="superuser") && (
+                  <button className="wd-nav-btn" onClick={()=>setRoute("assignments")}
+                    style={{background:'transparent',border:'1px solid rgba(56,189,248,0.35)',color:'#38bdf8'}}>
+                    Assignments
+                  </button>
+                )}
+                {(userRole==="admin"||userRole==="superuser") && (
+                  <button className="wd-nav-btn" onClick={()=>setRoute("admin")}
+                    style={{background:'transparent',border:'1px solid rgba(255,68,68,0.5)',color:'#ff4444'}}>
+                    Admin
+                  </button>
+                )}
+                {userRole==="superuser" && (
+                  <button className="wd-nav-btn" onClick={()=>setRoute("settings")}
+                    style={{background:'transparent',border:'1px solid rgba(255,68,68,0.5)',color:'#ff4444'}}>
+                    ⚙️ Settings
+                  </button>
+                )}
+                {userRole==="warehouse" && (
+                  myActiveBreak ? (
+                    <BreakCountdown
+                      startedAt={myActiveBreak.startedAt}
+                      breakMins={BREAK_MINS}
+                      onEnd={() => endBreak(myActiveBreak)}
+                    />
+                  ) : (
+                    <button className="wd-nav-btn" onClick={()=>startBreak()}
+                      style={{background:'transparent',border:'1px solid rgba(255,159,67,0.4)',color:'#ff9f43'}}>
+                      🍵 Break
+                    </button>
+                  )
+                )}
+                <button className="wd-nav-btn" onClick={()=>{
+                  localStorage.removeItem("wd_user");
+                  localStorage.removeItem("wd_role");
+                  setRoute("login");
+                  setUserName("");
+                  setUserRole("");
+                }}
+                  style={{background:'transparent',border:'1px solid rgba(100,116,139,0.3)',color:'#64748b'}}>
+                  Sign Out
+                </button>
+                {/* Bell Icon */}
+                <button onClick={()=>setNotifPanelOpen(p=>!p)} 
+                  style={{position:'relative',background:'none',border:'none',cursor:'pointer',color:'#00ff88',fontSize:'1.4rem',padding:'0.4rem',marginLeft:'0.2rem',display:'flex',alignItems:'center',justifyContent:'center'}}>
+                  🔔
+                  {bellNotifs.filter(n=>n.unread).length>0 && (
+                    <span style={{position:'absolute',top:-2,right:-2,background:'#ff4444',color:'#fff',fontSize:'0.6rem',fontWeight:900,minWidth:18,height:18,borderRadius:9,display:'flex',alignItems:'center',justifyContent:'center',border:'2px solid #0a0e1a'}}>
+                      {bellNotifs.filter(n=>n.unread).length}
+                    </span>
+                  )}
+                </button>
+              </div>
+            )}
+          </div>
+        </>
+      );
+      // ───────────────────────────────────────────
       if (screen === "board") {
         return (
           <div style={{ minHeight:'100vh', ...bg, padding:'1.25rem', position:'relative', overflow:'hidden' }}>
             <div style={gridOverlay} />
             <div style={{ maxWidth:'1600px', margin:'0 auto', position:'relative', zIndex:1 }}>
-              <TopBar title="Live Board" subtitle={`👤 ${userName} (${userRole}) • ${connectionMode === "supabase" ? "Supabase ready • Realtime" : "Local + kiosk mode"}`} />
+              <EnhancedHeader title="Live Board" description="Real-time warehouse coordination" />
 
+
+
+              {/* FILTER ROOMS Section */}
+              {(() => {
+                // Determine which rooms to show in filter based on user role
+                const visibleRoomsForFilter = userRole === "admin" || userRole === "superuser"
+                  ? CONFIG.ROOMS
+                  : CONFIG.ROOMS.filter(r => !CONFIG.WAREHOUSE_ONLY_ROOMS.includes(r));
+                
+                return (
+                  <div style={{ marginBottom:'1rem', padding:'0.75rem', background:'rgba(15,23,42,0.6)', border:'1px solid #334155', borderRadius:'12px' }}>
+                    <div style={{ color:'#00ff88', fontWeight:900, fontSize:'0.85rem', marginBottom:'0.6rem', display:'flex', alignItems:'center', gap:'0.4rem' }}>
+                      <span style={{ fontSize:'0.9rem' }}>🎯</span> FILTER ROOMS
+                    </div>
+                    <div style={{ display:'flex', gap:'0.45rem', flexWrap:'wrap' }}>
+                      {visibleRoomsForFilter.map(room => (
+                        <button
+                          key={room}
+                          onClick={() => {
+                            const updated = selectedRooms.includes(room)
+                              ? selectedRooms.filter(r => r !== room)
+                              : [...selectedRooms, room];
+                            setSelectedRooms(updated);
+                            try { localStorage.setItem("wd_selectedRooms", JSON.stringify(updated)); } catch {}
+                          }}
+                          style={{
+                            padding:'0.5rem 0.85rem',
+                            borderRadius:'8px',
+                            border:`2px solid ${CONFIG.ROOM_COLORS[room] || '#00ff88'}`,
+                            background:`${CONFIG.ROOM_COLORS[room] || '#00ff88'}22`,
+                            color: CONFIG.ROOM_COLORS[room] || '#00ff88',
+                            fontWeight:900,
+                            cursor:'pointer',
+                            fontSize:'0.75rem',
+                            textTransform:'uppercase',
+                            letterSpacing:'0.03em',
+                            transition:'all 0.15s ease',
+                            display:'flex',
+                            alignItems:'center',
+                            gap:'0.3rem',
+                            opacity: selectedRooms.includes(room) ? 1 : 0.7
+                          }}
+                        >
+                          <span style={{ fontSize:'0.95rem' }}>{selectedRooms.includes(room) ? '✓' : '☐'}</span>
+                          {room}
+                        </button>
+                      ))}
+                    </div>
+                    <div style={{ marginTop:'0.4rem', color:'#64748b', fontSize:'0.72rem' }}>
+                      Showing {selectedRooms.filter(r => visibleRoomsForFilter.includes(r)).length} of {visibleRoomsForFilter.length} rooms
+                    </div>
+                  </div>
+                );
+              })()}
 
               <div style={{ display:'flex', gap:'0.75rem', flexWrap:'wrap', alignItems:'center', marginBottom:'0.75rem' }}>
                 <div style={{ color:'#00ff88', fontWeight:900, fontSize:'0.8rem' }}>AUTO-UPDATING</div>
@@ -3273,7 +3587,7 @@
           <div style={{ minHeight:'100vh', ...bg, padding:'1.5rem', position:'relative', overflow:'hidden' }}>
             <div style={gridOverlay} />
             <div style={{ maxWidth:'1400px', margin:'0 auto', position:'relative', zIndex:1 }}>
-              <TopBar title="Analytics Dashboard" subtitle={`👤 ${userName} (${userRole}) • ${connectionMode === "supabase" ? "Supabase ready" : "Local + kiosk mode"}`} />
+              <EnhancedHeader title="Analytics Dashboard" description="Performance metrics & insights" />
 
 
               {/* Filters: Time + Room + Export */}
@@ -3469,13 +3783,23 @@
                     </div>
                   </div>
                   {(() => {
-                    const StaffCard = ({staff, idx, shiftColor}) => (
+                    const StaffCard = ({staff, idx, shiftColor, allStaff}) => {
+                      const score = calculatePerformanceScore(staff, allStaff, performanceWeights);
+                      const scoreColor = getTierColor(score);
+                      return (
                       <div key={staff.name} style={{ background:`rgba(${shiftColor==="#00ff88"?"0,255,136":"167,139,250"},0.04)`, border:`1px solid rgba(${shiftColor==="#00ff88"?"0,255,136":"167,139,250"},0.15)`, borderRadius:'10px', padding:'1rem' }}>
-                        <div style={{ display:'flex', alignItems:'center', gap:'0.75rem', marginBottom:'0.75rem' }}>
-                          <span style={{ fontSize:'1.4rem' }}>{idx===0?'🥇':idx===1?'🥈':idx===2?'🥉':'👤'}</span>
-                          <div>
-                            <div style={{ color:'#e2e8f0', fontWeight:900, fontSize:'0.95rem' }}>{staff.name}</div>
-                            <div style={{ color:'#8b9dc3', fontSize:'0.75rem' }}>{staff.count} completed</div>
+                        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'0.75rem' }}>
+                          <div style={{ display:'flex', alignItems:'center', gap:'0.75rem' }}>
+                            <span style={{ fontSize:'1.4rem' }}>{idx===0?'🥇':idx===1?'🥈':idx===2?'🥉':'👤'}</span>
+                            <div>
+                              <div style={{ color:'#e2e8f0', fontWeight:900, fontSize:'0.95rem' }}>{staff.name}</div>
+                              <div style={{ color:'#8b9dc3', fontSize:'0.75rem' }}>{staff.count} completed</div>
+                            </div>
+                          </div>
+                          {/* Performance Score Badge */}
+                          <div style={{ background: `${scoreColor}22`, border: `2px solid ${scoreColor}`, borderRadius:'8px', padding:'0.4rem 0.7rem', textAlign:'center' }}>
+                            <div style={{ color: scoreColor, fontWeight:900, fontSize:'1.1rem' }}>{score}%</div>
+                            <div style={{ color: scoreColor, fontSize:'0.6rem', textTransform:'uppercase', fontWeight:'bold', letterSpacing:'0.05em' }}>Performance</div>
                           </div>
                         </div>
                         <div style={{ display:'flex', gap:'1rem' }}>
@@ -3492,13 +3816,14 @@
                         </div>
                       </div>
                     );
+                    };
                     return (
                       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(320px,1fr))', gap:'1.5rem' }}>
                         {topStaff1st.length > 0 && (
                           <div>
                             <div style={{ color:'#00ff88', fontWeight:900, fontSize:'0.82rem', textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:'0.75rem', paddingBottom:'0.4rem', borderBottom:'1px solid rgba(0,255,136,0.2)' }}>🟢 1st Shift</div>
                             <div style={{ display:'flex', flexDirection:'column', gap:'0.6rem' }}>
-                              {topStaff1st.map((s,i) => <StaffCard key={s.name} staff={s} idx={i} shiftColor="#00ff88" />)}
+                              {topStaff1st.map((s,i) => <StaffCard key={s.name} staff={s} idx={i} shiftColor="#00ff88" allStaff={topStaff1st} />)}
                             </div>
                           </div>
                         )}
@@ -3506,7 +3831,7 @@
                           <div>
                             <div style={{ color:'#a78bfa', fontWeight:900, fontSize:'0.82rem', textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:'0.75rem', paddingBottom:'0.4rem', borderBottom:'1px solid rgba(167,139,250,0.2)' }}>🟣 2nd Shift</div>
                             <div style={{ display:'flex', flexDirection:'column', gap:'0.6rem' }}>
-                              {topStaff2nd.map((s,i) => <StaffCard key={s.name} staff={s} idx={i} shiftColor="#a78bfa" />)}
+                              {topStaff2nd.map((s,i) => <StaffCard key={s.name} staff={s} idx={i} shiftColor="#a78bfa" allStaff={topStaff2nd} />)}
                             </div>
                           </div>
                         )}
@@ -3682,7 +4007,7 @@ ${sortedCompleted.map(r => {
           <div style={{ minHeight:'100vh', ...bg, padding:'1.5rem', position:'relative', overflow:'hidden' }}>
             <div style={gridOverlay} />
             <div style={{ maxWidth:'1400px', margin:'0 auto', position:'relative', zIndex:1 }}>
-              <TopBar title="Completed Requests" subtitle={`👤 ${userName} (${userRole}) • ${connectionMode === "supabase" ? "Supabase ready" : "Local + kiosk mode"}`} />
+              <EnhancedHeader title="Completed Requests" description="Order fulfillment history" />
 
               {/* Time Filter & Export */}
               <div style={{ marginBottom:'1.25rem', background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.25rem' }}>
@@ -3902,6 +4227,16 @@ ${sortedCompleted.map(r => {
             items:[
               { key:"break_duration_min", label:"Break Length", unit:"min", desc:"Countdown timer duration for worker breaks", min:5, max:60, type:"number" },
             ]},
+          { id:"performance", title:"Performance Scoring", icon:"🏆", color:"#00ff88",
+            desc:"Configure staff performance rating metrics and weights (Option 4: Percentage-Based Ranking)",
+            items:[
+              { key:"perf_weight_items", label:"Items Weight", unit:"%", desc:"Weight for items completed (0-100)", min:0, max:100, type:"number" },
+              { key:"perf_weight_room_wait", label:"Room Wait Weight", unit:"%", desc:"Weight for room wait time efficiency (0-100)", min:0, max:100, type:"number" },
+              { key:"perf_weight_pick_time", label:"Pick Time Weight", unit:"%", desc:"Weight for pick time efficiency (0-100)", min:0, max:100, type:"number" },
+              { key:"perf_tier_excellent", label:"Excellent Threshold", unit:"%", desc:"Score required for Excellent tier", min:0, max:100, type:"number" },
+              { key:"perf_tier_good", label:"Good Threshold", unit:"%", desc:"Score required for Good tier", min:0, max:100, type:"number" },
+              { key:"perf_tier_fair", label:"Fair Threshold", unit:"%", desc:"Score required for Fair tier", min:0, max:100, type:"number" },
+            ]},
           { id:"backlog", title:"Backlog Thresholds", icon:"📊", color:"#38bdf8",
             desc:"Controls backlog counter color coding on analytics dashboard",
             items:[
@@ -4013,7 +4348,7 @@ ${sortedCompleted.map(r => {
           <div style={{ minHeight:'100vh', ...bg, padding:'1.5rem', position:'relative', overflow:'hidden' }}>
             <div style={gridOverlay} />
             <div style={{ maxWidth:'1200px', margin:'0 auto', position:'relative', zIndex:1 }}>
-              <TopBar title="System Settings" subtitle={`🔧 ${userName} (admin) • ${connectionMode === "supabase" ? "Supabase ready" : "Local mode"}`} />
+              <EnhancedHeader title="System Settings" description="Warehouse configuration & control" />
 
               {/* Save Bar */}
               {hasDirty && (
@@ -4284,7 +4619,7 @@ ${sortedCompleted.map(r => {
           <div style={{ minHeight:'100vh', ...bg, padding:'1.5rem', position:'relative', overflow:'hidden' }}>
             <div style={gridOverlay} />
             <div style={{ maxWidth:'1600px', margin:'0 auto', position:'relative', zIndex:1 }}>
-              <TopBar title="Admin Panel" subtitle={`👤 ${userName} (${userRole}) • ${connectionMode === "supabase" ? "Supabase ready" : "Local + kiosk mode"}`} />
+              <EnhancedHeader title="Admin Panel" description="System management & user control" />
 
               {successMsg && (
                 <div style={{ padding:'1rem', background:'rgba(0,255,136,0.15)', border:'1px solid #00ff88', borderRadius:'10px', color:'#00ff88', marginBottom:'1rem', fontWeight:900 }}>✅ {successMsg}</div>
@@ -5022,7 +5357,7 @@ ${filteredArchive.map(r => `<tr>
           <div style={{ minHeight:'100vh', ...bg, padding:'1.5rem', position:'relative', overflow:'hidden' }}>
             <div style={gridOverlay} />
             <div style={{ maxWidth:'1500px', margin:'0 auto', position:'relative', zIndex:1 }}>
-              <TopBar title="Assignments" subtitle={`👤 ${userName} (${userRole}) • ${connectionMode === "supabase" ? "Supabase ready" : "Local + kiosk mode"}`} />
+              <EnhancedHeader title="Assignments" description="Worker scheduling & roles" />
 
               {successMsg && (
                 <div style={{ padding:'1rem', background:'rgba(0,255,136,0.15)', border:'1px solid #00ff88', borderRadius:'10px', color:'#00ff88', marginBottom:'1rem', fontWeight:900 }}>✅ {successMsg}</div>
@@ -5253,7 +5588,7 @@ ${filteredArchive.map(r => `<tr>
           <div style={{ minHeight:'100vh', ...bg, padding:'1.5rem', position:'relative', overflow:'hidden' }}>
             <div style={gridOverlay} />
             <div style={{ maxWidth:'1500px', margin:'0 auto', position:'relative', zIndex:1 }}>
-              <TopBar title="Pick List" subtitle={`👤 ${userName} (${userRole}) • ${connectionMode === "supabase" ? "Supabase ready • Realtime updates" : "Local + kiosk mode"}`} />
+              <EnhancedHeader title="Pick List" description="Real-time warehouse picking" />
 
 
               <div style={{ marginBottom:'0.9rem', padding:'0.6rem 0.9rem', background:'rgba(0,255,136,0.1)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'10px', color:'#00ff88', fontSize:'0.75rem', textAlign:'center', letterSpacing:'0.05em' }}>
@@ -5510,7 +5845,7 @@ ${filteredArchive.map(r => `<tr>
         <div style={{ minHeight:'100vh', ...bg, padding:'1.5rem', position:'relative', overflow:'hidden' }}>
           <div style={gridOverlay} />
           <div style={{ maxWidth:'780px', margin:'0 auto', position:'relative', zIndex:1 }}>
-            <TopBar title="Delivery Request" subtitle={`👤 ${userName} (${userRole}) • ${connectionMode === "supabase" ? "Supabase ready • Realtime" : "Local + kiosk mode"}`} />
+            <EnhancedHeader title="Delivery Request" description="Create new warehouse request" />
 
             <div style={{ marginBottom:'0.9rem', padding:'0.65rem 0.9rem', background:'rgba(0,255,136,0.1)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'10px', color:'#00ff88', fontSize:'0.75rem', textAlign:'center', letterSpacing:'0.05em' }}>
               ℹ️ Submitting creates a shared request visible instantly
