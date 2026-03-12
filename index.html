@@ -1332,6 +1332,7 @@
         try { localStorage.setItem("wd_selectedRooms", JSON.stringify(selectedRooms)); } catch {}
       }, [selectedRooms]);
       const [timeFilter, setTimeFilter] = useState("today"); // for dashboard analytics
+      const [roomsDropdownOpen, setRoomsDropdownOpen] = useState(false); // for board rooms dropdown
       const [adminTimeFilter, setAdminTimeFilter] = useState("day"); // for admin panel
       const [archivedRequests, setArchivedRequests] = useState([]);
       const [archiveReqTab, setArchiveReqTab] = useState("active"); // "active" | "archive" in admin request mgmt
@@ -3286,59 +3287,7 @@
 
 
 
-              {/* FILTER ROOMS Section */}
-              {(() => {
-                // Determine which rooms to show in filter based on user role
-                const visibleRoomsForFilter = userRole === "admin" || userRole === "superuser"
-                  ? CONFIG.ROOMS
-                  : CONFIG.ROOMS.filter(r => !CONFIG.WAREHOUSE_ONLY_ROOMS.includes(r));
-                
-                return (
-                  <div style={{ marginBottom:'1rem', padding:'0.75rem', background:'rgba(15,23,42,0.6)', border:'1px solid #334155', borderRadius:'12px' }}>
-                    <div style={{ color:'#00ff88', fontWeight:900, fontSize:'0.85rem', marginBottom:'0.6rem', display:'flex', alignItems:'center', gap:'0.4rem' }}>
-                      <span style={{ fontSize:'0.9rem' }}>🎯</span> FILTER ROOMS
-                    </div>
-                    <div style={{ display:'flex', gap:'0.45rem', flexWrap:'wrap' }}>
-                      {visibleRoomsForFilter.map(room => (
-                        <button
-                          key={room}
-                          onClick={() => {
-                            const updated = selectedRooms.includes(room)
-                              ? selectedRooms.filter(r => r !== room)
-                              : [...selectedRooms, room];
-                            setSelectedRooms(updated);
-                            try { localStorage.setItem("wd_selectedRooms", JSON.stringify(updated)); } catch {}
-                          }}
-                          style={{
-                            padding:'0.5rem 0.85rem',
-                            borderRadius:'8px',
-                            border:`2px solid ${CONFIG.ROOM_COLORS[room] || '#00ff88'}`,
-                            background:`${CONFIG.ROOM_COLORS[room] || '#00ff88'}22`,
-                            color: CONFIG.ROOM_COLORS[room] || '#00ff88',
-                            fontWeight:900,
-                            cursor:'pointer',
-                            fontSize:'0.75rem',
-                            textTransform:'uppercase',
-                            letterSpacing:'0.03em',
-                            transition:'all 0.15s ease',
-                            display:'flex',
-                            alignItems:'center',
-                            gap:'0.3rem',
-                            opacity: selectedRooms.includes(room) ? 1 : 0.7
-                          }}
-                        >
-                          <span style={{ fontSize:'0.95rem' }}>{selectedRooms.includes(room) ? '✓' : '☐'}</span>
-                          {room}
-                        </button>
-                      ))}
-                    </div>
-                    <div style={{ marginTop:'0.4rem', color:'#64748b', fontSize:'0.72rem' }}>
-                      Showing {selectedRooms.filter(r => visibleRoomsForFilter.includes(r)).length} of {visibleRoomsForFilter.length} rooms
-                    </div>
-                  </div>
-                );
-              })()}
-
+              {/* Room filter dropdown — NO warehouse-only rooms on board tab */}
               <div style={{ display:'flex', gap:'0.75rem', flexWrap:'wrap', alignItems:'center', marginBottom:'0.75rem' }}>
                 <div style={{ color:'#00ff88', fontWeight:900, fontSize:'0.8rem' }}>AUTO-UPDATING</div>
                 <div style={{ color:'#64748b', fontSize:'0.75rem' }}>Group:</div>
@@ -3348,6 +3297,59 @@
                   <option value="item">Item</option>
                   <option value="status">Status</option>
                 </select>
+
+                {/* Rooms Dropdown — Mobile-friendly with tap-able selections */}
+                {(() => {
+                  const customerRooms = CONFIG.ROOMS.filter(r => !CONFIG.WAREHOUSE_ONLY_ROOMS.includes(r));
+                  const allSelected = selectedRooms.length === customerRooms.length && customerRooms.every(r => selectedRooms.includes(r));
+                  const displayLabel = allSelected ? "All Rooms" : selectedRooms.length === 1 ? selectedRooms[0] : `${selectedRooms.length} rooms`;
+                  
+                  return (
+                    <div style={{ position: 'relative' }}>
+                      {/* Dropdown button showing current selection */}
+                      <button onClick={() => setRoomsDropdownOpen(!roomsDropdownOpen)}
+                        style={{ 
+                          background:'#1e293b', border:'1px solid #334155', color:'#e2e8f0', 
+                          padding:'0.45rem 0.6rem', borderRadius:'8px', cursor:'pointer', 
+                          fontFamily:'inherit', fontSize:'0.75rem', display:'flex', alignItems:'center', gap:'0.4rem' 
+                        }}>
+                        {displayLabel}
+                        <span style={{ fontSize:'0.6rem' }}>▼</span>
+                      </button>
+                      
+                      {/* Dropdown menu with room selections */}
+                      {roomsDropdownOpen && (
+                        <div style={{
+                          position: 'absolute', top: '100%', left: 0, marginTop: '0.4rem',
+                          background:'#1e293b', border:'1px solid #334155', borderRadius:'8px',
+                          zIndex: 100, minWidth: '180px', boxShadow: '0 4px 12px rgba(0,0,0,0.3)'
+                        }}>
+                          {customerRooms.map(room => (
+                            <label key={room} style={{
+                              display: 'flex', alignItems: 'center', gap: '0.5rem',
+                              padding: '0.6rem 0.8rem', cursor: 'pointer',
+                              background: selectedRooms.includes(room) ? 'rgba(0,255,136,0.1)' : 'transparent',
+                              borderBottom: '1px solid #334155',
+                              fontSize: '0.75rem', color: '#e2e8f0'
+                            }}>
+                              <input type="checkbox" checked={selectedRooms.includes(room)}
+                                onChange={() => {
+                                  const updated = selectedRooms.includes(room)
+                                    ? selectedRooms.filter(r => r !== room)
+                                    : [...selectedRooms, room];
+                                  setSelectedRooms(updated.length > 0 ? updated : customerRooms);
+                                  try { localStorage.setItem("wd_selectedRooms", JSON.stringify(updated.length > 0 ? updated : customerRooms)); } catch {}
+                                }}
+                                style={{ cursor: 'pointer' }}
+                              />
+                              {room}
+                            </label>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 <label style={{ display:'flex', alignItems:'center', gap:'0.4rem', color:'#8b9dc3', fontSize:'0.8rem' }}>
                   <input type="checkbox" checked={onlyActive} onChange={(e)=> setOnlyActive(e.target.checked)} />
