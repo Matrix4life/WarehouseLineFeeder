@@ -339,6 +339,21 @@
      * create policy "read all" on warehouse_chat for select using (true);
      * create policy "insert all" on warehouse_chat for insert with check (true);
      * -- Enable realtime for warehouse_chat in Database -> Replication
+     *
+     * -- DASHBOARD LAYOUT TABLE (for customizable dashboards) -----------------
+     * create table if not exists user_dashboard_layout (
+     *   id text primary key,
+     *   user_name text not null unique,
+     *   layout_config jsonb not null,
+     *   created_at timestamptz not null default now(),
+     *   updated_at timestamptz not null default now()
+     * );
+     * create index if not exists idx_udl_user on user_dashboard_layout(user_name);
+     * alter table user_dashboard_layout enable row level security;
+     * create policy "allow all read" on user_dashboard_layout for select using (true);
+     * create policy "allow all insert" on user_dashboard_layout for insert with check (true);
+     * create policy "allow all update" on user_dashboard_layout for update using (true);
+     * create policy "allow all delete" on user_dashboard_layout for delete using (true);
      * -------------------------------------------------------------------
      **********************************************************************/
 
@@ -1099,6 +1114,39 @@
             })
             .subscribe();
           return () => supabaseClient.removeChannel(ch);
+        },
+        // ── DASHBOARD LAYOUT ────────────────────────────────────────────────
+        async loadDashboardLayout(userName) {
+          if (!useSupabase) {
+            const KEY = "wd_dashboard_layout_" + userName;
+            const stored = localStorage.getItem(KEY);
+            return stored ? JSON.parse(stored) : null;
+          }
+          try {
+            const { data, error } = await supabaseClient.from("user_dashboard_layout")
+              .select("layout_config").eq("user_name", userName).single();
+            if (error && error.code !== "PGRST116") throw error; // PGRST116 = no rows found
+            return data ? data.layout_config : null;
+          } catch (e) {
+            console.error("loadDashboardLayout error:", e);
+            return null;
+          }
+        },
+        async saveDashboardLayout(userName, layout) {
+          if (!useSupabase) {
+            const KEY = "wd_dashboard_layout_" + userName;
+            localStorage.setItem(KEY, JSON.stringify(layout));
+            return true;
+          }
+          try {
+            const { error } = await supabaseClient.from("user_dashboard_layout")
+              .upsert({ user_name: userName, layout_config: layout, updated_at: new Date().toISOString() });
+            if (error) throw error;
+            return true;
+          } catch (e) {
+            console.error("saveDashboardLayout error:", e);
+            throw e;
+          }
         }
       };
       return adapter;
@@ -1224,21 +1272,21 @@
               _notifyAV("high_priority"); _showToast("\u{1F525}", "HIGH PRIORITY: " + lbl, "New request \u00b7 " + rm, "#ff4444", _onNotif);
               _sendPush({title:"🔥 HIGH PRIORITY: "+lbl, body:"New request · "+rm, type:"high_priority"});
             } else if (req.status === "completed") {
-              _notifyAV("completed"); _showToast("\u2705", lbl + " \u2014 Delivered", "Completed by " + (req.completedBy||"warehouse") + " \u00b7 " + rm, "#00ff88", _onNotif);
+              _notifyAV("completed"); _showToast("\u2705", lbl + " — Delivered", "Completed by " + (req.completedBy||"warehouse") + " \u00b7 " + rm, "#00ff88", _onNotif);
               _sendPush({title:"✅ Delivered: "+lbl, body:"Completed by "+(req.completedBy||"warehouse")+" · "+rm, type:"completed", targetUsers: req.submittedBy ? [req.submittedBy] : undefined});
             } else if (req.status === "cancelled") {
-              _notifyAV("cancelled"); _showToast("\u274c", lbl + " \u2014 Cancelled", "Cancelled \u00b7 " + rm + " \u00b7 by " + (req.cancelledBy||"warehouse"), "#ff4444", _onNotif);
+              _notifyAV("cancelled"); _showToast("\u274c", lbl + " — Cancelled", "Cancelled \u00b7 " + rm + " \u00b7 by " + (req.cancelledBy||"warehouse"), "#ff4444", _onNotif);
             }
 
           } else if (_wdUserRole === "room") {
             // Room profile: ONLY notified when their OWN submitted request is completed
             if (req.submittedBy !== _wdUser) return;
             if (req.status === "completed") {
-              _notifyAV("completed"); _showToast("\u2705", "Order Delivered! " + lbl, "Your order for " + rm + " is done \u2014 picked up by warehouse", "#00ff88", _onNotif);
+              _notifyAV("completed"); _showToast("\u2705", "Order Delivered! " + lbl, "Your order for " + rm + " is done — picked up by warehouse", "#00ff88", _onNotif);
               _sendPush({title:"✅ Order Delivered! "+lbl, body:"Your order for "+rm+" is done", type:"completed", targetUsers:[userName]});
             }
             if (req.status === "cancelled") {
-              _notifyAV("cancelled"); _showToast("\u274c", "Order Cancelled: " + lbl, rm + " \u2014 contact your supervisor", "#ff4444", _onNotif);
+              _notifyAV("cancelled"); _showToast("\u274c", "Order Cancelled: " + lbl, rm + " — contact your supervisor", "#ff4444", _onNotif);
               _sendPush({title:"❌ Order Cancelled: "+lbl, body:rm+" — contact your supervisor", type:"cancelled", targetUsers:[userName]});
             }
           }
@@ -1258,6 +1306,36 @@
         const n = Number(v);
         return isNaN(n) ? v : n;
       };
+      
+      // Update performance tiers from settings
+      useEffect(() => {
+        const excellent = settingsVal("perf_tier_excellent", 70);
+        const good = settingsVal("perf_tier_good", 50);
+        const fair = settingsVal("perf_tier_fair", 30);
+        
+        setPerformanceTiers({
+          excellent: { min: excellent, color: '#00ff88', label: 'Excellent' },
+          good: { min: good, color: '#38bdf8', label: 'Good' },
+          fair: { min: fair, color: '#fbbf24', label: 'Fair' },
+          poor: { min: 0, color: '#ff4444', label: 'Needs Improvement' }
+        });
+      }, [sysSettings]);
+
+      // Update performance weights from settings
+      useEffect(() => {
+        const itemsWeight = settingsVal("perf_weight_items", 50);
+        const roomWaitWeight = settingsVal("perf_weight_room_wait", 25);
+        const pickTimeWeight = settingsVal("perf_weight_pick_time", 25);
+        
+        // Normalize to 0-1 scale (settings are 0-100)
+        const total = itemsWeight + roomWaitWeight + pickTimeWeight || 100;
+        setPerformanceWeights({
+          items: itemsWeight / total,
+          roomWait: roomWaitWeight / total,
+          pickTime: pickTimeWeight / total
+        });
+      }, [sysSettings]);
+      
       const _updateSysSettings = (s) => {
         const json = JSON.stringify(s || {});
         if (json !== _prevSettingsJson.current) {
@@ -1322,7 +1400,12 @@
       const [selectedRooms, setSelectedRooms] = useState(() => {
         try {
           const saved = localStorage.getItem("wd_selectedRooms");
-          return saved ? JSON.parse(saved) : CONFIG.ROOMS;
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            // Ensure parsed value is a valid array
+            return Array.isArray(parsed) && parsed.length > 0 ? parsed : CONFIG.ROOMS;
+          }
+          return CONFIG.ROOMS;
         } catch {
           return CONFIG.ROOMS;
         }
@@ -1333,7 +1416,109 @@
       }, [selectedRooms]);
       const [timeFilter, setTimeFilter] = useState("today"); // for dashboard analytics
       const [roomsDropdownOpen, setRoomsDropdownOpen] = useState(false); // for board rooms dropdown
-      const [adminTimeFilter, setAdminTimeFilter] = useState("day"); // for admin panel
+      const [dashboardSettingsOpen, setDashboardSettingsOpen] = useState(false); // for dashboard customization
+      const [dashboardLayout, setDashboardLayout] = useState({
+        order: ["total_requests", "completed", "archive_age", "room_wait_time", "warehouse_pick_time", "work_progress", "sla_compliance", "requests_by_status", "top_rooms", "staff_performance", "room_analytics"],
+        visibility: {
+          total_requests: true,
+          completed: true,
+          archive_age: true,
+          room_wait_time: true,
+          warehouse_pick_time: true,
+          work_progress: true,
+          sla_compliance: true,
+          requests_by_status: true,
+          top_rooms: true,
+          staff_performance: true,
+          room_analytics: true
+        }
+      }); // dashboard widget visibility & order
+      const [draggedWidget, setDraggedWidget] = useState(null);
+      const [dragOverWidget, setDragOverWidget] = useState(null);
+
+      // Load dashboard layout from Supabase
+      const loadDashboardLayout = async () => {
+        try {
+          if (!adapterRef.current?.loadDashboardLayout) return;
+          const layout = await adapterRef.current.loadDashboardLayout(userName);
+          if (layout) {
+            // Handle both old format (just visibility) and new format (order + visibility)
+            if (layout.order && layout.visibility) {
+              setDashboardLayout(layout);
+            } else if (typeof layout === 'object' && !Array.isArray(layout)) {
+              // Old format - convert to new format
+              setDashboardLayout({
+                order: ["total_requests", "completed", "archive_age", "room_wait_time", "warehouse_pick_time", "work_progress", "sla_compliance", "requests_by_status", "top_rooms", "staff_performance", "room_analytics"],
+                visibility: layout
+              });
+            }
+          }
+        } catch (err) {
+          console.log("Dashboard layout not found, using defaults");
+        }
+      };
+
+      // Save dashboard layout to Supabase
+      const saveDashboardLayout = async (layout) => {
+        // Always update local state immediately for responsive UI
+        setDashboardLayout(layout);
+        try {
+          if (adapterRef.current?.saveDashboardLayout) {
+            await adapterRef.current.saveDashboardLayout(userName, layout);
+          }
+        } catch (err) {
+          console.error("Failed to save dashboard layout:", err);
+        }
+      };
+
+      // Drag and drop handlers for dashboard widgets
+      const handleWidgetDragStart = (widgetId) => {
+        setDraggedWidget(widgetId);
+      };
+
+      const handleWidgetDragOver = (widgetId, e) => {
+        e.preventDefault();
+        setDragOverWidget(widgetId);
+      };
+
+      const handleWidgetDrop = (targetWidgetId) => {
+        if (!draggedWidget || draggedWidget === targetWidgetId) {
+          setDraggedWidget(null);
+          setDragOverWidget(null);
+          return;
+        }
+        
+        // Swap positions in order array
+        const newOrder = [...(Array.isArray(dashboardLayout.order) ? dashboardLayout.order : [])];
+        const dragIndex = newOrder.indexOf(draggedWidget);
+        const dropIndex = newOrder.indexOf(targetWidgetId);
+        
+        if (dragIndex !== -1 && dropIndex !== -1) {
+          [newOrder[dragIndex], newOrder[dropIndex]] = [newOrder[dropIndex], newOrder[dragIndex]];
+          
+          const updated = {
+            ...dashboardLayout,
+            order: newOrder
+          };
+          
+          saveDashboardLayout(updated);
+        }
+        
+        setDraggedWidget(null);
+        setDragOverWidget(null);
+      };
+
+      const handleWidgetDragEnd = () => {
+        setDraggedWidget(null);
+        setDragOverWidget(null);
+      };
+
+      // Load dashboard layout when user logs in
+      useEffect(() => {
+        if (userName && userRole === "supervisor" || userRole === "admin" || userRole === "superuser") {
+          loadDashboardLayout();
+        }
+      }, [userName]);
       const [archivedRequests, setArchivedRequests] = useState([]);
       const [archiveReqTab, setArchiveReqTab] = useState("active"); // "active" | "archive" in admin request mgmt
       const [exportDateFrom, setExportDateFrom] = useState("");
@@ -1421,7 +1606,7 @@
       };
 
       // Active assignments (not expired)
-      const activeAssignments = assignments.filter(a => new Date(a.expiresAt) > new Date());
+      const activeAssignments = (Array.isArray(assignments) ? assignments : []).filter(a => new Date(a.expiresAt) > new Date());
 
       const dropdownRef = useRef(null);
 
@@ -1719,8 +1904,9 @@
       // Which users can this person message?
       // Defined BEFORE any early returns — required by React hooks rules.
       const chatableUsers = useMemo(() => {
-        if (!users || users.length === 0) return [];
-        const active = users.filter(u => !u.archivedAt); // never show archived users in chat
+        const safeUsers = Array.isArray(users) ? users : [];
+        if (safeUsers.length === 0) return [];
+        const active = safeUsers.filter(u => !u.archivedAt); // never show archived users in chat
         if (userRole === "room") {
           return active.filter(u => u.name !== userName && (u.role==="warehouse"||u.role==="supervisor"||u.role==="admin"));
         }
@@ -1734,11 +1920,12 @@
       // Derived: filtered + sorted list
       const visibleRequests = useMemo(() => {
         const q = search.trim().toLowerCase();
-        let rows = [...requests];
+        let rows = [...(Array.isArray(requests) ? requests : [])];
 
         if (onlyActive) rows = rows.filter(r => r.status !== "completed" && r.status !== "cancelled");
-        // Filter by selected rooms
-        rows = rows.filter(r => selectedRooms.includes(r.room));
+        // Filter by selected rooms (defensive: ensure selectedRooms is array)
+        const safeSelectedRooms = Array.isArray(selectedRooms) ? selectedRooms : CONFIG.ROOMS;
+        rows = rows.filter(r => safeSelectedRooms.includes(r.room));
         if (q) {
           rows = rows.filter(r =>
             (r.item||"").toLowerCase().includes(q) ||
@@ -1786,16 +1973,18 @@
 
       // Metrics
       const metrics = useMemo(() => {
-        const total = requests.length;
-        const pending = requests.filter(r => r.status === "pending").length;
-        const claimed = requests.filter(r => r.status === "claimed").length;
-        const inprog = requests.filter(r => r.status === "in_progress").length;
-        const cancelled = requests.filter(r => r.status === "cancelled").length;
+        const safeRequests = Array.isArray(requests) ? requests : [];
+        const safeArchived = Array.isArray(archivedRequests) ? archivedRequests : [];
+        const total = safeRequests.length;
+        const pending = safeRequests.filter(r => r.status === "pending").length;
+        const claimed = safeRequests.filter(r => r.status === "claimed").length;
+        const inprog = safeRequests.filter(r => r.status === "in_progress").length;
+        const cancelled = safeRequests.filter(r => r.status === "cancelled").length;
         // Done: count today's completions from BOTH active and archived requests
         // (completed requests get moved to archivedRequests so must include both)
         const todayStart = new Date();
         todayStart.setHours(0, 0, 0, 0);
-        const allReqs = [...requests, ...archivedRequests];
+        const allReqs = [...safeRequests, ...safeArchived];
         const completed = allReqs.filter(r =>
           r.status === "completed" &&
           r.completedAt &&
@@ -1837,12 +2026,21 @@
         // Find best in each category
         const maxItems = Math.max(...allStaffList.map(s => s.count || 0), 1);
         const minWait = Math.min(...allStaffList.map(s => s.avgRoomTime || Infinity), Infinity);
-        const minPick = Math.min(...allStaffList.map(s => s.avgPickTime || Infinity), Infinity);
+        
+        // PENALTY: Pick times under 3 minutes are considered rushed/incomplete
+        // Filter out picks under 3 minutes for comparison (treat as poor performance)
+        const validPickTimes = allStaffList.map(s => s.avgPickTime).filter(t => t !== null && t >= 3);
+        const minPick = validPickTimes.length > 0 ? Math.min(...validPickTimes) : 3;
 
         // Score this worker against best (0-100)
         const itemScore = (staffData.count / maxItems) * 100;
         const waitScore = staffData.avgRoomTime > 0 ? (minWait / staffData.avgRoomTime) * 100 : 0;
-        const pickScore = staffData.avgPickTime > 0 ? (minPick / staffData.avgPickTime) * 100 : 0;
+        
+        // PENALTY: If pick time is under 3 minutes, score is 0 (rushed/poor quality)
+        // If pick time >= 3 minutes, calculate normally
+        const pickScore = !staffData.avgPickTime || staffData.avgPickTime < 3 
+          ? 0  // Penalized for rushing or no data
+          : (minPick / staffData.avgPickTime) * 100;
 
         // Weighted average
         const finalScore = 
@@ -3301,8 +3499,9 @@
                 {/* Rooms Dropdown — Mobile-friendly with tap-able selections */}
                 {(() => {
                   const customerRooms = CONFIG.ROOMS.filter(r => !CONFIG.WAREHOUSE_ONLY_ROOMS.includes(r));
-                  const allSelected = selectedRooms.length === customerRooms.length && customerRooms.every(r => selectedRooms.includes(r));
-                  const displayLabel = allSelected ? "All Rooms" : selectedRooms.length === 1 ? selectedRooms[0] : `${selectedRooms.length} rooms`;
+                  const safeSelectedRooms = Array.isArray(selectedRooms) ? selectedRooms : customerRooms;
+                  const allSelected = safeSelectedRooms.length === customerRooms.length && customerRooms.every(r => safeSelectedRooms.includes(r));
+                  const displayLabel = allSelected ? "All Rooms" : safeSelectedRooms.length === 1 ? safeSelectedRooms[0] : `${safeSelectedRooms.length} rooms`;
                   
                   return (
                     <div style={{ position: 'relative' }}>
@@ -3328,15 +3527,15 @@
                             <label key={room} style={{
                               display: 'flex', alignItems: 'center', gap: '0.5rem',
                               padding: '0.6rem 0.8rem', cursor: 'pointer',
-                              background: selectedRooms.includes(room) ? 'rgba(0,255,136,0.1)' : 'transparent',
+                              background: safeSelectedRooms.includes(room) ? 'rgba(0,255,136,0.1)' : 'transparent',
                               borderBottom: '1px solid #334155',
                               fontSize: '0.75rem', color: '#e2e8f0'
                             }}>
-                              <input type="checkbox" checked={selectedRooms.includes(room)}
+                              <input type="checkbox" checked={safeSelectedRooms.includes(room)}
                                 onChange={() => {
-                                  const updated = selectedRooms.includes(room)
-                                    ? selectedRooms.filter(r => r !== room)
-                                    : [...selectedRooms, room];
+                                  const updated = safeSelectedRooms.includes(room)
+                                    ? safeSelectedRooms.filter(r => r !== room)
+                                    : [...safeSelectedRooms, room];
                                   setSelectedRooms(updated.length > 0 ? updated : customerRooms);
                                   try { localStorage.setItem("wd_selectedRooms", JSON.stringify(updated.length > 0 ? updated : customerRooms)); } catch {}
                                 }}
@@ -3525,27 +3724,262 @@
             if (pickMs > 0) { byStaff[staffName].pickTotal += pickMs / 60000; byStaff[staffName].pickCount++; }
           }
         });
-        const makeTopStaff = (shiftKey) => Object.entries(byStaff)
-          .filter(([, d]) => shiftKey === "all" || d.shift === shiftKey)
-          .map(([name, data]) => ({
-            name,
-            count:       data.count,
-            shift:       data.shift,
-            avgRoomTime: Math.round(data.roomTotal / data.count),
-            avgPickTime: data.pickCount > 0 ? Math.round(data.pickTotal / data.pickCount) : null,
-          }))
-          // Sort by pick time ASC — shortest pick time = best performer
-          // Workers with no pick time data go to the bottom
-          .sort((a,b) => {
-            if (a.avgPickTime === null && b.avgPickTime === null) return a.avgRoomTime - b.avgRoomTime;
-            if (a.avgPickTime === null) return 1;
-            if (b.avgPickTime === null) return -1;
-            return a.avgPickTime - b.avgPickTime;
-          })
-          .slice(0, 5);
+        const makeTopStaff = (shiftKey) => {
+          const staffList = Object.entries(byStaff)
+            .filter(([, d]) => shiftKey === "all" || d.shift === shiftKey)
+            .map(([name, data]) => ({
+              name,
+              count:       data.count,
+              shift:       data.shift,
+              avgRoomTime: Math.round(data.roomTotal / data.count),
+              avgPickTime: data.pickCount > 0 ? Math.round(data.pickTotal / data.pickCount) : null,
+            }));
+          
+          // Calculate performance score for each staff member and sort by it
+          return staffList
+            .map(staff => ({
+              ...staff,
+              performanceScore: calculatePerformanceScore(staff, staffList, performanceWeights)
+            }))
+            // Sort by performance score DESC — highest score = best performer
+            .sort((a, b) => b.performanceScore - a.performanceScore)
+            .slice(0, 5);
+        };
         const topStaff1st = makeTopStaff("1st");
         const topStaff2nd = makeTopStaff("2nd");
         const topStaff    = makeTopStaff("all"); // kept for backwards compat
+
+        // Room analytics for dashboard (must be defined before visibleWidgetsInOrder)
+        const dashRoomStats = (() => {
+          const byRoom = {};
+          filteredReqs.forEach(r => {
+            if (!byRoom[r.room]) byRoom[r.room] = { total:0, completed:0, pending:0, inProgress:0, cancelled:0, times:[] };
+            byRoom[r.room].total++;
+            if (r.status === "completed") {
+              byRoom[r.room].completed++;
+              if (r.submittedAt && r.completedAt)
+                byRoom[r.room].times.push((new Date(r.completedAt) - new Date(r.submittedAt)) / 60000);
+            }
+            if (r.status === "pending") byRoom[r.room].pending++;
+            if (r.status === "in_progress" || r.status === "claimed") byRoom[r.room].inProgress++;
+            if (r.status === "cancelled") byRoom[r.room].cancelled++;
+          });
+          return Object.entries(byRoom).map(([room, s]) => ({
+            room, ...s,
+            avgTime: s.times.length > 0 ? Math.round(s.times.reduce((a,b)=>a+b,0)/s.times.length) : 0
+          })).sort((a,b) => b.total - a.total);
+        })();
+        const maxDashRoomTotal = dashRoomStats.length > 0 ? dashRoomStats[0].total : 1;
+
+        // ── WIDGET ORDERING HELPER ─────────────────────────────────────────
+        // Get visible widgets in order
+        const visibleWidgetsInOrder = (Array.isArray(dashboardLayout.order) ? dashboardLayout.order : []).filter(id => {
+          if (id === 'total_requests') return dashboardLayout.visibility.total_requests;
+          if (id === 'completed') return dashboardLayout.visibility.completed;
+          if (id === 'room_wait_time') return dashboardLayout.visibility.room_wait_time;
+          if (id === 'warehouse_pick_time') return dashboardLayout.visibility.warehouse_pick_time;
+          if (id === 'work_progress') return dashboardLayout.visibility.work_progress;
+          if (id === 'sla_compliance') return dashboardLayout.visibility.sla_compliance;
+          if (id === 'requests_by_status') return dashboardLayout.visibility.requests_by_status;
+          if (id === 'top_rooms') return dashboardLayout.visibility.top_rooms;
+          if (id === 'staff_performance') return (topStaff1st.length > 0 || topStaff2nd.length > 0);
+          if (id === 'room_analytics') return dashRoomStats.length > 0;
+          return false;
+        });
+
+        // ── ORDERED WIDGETS RENDER FUNCTION ───────────────────────────────
+        const renderOrderedWidgets = () => {
+          return visibleWidgetsInOrder.map(widgetId => {
+            switch(widgetId) {
+              case 'total_requests':
+                return (
+                  <div key="total_requests" draggable onDragStart={() => handleWidgetDragStart('total_requests')}
+                    onDragOver={(e) => handleWidgetDragOver('total_requests', e)}
+                    onDrop={() => handleWidgetDrop('total_requests')}
+                    onDragEnd={handleWidgetDragEnd}
+                    style={{ background:'rgba(15,23,42,0.85)', border: dragOverWidget==='total_requests' ? '2px solid #a78bfa' : '1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem', cursor: draggedWidget==='total_requests'?'grabbing':'grab', opacity: draggedWidget==='total_requests'?0.7:1, transition:'all 0.2s' }}>
+                    <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>
+                      {draggedWidget==='total_requests'?'👆':'📊'} Total Requests
+                    </div>
+                    <div style={{ color:'#00ff88', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{total}</div>
+                  </div>
+                );
+              case 'completed':
+                return (
+                  <div key="completed" draggable onDragStart={() => handleWidgetDragStart('completed')}
+                    onDragOver={(e) => handleWidgetDragOver('completed', e)}
+                    onDrop={() => handleWidgetDrop('completed')}
+                    onDragEnd={handleWidgetDragEnd}
+                    style={{ background:'rgba(15,23,42,0.85)', border: dragOverWidget==='completed' ? '2px solid #a78bfa' : '1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem', cursor: draggedWidget==='completed'?'grabbing':'grab', opacity: draggedWidget==='completed'?0.7:1, transition:'all 0.2s' }}>
+                    <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>
+                      {draggedWidget==='completed'?'👆':'✅'} Completed
+                    </div>
+                    <div style={{ color:'#00ff88', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{completed}</div>
+                    <div style={{ color:'#64748b', fontSize:'0.8rem', marginTop:'0.3rem' }}>{completionRate}% completion rate</div>
+                  </div>
+                );
+              case 'room_wait_time':
+                return (
+                  <div key="room_wait_time" draggable onDragStart={() => handleWidgetDragStart('room_wait_time')}
+                    onDragOver={(e) => handleWidgetDragOver('room_wait_time', e)}
+                    onDrop={() => handleWidgetDrop('room_wait_time')}
+                    onDragEnd={handleWidgetDragEnd}
+                    style={{ background:'rgba(15,23,42,0.85)', border: dragOverWidget==='room_wait_time' ? '2px solid #a78bfa' : '1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem', cursor: draggedWidget==='room_wait_time'?'grabbing':'grab', opacity: draggedWidget==='room_wait_time'?0.7:1, transition:'all 0.2s' }}>
+                    <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>
+                      {draggedWidget==='room_wait_time'?'👆':'🏭'} Room Wait Time
+                    </div>
+                    <div style={{ color:'#00ff88', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{fmtMins(avgCompletionTime)}</div>
+                    <div style={{ color:'#64748b', fontSize:'0.72rem', marginTop:'0.25rem' }}>Submit → Delivered</div>
+                  </div>
+                );
+              case 'warehouse_pick_time':
+                return (
+                  <div key="warehouse_pick_time" draggable onDragStart={() => handleWidgetDragStart('warehouse_pick_time')}
+                    onDragOver={(e) => handleWidgetDragOver('warehouse_pick_time', e)}
+                    onDrop={() => handleWidgetDrop('warehouse_pick_time')}
+                    onDragEnd={handleWidgetDragEnd}
+                    style={{ background:'rgba(15,23,42,0.85)', border: dragOverWidget==='warehouse_pick_time' ? '2px solid #a78bfa' : '1px solid rgba(255,159,67,0.3)', borderRadius:'14px', padding:'1.5rem', cursor: draggedWidget==='warehouse_pick_time'?'grabbing':'grab', opacity: draggedWidget==='warehouse_pick_time'?0.7:1, transition:'all 0.2s' }}>
+                    <div style={{ color:'#ff9f43', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>
+                      {draggedWidget==='warehouse_pick_time'?'👆':'⚡'} Warehouse Pick Time
+                    </div>
+                    <div style={{ color: avgPickTime===0?'#64748b':avgPickTime<=PICK_SLA_WARN?'#00ff88':avgPickTime<=PICK_SLA_BAD?'#fbbf24':'#ff4444', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{avgPickTime > 0 ? fmtMins(avgPickTime) : '—'}</div>
+                    <div style={{ color:'#64748b', fontSize:'0.72rem', marginTop:'0.25rem' }}>Claim → Delivered · {pickReqs.length} picks</div>
+                  </div>
+                );
+              case 'work_progress':
+                return (
+                  <div key="work_progress" draggable onDragStart={() => handleWidgetDragStart('work_progress')}
+                    onDragOver={(e) => handleWidgetDragOver('work_progress', e)}
+                    onDrop={() => handleWidgetDrop('work_progress')}
+                    onDragEnd={handleWidgetDragEnd}
+                    style={{ background:'rgba(15,23,42,0.85)', border: dragOverWidget==='work_progress' ? '2px solid #a78bfa' : '1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem', cursor: draggedWidget==='work_progress'?'grabbing':'grab', opacity: draggedWidget==='work_progress'?0.7:1, transition:'all 0.2s' }}>
+                    <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>
+                      {draggedWidget==='work_progress'?'👆':'📈'} High Priority
+                    </div>
+                    <div style={{ color:'#ff4444', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{highPriority}</div>
+                  </div>
+                );
+              case 'sla_compliance':
+                return (
+                  <div key="sla_compliance" draggable onDragStart={() => handleWidgetDragStart('sla_compliance')}
+                    onDragOver={(e) => handleWidgetDragOver('sla_compliance', e)}
+                    onDrop={() => handleWidgetDrop('sla_compliance')}
+                    onDragEnd={handleWidgetDragEnd}
+                    style={{ background:'rgba(15,23,42,0.85)', border: dragOverWidget==='sla_compliance' ? '2px solid #a78bfa' : '1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem', cursor: draggedWidget==='sla_compliance'?'grabbing':'grab', opacity: draggedWidget==='sla_compliance'?0.7:1, transition:'all 0.2s' }}>
+                    <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>
+                      {draggedWidget==='sla_compliance'?'👆':'🎯'} SLA Compliance
+                    </div>
+                    <div style={{ color: slaRate >= 90 ? '#00ff88' : slaRate >= 75 ? '#fbbf24' : '#ff4444', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{slaRate}%</div>
+                    <div style={{ color:'#64748b', fontSize:'0.8rem', marginTop:'0.3rem' }}>{slaCompliant} of {completedReqs.length} under {SLA_WARN}min</div>
+                  </div>
+                );
+              case 'requests_by_status':
+                return (
+                  <div key="requests_by_status" draggable onDragStart={() => handleWidgetDragStart('requests_by_status')}
+                    onDragOver={(e) => handleWidgetDragOver('requests_by_status', e)}
+                    onDrop={() => handleWidgetDrop('requests_by_status')}
+                    onDragEnd={handleWidgetDragEnd}
+                    style={{ background:'rgba(15,23,42,0.85)', border: dragOverWidget==='requests_by_status' ? '2px solid #a78bfa' : '1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem', cursor: draggedWidget==='requests_by_status'?'grabbing':'grab', opacity: draggedWidget==='requests_by_status'?0.7:1, transition:'all 0.2s', gridColumn:'auto/span 1' }}>
+                    <div style={{ color:'#00ff88', fontWeight:900, fontSize:'1.1rem', marginBottom:'1.5rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>
+                      {draggedWidget==='requests_by_status'?'👆':'📊'} Requests by Status
+                    </div>
+                    {statusData.length === 0 ? (
+                      <div style={{ color:'#64748b', textAlign:'center', padding:'2rem' }}>No data</div>
+                    ) : (
+                      <div style={{ display:'flex', flexDirection:'column', gap:'1rem' }}>
+                        {statusData.map(stat => (
+                          <div key={stat.label}>
+                            <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'0.4rem' }}>
+                              <span style={{ color:'#e2e8f0', fontSize:'0.9rem' }}>{stat.label}</span>
+                              <span style={{ color:'#8b9dc3', fontSize:'0.9rem', fontWeight:900 }}>{stat.count}</span>
+                            </div>
+                            <div style={{ background:'#1e293b', height:'24px', borderRadius:'8px', overflow:'hidden' }}>
+                              <div style={{ background: stat.color, height:'100%', width:`${(stat.count / maxStatusCount) * 100}%`, transition:'width 0.3s ease', display:'flex', alignItems:'center', justifyContent:'flex-end', paddingRight:'0.5rem' }}>
+                                <span style={{ color:'#0a0e1a', fontSize:'0.75rem', fontWeight:900 }}>{Math.round((stat.count / total) * 100)}%</span>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              case 'top_rooms':
+                return (
+                  <div key="top_rooms" draggable onDragStart={() => handleWidgetDragStart('top_rooms')}
+                    onDragOver={(e) => handleWidgetDragOver('top_rooms', e)}
+                    onDrop={() => handleWidgetDrop('top_rooms')}
+                    onDragEnd={handleWidgetDragEnd}
+                    style={{ background:'rgba(15,23,42,0.85)', border: dragOverWidget==='top_rooms' ? '2px solid #a78bfa' : '1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem', cursor: draggedWidget==='top_rooms'?'grabbing':'grab', opacity: draggedWidget==='top_rooms'?0.7:1, transition:'all 0.2s', gridColumn:'auto/span 1' }}>
+                    <div style={{ color:'#00ff88', fontWeight:900, fontSize:'1.1rem', marginBottom:'1.5rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>
+                      {draggedWidget==='top_rooms'?'👆':'🏆'} Top Rooms
+                    </div>
+                    {topRooms.length === 0 ? (
+                      <div style={{ color:'#64748b', textAlign:'center', padding:'2rem' }}>No data</div>
+                    ) : (
+                      <div style={{ display:'flex', flexDirection:'column', gap:'1rem' }}>
+                        {topRooms.map(([room, count], idx) => {
+                          const roomColor = CONFIG.ROOM_COLORS[room] || '#00ff88';
+                          return (
+                            <div key={room}>
+                              <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'0.4rem' }}>
+                                <span style={{ color:'#e2e8f0', fontSize:'0.9rem' }}>
+                                  {idx === 0 && '🥇 '}{idx === 1 && '🥈 '}{idx === 2 && '🥉 '}
+                                  {room}
+                                </span>
+                                <span style={{ color:'#8b9dc3', fontSize:'0.9rem', fontWeight:900 }}>{count}</span>
+                              </div>
+                              <div style={{ background:'#1e293b', height:'24px', borderRadius:'8px', overflow:'hidden' }}>
+                                <div style={{ background: roomColor, height:'100%', width:`${(count / maxRoomCount) * 100}%`, transition:'width 0.3s ease' }} />
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              case 'staff_performance':
+                return (
+                  <div key="staff_performance" draggable onDragStart={() => handleWidgetDragStart('staff_performance')}
+                    onDragOver={(e) => handleWidgetDragOver('staff_performance', e)}
+                    onDrop={() => handleWidgetDrop('staff_performance')}
+                    onDragEnd={handleWidgetDragEnd}
+                    style={{ background:'rgba(15,23,42,0.85)', border: dragOverWidget==='staff_performance' ? '2px solid #a78bfa' : '1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem', cursor: draggedWidget==='staff_performance'?'grabbing':'grab', opacity: draggedWidget==='staff_performance'?0.7:1, transition:'all 0.2s', gridColumn:'auto/span 2' }}>
+                    <div style={{ display:'flex', alignItems:'baseline', gap:'1.5rem', marginBottom:'1.5rem', flexWrap:'wrap' }}>
+                      <div style={{ color:'#00ff88', fontWeight:900, fontSize:'1.1rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>
+                        {draggedWidget==='staff_performance'?'👆':'🏆'} Staff Performance
+                      </div>
+                      <div style={{ fontSize:'0.7rem', color:'#475569' }}>
+                        <span style={{ color:'#00ff88' }}>🏭 Room Wait</span> = submit → delivered · Top 5 per shift
+                      </div>
+                    </div>
+                    Staff cards would render here
+                  </div>
+                );
+              case 'room_analytics':
+                return (
+                  <div key="room_analytics" draggable onDragStart={() => handleWidgetDragStart('room_analytics')}
+                    onDragOver={(e) => handleWidgetDragOver('room_analytics', e)}
+                    onDrop={() => handleWidgetDrop('room_analytics')}
+                    onDragEnd={handleWidgetDragEnd}
+                    style={{ background:'rgba(15,23,42,0.85)', border: dragOverWidget==='room_analytics' ? '2px solid #a78bfa' : '1px solid rgba(56,189,248,0.2)', borderRadius:'14px', padding:'1.5rem', cursor: draggedWidget==='room_analytics'?'grabbing':'grab', opacity: draggedWidget==='room_analytics'?0.7:1, transition:'all 0.2s', gridColumn:'auto/span 2' }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'1.25rem', flexWrap:'wrap', gap:'0.75rem' }}>
+                      <div style={{ color:'#38bdf8', fontWeight:900, fontSize:'1.1rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>
+                        {draggedWidget==='room_analytics'?'👆':'📊'} Room Analytics
+                      </div>
+                      <div style={{ fontSize:'0.72rem', color:'#475569' }}>
+                        {dashRoomFilter !== "all" ? `Filtered: ${dashRoomFilter}` : `${dashRoomStats.length} rooms`}
+                      </div>
+                    </div>
+                    Room analytics table would render here
+                  </div>
+                );
+              default:
+                return null;
+            }
+          });
+        };
 
         // Overall warehouse average pick time (all staff, today)
         const pickReqs = completedReqs.filter(r => r.claimedAt &&
@@ -3555,27 +3989,7 @@
               s + (new Date(r.completedAt) - new Date(r.claimedAt)) / 60000, 0) / pickReqs.length)
           : 0;
 
-        // Room analytics for dashboard
-        const dashRoomStats = (() => {
-          const byRoom = {};
-          filteredReqs.forEach(r => {
-            if (!byRoom[r.room]) byRoom[r.room] = { total:0, completed:0, pending:0, inProgress:0, times:[] };
-            byRoom[r.room].total++;
-            if (r.status === "completed") {
-              byRoom[r.room].completed++;
-              if (r.submittedAt && r.completedAt)
-                byRoom[r.room].times.push((new Date(r.completedAt) - new Date(r.submittedAt)) / 60000);
-            }
-            if (r.status === "pending") byRoom[r.room].pending++;
-            if (r.status === "in_progress" || r.status === "claimed") byRoom[r.room].inProgress++;
-          });
-          return Object.entries(byRoom).map(([room, s]) => ({
-            room, ...s,
-            avgTime: s.times.length > 0 ? Math.round(s.times.reduce((a,b)=>a+b,0)/s.times.length) : 0
-          })).sort((a,b) => b.total - a.total);
-        })();
-        const maxDashRoomTotal = dashRoomStats.length > 0 ? dashRoomStats[0].total : 1;
-        
+
         // Requests by status for chart
         const statusData = [
           { label: "Completed", count: completed, color: "#00ff88" },
@@ -3584,6 +3998,102 @@
           { label: "Pending", count: pending, color: "#fbbf24" }
         ].filter(s => s.count > 0);
         const maxStatusCount = Math.max(...statusData.map(s => s.count), 1);
+
+        // Widget registry - maps widget IDs to their renderer functions
+        const renderWidget = (widgetId) => {
+          const commonDragProps = {
+            draggable: true,
+            onDragStart: () => handleWidgetDragStart(widgetId),
+            onDragOver: (e) => handleWidgetDragOver(widgetId, e),
+            onDrop: () => handleWidgetDrop(widgetId),
+            onDragEnd: handleWidgetDragEnd
+          };
+
+          const getDragStyle = () => ({
+            cursor: draggedWidget === widgetId ? 'grabbing' : 'grab',
+            opacity: draggedWidget === widgetId ? 0.7 : 1,
+            border: dragOverWidget === widgetId ? '2px solid #a78bfa' : undefined,
+            transition: 'all 0.2s'
+          });
+
+          // Widget: Total Requests
+          if (widgetId === 'total_requests' && dashboardLayout.visibility.total_requests) {
+            return (
+              <div key="total_requests" {...commonDragProps} style={{ background:'rgba(15,23,42,0.85)', border: dragOverWidget==='total_requests' ? '2px solid #a78bfa' : '1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem', cursor: draggedWidget==='total_requests'?'grabbing':'grab', opacity: draggedWidget==='total_requests'?0.7:1, transition:'all 0.2s' }}>
+                <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>
+                  {draggedWidget==='total_requests'?'👆':'📊'} Total Requests
+                </div>
+                <div style={{ color:'#00ff88', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{total}</div>
+              </div>
+            );
+          }
+
+          // Widget: Completed
+          if (widgetId === 'completed' && dashboardLayout.visibility.completed) {
+            return (
+              <div key="completed" {...commonDragProps} style={{ background:'rgba(15,23,42,0.85)', border: dragOverWidget==='completed' ? '2px solid #a78bfa' : '1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem', cursor: draggedWidget==='completed'?'grabbing':'grab', opacity: draggedWidget==='completed'?0.7:1, transition:'all 0.2s' }}>
+                <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>
+                  {draggedWidget==='completed'?'👆':'✅'} Completed
+                </div>
+                <div style={{ color:'#00ff88', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{completed}</div>
+                <div style={{ color:'#64748b', fontSize:'0.8rem', marginTop:'0.3rem' }}>{completionRate}% completion rate</div>
+              </div>
+            );
+          }
+
+          // Widget: Room Wait Time
+          if (widgetId === 'room_wait_time' && dashboardLayout.visibility.room_wait_time) {
+            return (
+              <div key="room_wait_time" {...commonDragProps} style={{ background:'rgba(15,23,42,0.85)', border: dragOverWidget==='room_wait_time' ? '2px solid #a78bfa' : '1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem', cursor: draggedWidget==='room_wait_time'?'grabbing':'grab', opacity: draggedWidget==='room_wait_time'?0.7:1, transition:'all 0.2s' }}>
+                <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>
+                  {draggedWidget==='room_wait_time'?'👆':'🏭'} Room Wait Time
+                </div>
+                <div style={{ color:'#00ff88', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{fmtMins(avgCompletionTime)}</div>
+                <div style={{ color:'#64748b', fontSize:'0.72rem', marginTop:'0.25rem' }}>Submit → Delivered</div>
+              </div>
+            );
+          }
+
+          // Widget: Warehouse Pick Time
+          if (widgetId === 'warehouse_pick_time' && dashboardLayout.visibility.warehouse_pick_time) {
+            return (
+              <div key="warehouse_pick_time" {...commonDragProps} style={{ background:'rgba(15,23,42,0.85)', border: dragOverWidget==='warehouse_pick_time' ? '2px solid #a78bfa' : '1px solid rgba(255,159,67,0.3)', borderRadius:'14px', padding:'1.5rem', cursor: draggedWidget==='warehouse_pick_time'?'grabbing':'grab', opacity: draggedWidget==='warehouse_pick_time'?0.7:1, transition:'all 0.2s' }}>
+                <div style={{ color:'#ff9f43', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>
+                  {draggedWidget==='warehouse_pick_time'?'👆':'⚡'} Warehouse Pick Time
+                </div>
+                <div style={{ color: avgPickTime===0?'#64748b':avgPickTime<=PICK_SLA_WARN?'#00ff88':avgPickTime<=PICK_SLA_BAD?'#fbbf24':'#ff4444', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{avgPickTime > 0 ? fmtMins(avgPickTime) : '—'}</div>
+                <div style={{ color:'#64748b', fontSize:'0.72rem', marginTop:'0.25rem' }}>Claim → Delivered · {pickReqs.length} picks</div>
+              </div>
+            );
+          }
+
+          // Widget: Work Progress (High Priority)
+          if (widgetId === 'work_progress' && dashboardLayout.visibility.work_progress) {
+            return (
+              <div key="work_progress" {...commonDragProps} style={{ background:'rgba(15,23,42,0.85)', border: dragOverWidget==='work_progress' ? '2px solid #a78bfa' : '1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem', cursor: draggedWidget==='work_progress'?'grabbing':'grab', opacity: draggedWidget==='work_progress'?0.7:1, transition:'all 0.2s' }}>
+                <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>
+                  {draggedWidget==='work_progress'?'👆':'📈'} High Priority
+                </div>
+                <div style={{ color:'#ff4444', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{highPriority}</div>
+              </div>
+            );
+          }
+
+          // Widget: SLA Compliance
+          if (widgetId === 'sla_compliance' && dashboardLayout.visibility.sla_compliance) {
+            return (
+              <div key="sla_compliance" {...commonDragProps} style={{ background:'rgba(15,23,42,0.85)', border: dragOverWidget==='sla_compliance' ? '2px solid #a78bfa' : '1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem', cursor: draggedWidget==='sla_compliance'?'grabbing':'grab', opacity: draggedWidget==='sla_compliance'?0.7:1, transition:'all 0.2s' }}>
+                <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>
+                  {draggedWidget==='sla_compliance'?'👆':'🎯'} SLA Compliance
+                </div>
+                <div style={{ color: slaRate >= 90 ? '#00ff88' : slaRate >= 75 ? '#fbbf24' : '#ff4444', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{slaRate}%</div>
+                <div style={{ color:'#64748b', fontSize:'0.8rem', marginTop:'0.3rem' }}>{slaCompliant} of {completedReqs.length} under {SLA_WARN}min</div>
+              </div>
+            );
+          }
+
+          return null;
+        };
 
         return (
           <div style={{ minHeight:'100vh', ...bg, padding:'1.5rem', position:'relative', overflow:'hidden' }}>
@@ -3610,36 +4120,45 @@
                       </button>
                     ))}
                   </div>
-                  {/* Export CSV button */}
-                  <button onClick={() => {
-                    const headers = ["ID","Item","Room","Qty","Priority","Submitted","Submitted By","Claimed By","Claimed At","Completed At","Completed By","Room Wait (min)","Pick Time (min)","Status","Comments"];
-                    const rows = filteredReqs.map(r => [
-                      r.id, r.item, r.room, r.qty + (r.adjQty?` adj:${r.adjQty}`:""),
-                      r.priority?"HIGH":"NORMAL",
-                      r.submittedAt ? new Date(r.submittedAt).toLocaleString() : "",
-                      r.submittedBy||"", r.claimedBy||"",
-                      r.claimedAt   ? new Date(r.claimedAt).toLocaleString()   : "",
-                      r.completedAt ? new Date(r.completedAt).toLocaleString() : "",
-                      r.completedBy||"",
-                      r.submittedAt && r.completedAt ? Math.round((new Date(r.completedAt)-new Date(r.submittedAt))/60000) : "",
-                      r.claimedAt   && r.completedAt ? Math.round((new Date(r.completedAt)-new Date(r.claimedAt))/60000)   : "",
-                      r.status, (r.comments||"").replace(/,/g,";")
-                    ]);
-                    const csv = [headers.join(","), ...rows.map(r => r.map(v => `"${String(v).replace(/"/g,"\"")}"`).join(","))].join("\n");
-                    const a = document.createElement("a");
-                    a.href = URL.createObjectURL(new Blob([csv],{type:"text/csv"}));
-                    const dateLabel = timeFilter==="custom" ? `${exportDateFrom||"start"}-to-${exportDateTo||"end"}` : timeFilter;
-                    const roomLabel = dashRoomFilter==="all" ? "all-rooms" : dashRoomFilter.replace(/\/| /g,"-");
-                    a.download = `dashboard-${dateLabel}-${roomLabel}-${new Date().toISOString().split("T")[0]}.csv`;
-                    a.click();
-                  }}
-                  disabled={filteredReqs.length === 0}
-                  style={{ padding:'0.5rem 1rem', borderRadius:'10px', fontWeight:900, fontSize:'0.78rem', cursor: filteredReqs.length>0?'pointer':'not-allowed',
-                    background: filteredReqs.length>0 ? 'linear-gradient(135deg,#00ff88,#00cc6f)' : '#1e293b',
-                    border:'none', color: filteredReqs.length>0 ? '#0a0e1a' : '#475569',
-                    display:'flex', alignItems:'center', gap:'0.4rem', whiteSpace:'nowrap' }}>
-                    📥 Export CSV {filteredReqs.length > 0 && `(${filteredReqs.length})`}
-                  </button>
+                  {/* Export CSV + Dashboard Settings buttons */}
+                  <div style={{ display:'flex', gap:'0.6rem', alignItems:'center' }}>
+                    <button onClick={() => setDashboardSettingsOpen(!dashboardSettingsOpen)}
+                      style={{ padding:'0.5rem 1rem', borderRadius:'10px', fontWeight:900, fontSize:'0.78rem', cursor:'pointer',
+                        background: 'linear-gradient(135deg,#a78bfa,#7c3aed)', 
+                        border:'none', color:'#fff',
+                        display:'flex', alignItems:'center', gap:'0.4rem', whiteSpace:'nowrap' }}>
+                      ⚙️ Dashboard Settings
+                    </button>
+                    <button onClick={() => {
+                      const headers = ["ID","Item","Room","Qty","Priority","Submitted","Submitted By","Claimed By","Claimed At","Completed At","Completed By","Room Wait (min)","Pick Time (min)","Status","Comments"];
+                      const rows = filteredReqs.map(r => [
+                        r.id, r.item, r.room, r.qty + (r.adjQty?` adj:${r.adjQty}`:""),
+                        r.priority?"HIGH":"NORMAL",
+                        r.submittedAt ? new Date(r.submittedAt).toLocaleString() : "",
+                        r.submittedBy||"", r.claimedBy||"",
+                        r.claimedAt   ? new Date(r.claimedAt).toLocaleString()   : "",
+                        r.completedAt ? new Date(r.completedAt).toLocaleString() : "",
+                        r.completedBy||"",
+                        r.submittedAt && r.completedAt ? Math.round((new Date(r.completedAt)-new Date(r.submittedAt))/60000) : "",
+                        r.claimedAt   && r.completedAt ? Math.round((new Date(r.completedAt)-new Date(r.claimedAt))/60000)   : "",
+                        r.status, (r.comments||"").replace(/,/g,";")
+                      ]);
+                      const csv = [headers.join(","), ...rows.map(r => r.map(v => `"${String(v).replace(/"/g,"\"")}"`).join(","))].join("\n");
+                      const a = document.createElement("a");
+                      a.href = URL.createObjectURL(new Blob([csv],{type:"text/csv"}));
+                      const dateLabel = timeFilter==="custom" ? `${exportDateFrom||"start"}-to-${exportDateTo||"end"}` : timeFilter;
+                      const roomLabel = dashRoomFilter==="all" ? "all-rooms" : dashRoomFilter.replace(/\/| /g,"-");
+                      a.download = `dashboard-${dateLabel}-${roomLabel}-${new Date().toISOString().split("T")[0]}.csv`;
+                      a.click();
+                    }}
+                    disabled={filteredReqs.length === 0}
+                    style={{ padding:'0.5rem 1rem', borderRadius:'10px', fontWeight:900, fontSize:'0.78rem', cursor: filteredReqs.length>0?'pointer':'not-allowed',
+                      background: filteredReqs.length>0 ? 'linear-gradient(135deg,#00ff88,#00cc6f)' : '#1e293b',
+                      border:'none', color: filteredReqs.length>0 ? '#0a0e1a' : '#475569',
+                      display:'flex', alignItems:'center', gap:'0.4rem', whiteSpace:'nowrap' }}>
+                      📥 Export CSV {filteredReqs.length > 0 && `(${filteredReqs.length})`}
+                    </button>
+                  </div>
                 </div>
 
                 {/* Custom date range row */}
@@ -3659,6 +4178,132 @@
                   </div>
                 )}
 
+                {/* Dashboard Settings Modal */}
+                {dashboardSettingsOpen && (() => {
+                  const WIDGET_LABELS = {
+                    total_requests: '📊 Total Requests',
+                    completed: '✅ Completed',
+                    archive_age: '🗂️ Archive Age',
+                    room_wait_time: '🏭 Room Wait Time',
+                    warehouse_pick_time: '⚡ Warehouse Pick Time',
+                    work_progress: '📈 Work Progress',
+                    sla_compliance: '🎯 SLA Compliance',
+                    requests_by_status: '📊 Requests by Status',
+                    top_rooms: '🏆 Top Rooms',
+                    staff_performance: '👥 Staff Performance',
+                    room_analytics: '📋 Room Analytics'
+                  };
+                  const safeOrder = Array.isArray(dashboardLayout.order) ? dashboardLayout.order : Object.keys(WIDGET_LABELS);
+                  // Ensure all widget keys are in the order array
+                  const allKeys = Object.keys(WIDGET_LABELS);
+                  const fullOrder = [...safeOrder, ...allKeys.filter(k => !safeOrder.includes(k))];
+
+                  return (
+                  <div style={{
+                    position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+                    background: 'rgba(0,0,0,0.7)', zIndex: 1000,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center'
+                  }}
+                  onClick={() => setDashboardSettingsOpen(false)}>
+                    <div style={{
+                      background: '#0a0e1a', border: '2px solid #a78bfa', borderRadius: '14px',
+                      padding: '2rem', maxWidth: '500px', width: '90%',
+                      boxShadow: '0 20px 60px rgba(0,0,0,0.5)'
+                    }}
+                    onClick={(e) => e.stopPropagation()}>
+                      <div style={{ color: '#a78bfa', fontSize: '1.2rem', fontWeight: 900, marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                        ⚙️ Dashboard Settings
+                      </div>
+                      
+                      <div style={{ color: '#64748b', fontSize: '0.8rem', marginBottom: '1rem' }}>
+                        Select which widgets to display on your dashboard:
+                      </div>
+                      
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '400px', overflowY: 'auto', paddingRight: '0.25rem' }}>
+                        {fullOrder.map((key) => {
+                          const label = WIDGET_LABELS[key];
+                          if (!label) return null;
+                          const isVisible = !!dashboardLayout.visibility?.[key];
+                          return (
+                            <div key={key}
+                              draggable
+                              onDragStart={(e) => { e.dataTransfer.setData("text/plain", key); e.currentTarget.style.opacity = '0.5'; }}
+                              onDragEnd={(e) => { e.currentTarget.style.opacity = '1'; }}
+                              onDragOver={(e) => { e.preventDefault(); e.currentTarget.style.borderColor = '#a78bfa'; }}
+                              onDragLeave={(e) => { e.currentTarget.style.borderColor = isVisible ? 'rgba(167,139,250,0.3)' : '#1e293b'; }}
+                              onDrop={(e) => {
+                                e.preventDefault();
+                                e.currentTarget.style.borderColor = isVisible ? 'rgba(167,139,250,0.3)' : '#1e293b';
+                                const draggedKey = e.dataTransfer.getData("text/plain");
+                                if (draggedKey === key) return;
+                                const currentOrder = [...fullOrder];
+                                const fromIdx = currentOrder.indexOf(draggedKey);
+                                const toIdx = currentOrder.indexOf(key);
+                                if (fromIdx === -1 || toIdx === -1) return;
+                                currentOrder.splice(fromIdx, 1);
+                                currentOrder.splice(toIdx, 0, draggedKey);
+                                saveDashboardLayout({ ...dashboardLayout, order: currentOrder });
+                              }}
+                              style={{
+                                display: 'flex', alignItems: 'center', gap: '0.6rem',
+                                padding: '0.7rem 0.8rem', cursor: 'grab',
+                                background: isVisible ? 'rgba(167,139,250,0.08)' : 'rgba(15,23,42,0.5)',
+                                border: `1.5px solid ${isVisible ? 'rgba(167,139,250,0.3)' : '#1e293b'}`,
+                                borderRadius: '10px',
+                                color: isVisible ? '#e2e8f0' : '#475569',
+                                fontSize: '0.85rem', fontWeight: 700,
+                                transition: 'all 0.15s',
+                                userSelect: 'none'
+                              }}>
+                              <span style={{ color: '#475569', fontSize: '0.7rem', cursor: 'grab', lineHeight: 1 }}>☰</span>
+                              <input type="checkbox" checked={isVisible}
+                                onChange={(e) => {
+                                  const updated = {
+                                    ...dashboardLayout,
+                                    visibility: { ...(dashboardLayout.visibility || {}), [key]: e.target.checked }
+                                  };
+                                  saveDashboardLayout(updated);
+                                }}
+                                onClick={(e) => e.stopPropagation()}
+                                style={{ cursor: 'pointer', width: '18px', height: '18px', flexShrink: 0, accentColor: '#a78bfa' }}
+                              />
+                              <span style={{ flex: 1 }}>{label}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      
+                      <div style={{ marginTop: '1.5rem', display: 'flex', gap: '0.6rem', justifyContent: 'flex-end', alignItems: 'center' }}>
+                        <button onClick={() => {
+                          // Reset to defaults
+                          const defaultLayout = {
+                            order: Object.keys(WIDGET_LABELS),
+                            visibility: Object.fromEntries(Object.keys(WIDGET_LABELS).map(k => [k, true]))
+                          };
+                          saveDashboardLayout(defaultLayout);
+                        }}
+                          style={{
+                            padding: '0.6rem 1rem', borderRadius: '8px', fontWeight: 900,
+                            background: 'transparent', border: '1px solid #334155', color: '#64748b',
+                            cursor: 'pointer', fontSize: '0.72rem', marginRight: 'auto'
+                          }}>
+                          Reset Defaults
+                        </button>
+                        <button onClick={() => setDashboardSettingsOpen(false)}
+                          style={{
+                            padding: '0.6rem 1.5rem', borderRadius: '8px', fontWeight: 900,
+                            background: 'linear-gradient(135deg, #a78bfa, #7c3aed)', border: 'none', color: '#fff',
+                            cursor: 'pointer', fontSize: '0.8rem',
+                            boxShadow: '0 4px 15px rgba(167,139,250,0.3)'
+                          }}>
+                          ✓ Done
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                  );
+                })()}
+
                 {/* Room filter */}
                 <div style={{ display:'flex', gap:'0.5rem', flexWrap:'wrap', alignItems:'center' }}>
                   <span style={{ color:'#475569', fontSize:'0.72rem', textTransform:'uppercase', letterSpacing:'0.08em', minWidth:'38px' }}>Room</span>
@@ -3675,227 +4320,228 @@
                 </div>
               </div>
 
-              {/* Stats Cards */}
+              {/* Stats Cards - always at top in their own grid */}
               <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(200px, 1fr))', gap:'1rem', marginBottom:'1.5rem' }}>
-                <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
-                  <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>Total Requests</div>
-                  <div style={{ color:'#00ff88', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{total}</div>
-                </div>
-                
-                <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
-                  <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>Completed</div>
-                  <div style={{ color:'#00ff88', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{completed}</div>
-                  <div style={{ color:'#64748b', fontSize:'0.8rem', marginTop:'0.3rem' }}>{completionRate}% completion rate</div>
-                </div>
-                
-                <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
-                  <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>Active Now</div>
-                  <div style={{ color:'#fbbf24', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{active}</div>
-                  <div style={{ color:'#64748b', fontSize:'0.8rem', marginTop:'0.3rem' }}>{pending} pending, {claimed + inProgress} in work</div>
-                </div>
-                
-                <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
-                  <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>🏭 Room Wait Time</div>
-                  <div style={{ color:'#00ff88', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{fmtMins(avgCompletionTime)}</div>
-                  <div style={{ color:'#64748b', fontSize:'0.72rem', marginTop:'0.25rem' }}>Submit → Delivered</div>
-                </div>
-
-                <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(255,159,67,0.3)', borderRadius:'14px', padding:'1.5rem' }}>
-                  <div style={{ color:'#ff9f43', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>⚡ Warehouse Pick Time</div>
-                  <div style={{ color: avgPickTime===0?'#64748b':avgPickTime<=PICK_SLA_WARN?'#00ff88':avgPickTime<=PICK_SLA_BAD?'#fbbf24':'#ff4444', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{avgPickTime > 0 ? fmtMins(avgPickTime) : '—'}</div>
-                  <div style={{ color:'#64748b', fontSize:'0.72rem', marginTop:'0.25rem' }}>Claim → Delivered · {pickReqs.length} picks</div>
-                </div>
-                
-                <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
-                  <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>High Priority</div>
-                  <div style={{ color:'#ff4444', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{highPriority}</div>
-                </div>
-                
-                <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
-                  <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>SLA Compliance</div>
-                  <div style={{ color: slaRate >= 90 ? '#00ff88' : slaRate >= 75 ? '#fbbf24' : '#ff4444', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{slaRate}%</div>
-                  <div style={{ color:'#64748b', fontSize:'0.8rem', marginTop:'0.3rem' }}>{slaCompliant} of {completedReqs.length} under {SLA_WARN}min</div>
-                </div>
+                {(Array.isArray(dashboardLayout.order) ? dashboardLayout.order : []).filter(id => ['total_requests', 'completed', 'room_wait_time', 'warehouse_pick_time', 'work_progress', 'sla_compliance'].includes(id) && dashboardLayout.visibility?.[id]).map(widgetId => renderWidget(widgetId))}
               </div>
 
-              {/* Charts Row */}
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(350px, 1fr))', gap:'1.5rem', marginBottom:'1.5rem' }}>
-                
-                {/* Requests by Status */}
-                <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
-                  <div style={{ color:'#00ff88', fontWeight:900, fontSize:'1.1rem', marginBottom:'1.5rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>Requests by Status</div>
-                  {statusData.length === 0 ? (
-                    <div style={{ color:'#64748b', textAlign:'center', padding:'2rem' }}>No data</div>
-                  ) : (
-                    <div style={{ display:'flex', flexDirection:'column', gap:'1rem' }}>
-                      {statusData.map(stat => (
-                        <div key={stat.label}>
-                          <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'0.4rem' }}>
-                            <span style={{ color:'#e2e8f0', fontSize:'0.9rem' }}>{stat.label}</span>
-                            <span style={{ color:'#8b9dc3', fontSize:'0.9rem', fontWeight:900 }}>{stat.count}</span>
-                          </div>
-                          <div style={{ background:'#1e293b', height:'24px', borderRadius:'8px', overflow:'hidden' }}>
-                            <div style={{ background: stat.color, height:'100%', width:`${(stat.count / maxStatusCount) * 100}%`, transition:'width 0.3s ease', display:'flex', alignItems:'center', justifyContent:'flex-end', paddingRight:'0.5rem' }}>
-                              <span style={{ color:'#0a0e1a', fontSize:'0.75rem', fontWeight:900 }}>{Math.round((stat.count / total) * 100)}%</span>
+              {/* Large widgets — rendered in user-chosen order, fully draggable between each other */}
+              {(() => {
+                const LARGE_WIDGETS = ['requests_by_status', 'top_rooms', 'staff_performance', 'room_analytics'];
+                const safeOrder = Array.isArray(dashboardLayout.order) ? dashboardLayout.order : LARGE_WIDGETS;
+                const orderedLarge = [...safeOrder.filter(id => LARGE_WIDGETS.includes(id)), ...LARGE_WIDGETS.filter(id => !safeOrder.includes(id))];
+
+                const makeDragProps = (widgetId) => ({
+                  draggable: true,
+                  onDragStart: (e) => { e.dataTransfer.setData("text/plain", widgetId); handleWidgetDragStart(widgetId); },
+                  onDragOver: (e) => { e.preventDefault(); handleWidgetDragOver(widgetId, e); },
+                  onDrop: (e) => {
+                    e.preventDefault();
+                    const fromId = e.dataTransfer.getData("text/plain");
+                    if (!fromId || fromId === widgetId) { setDraggedWidget(null); setDragOverWidget(null); return; }
+                    const currentOrder = Array.isArray(dashboardLayout.order) ? [...dashboardLayout.order] : [...safeOrder];
+                    const fromIdx = currentOrder.indexOf(fromId);
+                    const toIdx = currentOrder.indexOf(widgetId);
+                    if (fromIdx !== -1 && toIdx !== -1) {
+                      currentOrder.splice(fromIdx, 1);
+                      currentOrder.splice(toIdx, 0, fromId);
+                      saveDashboardLayout({ ...dashboardLayout, order: currentOrder });
+                    }
+                    setDraggedWidget(null); setDragOverWidget(null);
+                  },
+                  onDragEnd: () => { setDraggedWidget(null); setDragOverWidget(null); }
+                });
+
+                const widgetStyle = (widgetId, borderColor) => ({
+                  background:'rgba(15,23,42,0.85)',
+                  border: dragOverWidget===widgetId ? '2px solid #a78bfa' : `1px solid ${borderColor || 'rgba(0,255,136,0.2)'}`,
+                  borderRadius:'14px', padding:'1.5rem', marginBottom:'1.5rem',
+                  cursor: draggedWidget===widgetId ? 'grabbing' : 'grab',
+                  opacity: draggedWidget===widgetId ? 0.5 : 1,
+                  transition:'border 0.2s, opacity 0.2s'
+                });
+
+                return orderedLarge.map(widgetId => {
+
+                  // ── Requests by Status ──
+                  if (widgetId === 'requests_by_status' && dashboardLayout.visibility?.requests_by_status) {
+                    return (
+                      <div key="requests_by_status" {...makeDragProps('requests_by_status')} style={widgetStyle('requests_by_status')}>
+                        <div style={{ color:'#00ff88', fontWeight:900, fontSize:'1.1rem', marginBottom:'1.5rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>
+                          📊 Requests by Status
+                        </div>
+                        <div style={{ display:'flex', flexDirection:'column', gap:'0.6rem' }}>
+                          {statusData.map(s => (
+                            <div key={s.label} style={{ display:'flex', alignItems:'center', gap:'0.8rem' }}>
+                              <div style={{ width:'90px', color:'#8b9dc3', fontSize:'0.8rem', fontWeight:700 }}>{s.label}</div>
+                              <div style={{ flex:1, background:'#1e293b', height:'20px', borderRadius:'6px', overflow:'hidden', position:'relative' }}>
+                                <div style={{ height:'100%', background:`linear-gradient(90deg, ${s.color}, ${s.color}88)`, width:`${(s.count / maxStatusCount) * 100}%`, borderRadius:'6px', transition:'width 0.5s' }} />
+                              </div>
+                              <div style={{ width:'40px', textAlign:'right', fontWeight:900, color: s.color }}>{s.count}</div>
                             </div>
-                          </div>
+                          ))}
                         </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                      </div>
+                    );
+                  }
 
-                {/* Top Rooms */}
-                <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem' }}>
-                  <div style={{ color:'#00ff88', fontWeight:900, fontSize:'1.1rem', marginBottom:'1.5rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>Top Rooms</div>
-                  {topRooms.length === 0 ? (
-                    <div style={{ color:'#64748b', textAlign:'center', padding:'2rem' }}>No data</div>
-                  ) : (
-                    <div style={{ display:'flex', flexDirection:'column', gap:'1rem' }}>
-                      {topRooms.map(([room, count], idx) => {
-                        const roomColor = CONFIG.ROOM_COLORS[room] || '#00ff88';
-                        return (
-                        <div key={room}>
-                          <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'0.4rem' }}>
-                            <span style={{ color:'#e2e8f0', fontSize:'0.9rem' }}>
-                              {idx === 0 && '🥇 '}{idx === 1 && '🥈 '}{idx === 2 && '🥉 '}
-                              {room}
-                            </span>
-                            <span style={{ color:'#8b9dc3', fontSize:'0.9rem', fontWeight:900 }}>{count}</span>
-                          </div>
-                          <div style={{ background:'#1e293b', height:'24px', borderRadius:'8px', overflow:'hidden' }}>
-                            <div style={{ background: roomColor, height:'100%', width:`${(count / maxRoomCount) * 100}%`, transition:'width 0.3s ease' }} />
-                          </div>
+                  // ── Top Rooms ──
+                  if (widgetId === 'top_rooms' && dashboardLayout.visibility?.top_rooms) {
+                    return (
+                      <div key="top_rooms" {...makeDragProps('top_rooms')} style={widgetStyle('top_rooms')}>
+                        <div style={{ color:'#00ff88', fontWeight:900, fontSize:'1.1rem', marginBottom:'1.5rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>
+                          🏆 Top Rooms
                         </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              </div>
+                        {topRooms.length === 0 ? (
+                          <div style={{ color:'#475569', fontSize:'0.8rem', textAlign:'center', padding:'1rem' }}>No data yet</div>
+                        ) : (
+                          <div style={{ display:'flex', flexDirection:'column', gap:'0.6rem' }}>
+                            {topRooms.map(([room, count], i) => (
+                              <div key={room} style={{ display:'flex', alignItems:'center', gap:'0.8rem' }}>
+                                <div style={{ width:'16px', fontWeight:900, color:i===0?'#ffd700':i===1?'#c0c0c0':i===2?'#cd7f32':'#475569', fontSize:'0.8rem' }}>{i+1}</div>
+                                <div style={{ width:'100px', color:'#e2e8f0', fontSize:'0.85rem', fontWeight:700 }}>{room}</div>
+                                <div style={{ flex:1, background:'#1e293b', height:'20px', borderRadius:'6px', overflow:'hidden' }}>
+                                  <div style={{ height:'100%', background:`linear-gradient(90deg, ${CONFIG.ROOM_COLORS[room]||'#00ff88'}, ${CONFIG.ROOM_COLORS[room]||'#00ff88'}88)`, width:`${(count/maxRoomCount)*100}%`, borderRadius:'6px', transition:'width 0.5s' }} />
+                                </div>
+                                <div style={{ width:'40px', textAlign:'right', fontWeight:900, color:'#38bdf8' }}>{count}</div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  }
 
-              {/* Staff Performance — top 5 per shift */}
-              {(topStaff1st.length > 0 || topStaff2nd.length > 0) && (
-                <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem', marginBottom:'1.5rem' }}>
-                  <div style={{ display:'flex', alignItems:'baseline', gap:'1.5rem', marginBottom:'1.5rem', flexWrap:'wrap' }}>
-                    <div style={{ color:'#00ff88', fontWeight:900, fontSize:'1.1rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>🏆 Staff Performance</div>
-                    <div style={{ fontSize:'0.7rem', color:'#475569' }}>
-                      <span style={{ color:'#00ff88' }}>🏭 Room Wait</span> = submit → delivered &nbsp;|&nbsp;
-                      <span style={{ color:'#ff9f43' }}>⚡ Pick Time</span> = claim → done &nbsp;·&nbsp; Top 5 per shift
-                    </div>
-                  </div>
-                  {(() => {
+                  // ── Staff Performance ──
+                  if (widgetId === 'staff_performance' && dashboardLayout.visibility?.staff_performance && (topStaff1st.length > 0 || topStaff2nd.length > 0)) {
                     const StaffCard = ({staff, idx, shiftColor, allStaff}) => {
                       const score = calculatePerformanceScore(staff, allStaff, performanceWeights);
                       const scoreColor = getTierColor(score);
                       return (
-                      <div key={staff.name} style={{ background:`rgba(${shiftColor==="#00ff88"?"0,255,136":"167,139,250"},0.04)`, border:`1px solid rgba(${shiftColor==="#00ff88"?"0,255,136":"167,139,250"},0.15)`, borderRadius:'10px', padding:'1rem' }}>
-                        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'0.75rem' }}>
-                          <div style={{ display:'flex', alignItems:'center', gap:'0.75rem' }}>
-                            <span style={{ fontSize:'1.4rem' }}>{idx===0?'🥇':idx===1?'🥈':idx===2?'🥉':'👤'}</span>
-                            <div>
-                              <div style={{ color:'#e2e8f0', fontWeight:900, fontSize:'0.95rem' }}>{staff.name}</div>
-                              <div style={{ color:'#8b9dc3', fontSize:'0.75rem' }}>{staff.count} completed</div>
+                        <div key={staff.name} style={{ background:`rgba(${shiftColor==="#00ff88"?"0,255,136":"167,139,250"},0.04)`, border:`1px solid rgba(${shiftColor==="#00ff88"?"0,255,136":"167,139,250"},0.15)`, borderRadius:'10px', padding:'1rem' }}>
+                          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'0.75rem' }}>
+                            <div style={{ display:'flex', alignItems:'center', gap:'0.75rem' }}>
+                              <span style={{ fontSize:'1.4rem' }}>{idx===0?'🥇':idx===1?'🥈':idx===2?'🥉':'👤'}</span>
+                              <div>
+                                <div style={{ color:'#e2e8f0', fontWeight:900, fontSize:'0.95rem' }}>{staff.name}</div>
+                                <div style={{ color:'#8b9dc3', fontSize:'0.75rem' }}>{staff.count} completed</div>
+                              </div>
+                            </div>
+                            <div style={{ background: `${scoreColor}22`, border: `2px solid ${scoreColor}`, borderRadius:'8px', padding:'0.4rem 0.7rem', textAlign:'center' }}>
+                              <div style={{ color: scoreColor, fontWeight:900, fontSize:'1.1rem' }}>{score}%</div>
+                              <div style={{ color: scoreColor, fontSize:'0.6rem', textTransform:'uppercase', fontWeight:'bold', letterSpacing:'0.05em' }}>Performance</div>
                             </div>
                           </div>
-                          {/* Performance Score Badge */}
-                          <div style={{ background: `${scoreColor}22`, border: `2px solid ${scoreColor}`, borderRadius:'8px', padding:'0.4rem 0.7rem', textAlign:'center' }}>
-                            <div style={{ color: scoreColor, fontWeight:900, fontSize:'1.1rem' }}>{score}%</div>
-                            <div style={{ color: scoreColor, fontSize:'0.6rem', textTransform:'uppercase', fontWeight:'bold', letterSpacing:'0.05em' }}>Performance</div>
+                          <div style={{ display:'flex', gap:'1rem' }}>
+                            <div>
+                              <div style={{ color:'#64748b', fontSize:'0.68rem', marginBottom:'0.1rem' }}>🏭 Room Wait</div>
+                              <div style={{ color:'#00ff88', fontSize:'1.15rem', fontWeight:900 }}>{fmtMins(staff.avgRoomTime)}</div>
+                            </div>
+                            {staff.avgPickTime !== null && (
+                              <div style={{ borderLeft:'1px solid #1e293b', paddingLeft:'1rem' }}>
+                                <div style={{ color:'#64748b', fontSize:'0.68rem', marginBottom:'0.1rem' }}>⚡ Pick Time</div>
+                                <div style={{ color: staff.avgPickTime<=PICK_SLA_WARN?'#00ff88':staff.avgPickTime<=PICK_SLA_BAD?'#fbbf24':'#ff4444', fontSize:'1.15rem', fontWeight:900 }}>{fmtMins(staff.avgPickTime)}</div>
+                              </div>
+                            )}
                           </div>
                         </div>
-                        <div style={{ display:'flex', gap:'1rem' }}>
-                          <div>
-                            <div style={{ color:'#64748b', fontSize:'0.68rem', marginBottom:'0.1rem' }}>🏭 Room Wait</div>
-                            <div style={{ color:'#00ff88', fontSize:'1.15rem', fontWeight:900 }}>{fmtMins(staff.avgRoomTime)}</div>
+                      );
+                    };
+                    return (
+                      <div key="staff_performance" {...makeDragProps('staff_performance')} style={widgetStyle('staff_performance')}>
+                        <div style={{ display:'flex', alignItems:'baseline', gap:'1.5rem', marginBottom:'1.5rem', flexWrap:'wrap' }}>
+                          <div style={{ color:'#00ff88', fontWeight:900, fontSize:'1.1rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>
+                            🏆 Staff Performance
                           </div>
-                          {staff.avgPickTime !== null && (
-                            <div style={{ borderLeft:'1px solid #1e293b', paddingLeft:'1rem' }}>
-                              <div style={{ color:'#64748b', fontSize:'0.68rem', marginBottom:'0.1rem' }}>⚡ Pick Time</div>
-                              <div style={{ color: staff.avgPickTime<=PICK_SLA_WARN?'#00ff88':staff.avgPickTime<=PICK_SLA_BAD?'#fbbf24':'#ff4444', fontSize:'1.15rem', fontWeight:900 }}>{fmtMins(staff.avgPickTime)}</div>
+                          <div style={{ fontSize:'0.7rem', color:'#475569' }}>
+                            <span style={{ color:'#00ff88' }}>🏭 Room Wait</span> = submit → delivered &nbsp;|&nbsp;
+                            <span style={{ color:'#ff9f43' }}>⚡ Pick Time</span> = claim → done &nbsp;·&nbsp; Top 5 per shift
+                          </div>
+                        </div>
+                        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(320px,1fr))', gap:'1.5rem' }}>
+                          {topStaff1st.length > 0 && (
+                            <div>
+                              <div style={{ color:'#00ff88', fontWeight:900, fontSize:'0.82rem', textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:'0.75rem', paddingBottom:'0.4rem', borderBottom:'1px solid rgba(0,255,136,0.2)' }}>🟢 1st Shift</div>
+                              <div style={{ display:'flex', flexDirection:'column', gap:'0.6rem' }}>
+                                {topStaff1st.map((s,i) => <StaffCard key={s.name} staff={s} idx={i} shiftColor="#00ff88" allStaff={topStaff1st} />)}
+                              </div>
+                            </div>
+                          )}
+                          {topStaff2nd.length > 0 && (
+                            <div>
+                              <div style={{ color:'#a78bfa', fontWeight:900, fontSize:'0.82rem', textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:'0.75rem', paddingBottom:'0.4rem', borderBottom:'1px solid rgba(167,139,250,0.2)' }}>🟣 2nd Shift</div>
+                              <div style={{ display:'flex', flexDirection:'column', gap:'0.6rem' }}>
+                                {topStaff2nd.map((s,i) => <StaffCard key={s.name} staff={s} idx={i} shiftColor="#a78bfa" allStaff={topStaff2nd} />)}
+                              </div>
                             </div>
                           )}
                         </div>
                       </div>
                     );
-                    };
+                  }
+
+                  // ── Room Analytics ──
+                  if (widgetId === 'room_analytics' && dashboardLayout.visibility?.room_analytics && dashRoomStats.length > 0) {
                     return (
-                      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(320px,1fr))', gap:'1.5rem' }}>
-                        {topStaff1st.length > 0 && (
-                          <div>
-                            <div style={{ color:'#00ff88', fontWeight:900, fontSize:'0.82rem', textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:'0.75rem', paddingBottom:'0.4rem', borderBottom:'1px solid rgba(0,255,136,0.2)' }}>🟢 1st Shift</div>
-                            <div style={{ display:'flex', flexDirection:'column', gap:'0.6rem' }}>
-                              {topStaff1st.map((s,i) => <StaffCard key={s.name} staff={s} idx={i} shiftColor="#00ff88" allStaff={topStaff1st} />)}
-                            </div>
+                      <div key="room_analytics" {...makeDragProps('room_analytics')} style={widgetStyle('room_analytics', 'rgba(56,189,248,0.2)')}>
+                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'1.25rem', flexWrap:'wrap', gap:'0.75rem' }}>
+                          <div style={{ color:'#38bdf8', fontWeight:900, fontSize:'1.1rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>
+                            📊 Room Analytics
                           </div>
-                        )}
-                        {topStaff2nd.length > 0 && (
-                          <div>
-                            <div style={{ color:'#a78bfa', fontWeight:900, fontSize:'0.82rem', textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:'0.75rem', paddingBottom:'0.4rem', borderBottom:'1px solid rgba(167,139,250,0.2)' }}>🟣 2nd Shift</div>
-                            <div style={{ display:'flex', flexDirection:'column', gap:'0.6rem' }}>
-                              {topStaff2nd.map((s,i) => <StaffCard key={s.name} staff={s} idx={i} shiftColor="#a78bfa" allStaff={topStaff2nd} />)}
-                            </div>
+                          <div style={{ fontSize:'0.72rem', color:'#475569' }}>
+                            {dashRoomFilter !== "all" ? `Filtered: ${dashRoomFilter}` : `${dashRoomStats.length} rooms`}
                           </div>
-                        )}
+                        </div>
+                        <div style={{ overflowX:'auto' }}>
+                          <table style={{ width:'100%', borderCollapse:'collapse' }}>
+                            <thead>
+                              <tr style={{ background:'rgba(56,189,248,0.08)' }}>
+                                {["Room","Total","Done","Pending","Active","Cancelled","Avg Wait","Rate","Activity"].map(h => (
+                                  <th key={h} style={{ padding:'0.6rem 0.8rem', textAlign:'left', color:'#38bdf8', fontSize:'0.72rem', textTransform:'uppercase', letterSpacing:'0.05em', fontWeight:900, whiteSpace:'nowrap' }}>{h}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {dashRoomStats.map((room, idx) => {
+                                const rate = room.total > 0 ? Math.round((room.completed/room.total)*100) : 0;
+                                const tColor = room.avgTime <= SLA_WARN ? '#00ff88' : room.avgTime <= SLA_BAD ? '#fbbf24' : '#ff4444';
+                                const rColor = rate >= 80 ? '#00ff88' : rate >= 50 ? '#fbbf24' : '#ff4444';
+                                return (
+                                  <tr key={room.room} style={{ borderBottom: idx < dashRoomStats.length-1 ? '1px solid #1e293b' : 'none', background: idx%2===0 ? 'transparent' : 'rgba(56,189,248,0.02)', cursor:'pointer' }}
+                                    onClick={() => setDashRoomFilter(dashRoomFilter === room.room ? "all" : room.room)}>
+                                    <td style={{ padding:'0.65rem 0.8rem' }}>
+                                      <div style={{ fontWeight:900, display:'flex', alignItems:'center', gap:'0.4rem', color:'#e2e8f0' }}>
+                                        <div style={{ width:'8px', height:'8px', borderRadius:'50%', background: CONFIG.ROOM_COLORS[room.room]||'#38bdf8', flexShrink:0 }} />
+                                        {room.room}
+                                        {dashRoomFilter === room.room && <span style={{ color:'#38bdf8', fontSize:'0.65rem' }}>●</span>}
+                                      </div>
+                                    </td>
+                                    <td style={{ padding:'0.65rem 0.8rem' }}><div style={{ fontWeight:900, color:'#38bdf8', fontSize:'1.05rem' }}>{room.total}</div></td>
+                                    <td style={{ padding:'0.65rem 0.8rem' }}><div style={{ color:'#00ff88', fontWeight:700 }}>{room.completed}</div></td>
+                                    <td style={{ padding:'0.65rem 0.8rem' }}><div style={{ color:'#fbbf24', fontWeight:700 }}>{room.pending}</div></td>
+                                    <td style={{ padding:'0.65rem 0.8rem' }}><div style={{ color:'#a78bfa', fontWeight:700 }}>{room.inProgress}</div></td>
+                                    <td style={{ padding:'0.65rem 0.8rem' }}><div style={{ color:'#ff4444', fontWeight:700 }}>{room.cancelled}</div></td>
+                                    <td style={{ padding:'0.65rem 0.8rem' }}><div style={{ fontWeight:900, color:tColor }}>{room.avgTime > 0 ? fmtMins(room.avgTime) : '—'}</div></td>
+                                    <td style={{ padding:'0.65rem 0.8rem' }}><div style={{ fontWeight:900, color:rColor }}>{rate}%</div></td>
+                                    <td style={{ padding:'0.65rem 0.8rem' }}>
+                                      <div style={{ background:'#1e293b', height:'6px', borderRadius:'3px', overflow:'hidden', width:'80px' }}>
+                                        <div style={{ background:'linear-gradient(90deg,#38bdf8,#7dd3fc)', height:'100%', width:`${(room.total/maxDashRoomTotal)*100}%` }} />
+                                      </div>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                        <div style={{ marginTop:'0.6rem', fontSize:'0.65rem', color:'#334155' }}>Click a row to filter dashboard by that room</div>
                       </div>
                     );
-                  })()}
-                </div>
-              )}
+                  }
 
-              {/* Room Analytics */}
-              {dashRoomStats.length > 0 && (
-                <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(56,189,248,0.2)', borderRadius:'14px', padding:'1.5rem', marginBottom:'1.5rem' }}>
-                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'1.25rem', flexWrap:'wrap', gap:'0.75rem' }}>
-                    <div style={{ color:'#38bdf8', fontWeight:900, fontSize:'1.1rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>📊 Room Analytics</div>
-                    <div style={{ fontSize:'0.72rem', color:'#475569' }}>
-                      {dashRoomFilter !== "all" ? `Filtered: ${dashRoomFilter}` : `${dashRoomStats.length} rooms`}
-                    </div>
-                  </div>
-                  <div style={{ overflowX:'auto' }}>
-                    <table style={{ width:'100%', borderCollapse:'collapse' }}>
-                      <thead>
-                        <tr style={{ background:'rgba(56,189,248,0.08)' }}>
-                          {["Room","Total","Done","Pending","Active","Avg Wait","Rate","Activity"].map(h => (
-                            <th key={h} style={{ padding:'0.6rem 0.8rem', textAlign:'left', color:'#38bdf8', fontSize:'0.72rem', textTransform:'uppercase', letterSpacing:'0.05em', fontWeight:900, whiteSpace:'nowrap' }}>{h}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {dashRoomStats.map((room, idx) => {
-                          const rate = room.total > 0 ? Math.round((room.completed/room.total)*100) : 0;
-                          const tColor = room.avgTime <= SLA_WARN ? '#00ff88' : room.avgTime <= SLA_BAD ? '#fbbf24' : '#ff4444';
-                          const rColor = rate >= 80 ? '#00ff88' : rate >= 50 ? '#fbbf24' : '#ff4444';
-                          return (
-                            <tr key={room.room} style={{ borderBottom: idx < dashRoomStats.length-1 ? '1px solid #1e293b' : 'none', background: idx%2===0 ? 'transparent' : 'rgba(56,189,248,0.02)', cursor:'pointer' }}
-                              onClick={() => setDashRoomFilter(dashRoomFilter === room.room ? "all" : room.room)}>
-                              <td style={{ padding:'0.65rem 0.8rem' }}>
-                                <div style={{ fontWeight:900, display:'flex', alignItems:'center', gap:'0.4rem', color:'#e2e8f0' }}>
-                                  <div style={{ width:'8px', height:'8px', borderRadius:'50%', background: CONFIG.ROOM_COLORS[room.room]||'#38bdf8', flexShrink:0 }} />
-                                  {room.room}
-                                  {dashRoomFilter === room.room && <span style={{ color:'#38bdf8', fontSize:'0.65rem' }}>●</span>}
-                                </div>
-                              </td>
-                              <td style={{ padding:'0.65rem 0.8rem' }}><div style={{ fontWeight:900, color:'#38bdf8', fontSize:'1.05rem' }}>{room.total}</div></td>
-                              <td style={{ padding:'0.65rem 0.8rem' }}><div style={{ color:'#00ff88', fontWeight:700 }}>{room.completed}</div></td>
-                              <td style={{ padding:'0.65rem 0.8rem' }}><div style={{ color:'#fbbf24', fontWeight:700 }}>{room.pending}</div></td>
-                              <td style={{ padding:'0.65rem 0.8rem' }}><div style={{ color:'#a78bfa', fontWeight:700 }}>{room.inProgress}</div></td>
-                              <td style={{ padding:'0.65rem 0.8rem' }}><div style={{ fontWeight:900, color:tColor }}>{room.avgTime > 0 ? fmtMins(room.avgTime) : '—'}</div></td>
-                              <td style={{ padding:'0.65rem 0.8rem' }}><div style={{ fontWeight:900, color:rColor }}>{rate}%</div></td>
-                              <td style={{ padding:'0.65rem 0.8rem' }}>
-                                <div style={{ background:'#1e293b', height:'6px', borderRadius:'3px', overflow:'hidden', width:'80px' }}>
-                                  <div style={{ background:'linear-gradient(90deg,#38bdf8,#7dd3fc)', height:'100%', width:`${(room.total/maxDashRoomTotal)*100}%` }} />
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                  <div style={{ marginTop:'0.6rem', fontSize:'0.65rem', color:'#334155' }}>Click a row to filter dashboard by that room</div>
-                </div>
-              )}
+                  return null;
+                });
+              })()}
 
             </div>
             {_breakPanelJsx}
@@ -5567,11 +6213,14 @@ ${filteredArchive.map(r => `<tr>
       if (screen === "picklist") {
         // Room filter handlers
         const picklistRooms = CONFIG.ROOMS.filter(r => !CONFIG.WAREHOUSE_ONLY_ROOMS.includes(r));
+        // Defensive: ensure selectedRooms is always an array
+        const safeSelectedRooms = Array.isArray(selectedRooms) ? selectedRooms : picklistRooms;
 
         const toggleRoom = (room) => {
-          const updated = selectedRooms.includes(room)
-            ? selectedRooms.filter(r => r !== room)
-            : [...selectedRooms, room];
+          const safeSelectedRooms = Array.isArray(selectedRooms) ? selectedRooms : [];
+          const updated = safeSelectedRooms.includes(room)
+            ? safeSelectedRooms.filter(r => r !== room)
+            : [...safeSelectedRooms, room];
           setSelectedRooms(updated);
           localStorage.setItem("wd_selectedRooms", JSON.stringify(updated));
         };
@@ -5646,7 +6295,7 @@ ${filteredArchive.map(r => `<tr>
                 </div>
                 <div style={{ display:'flex', flexWrap:'wrap', gap:'0.6rem' }}>
                   {picklistRooms.map(room => {
-                    const isSelected = selectedRooms.includes(room);
+                    const isSelected = safeSelectedRooms.includes(room);
                     const roomColor = CONFIG.ROOM_COLORS[room] || '#00ff88';
                     return (
                       <div key={room} onClick={() => toggleRoom(room)}
@@ -5674,23 +6323,23 @@ ${filteredArchive.map(r => `<tr>
                   })}
                 </div>
                 <div style={{ marginTop:'0.6rem', color:'#64748b', fontSize:'0.72rem' }}>
-                  Showing {selectedRooms.filter(r => picklistRooms.includes(r)).length} of {picklistRooms.length} rooms
+                  Showing {safeSelectedRooms.filter(r => picklistRooms.includes(r)).length} of {picklistRooms.length} rooms
                 </div>
               </div>
 
-              {grouped.keys.filter(groupKey => selectedRooms.includes(groupKey)).length === 0 ? (
+              {grouped.keys.filter(groupKey => safeSelectedRooms.includes(groupKey)).length === 0 ? (
                 <div style={{ padding:'4rem 2rem', textAlign:'center', background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px' }}>
                   <Package size={64} color="#334155" />
                   <h3 style={{ color:'#64748b', margin:'1rem 0 0 0' }}>
-                    {selectedRooms.length === 0 ? 'No rooms selected' : 'No requests'}
+                    {safeSelectedRooms.length === 0 ? 'No rooms selected' : 'No requests'}
                   </h3>
-                  {selectedRooms.length === 0 && (
+                  {safeSelectedRooms.length === 0 && (
                     <p style={{ color:'#64748b', fontSize:'0.9rem', margin:'0.5rem 0 0 0' }}>Select rooms above to view requests</p>
                   )}
                 </div>
               ) : (
                 <div style={{ display:'flex', flexDirection:'column', gap:'1rem' }}>
-                  {grouped.keys.filter(groupKey => selectedRooms.includes(groupKey)).map(groupKey => {
+                  {grouped.keys.filter(groupKey => safeSelectedRooms.includes(groupKey)).map(groupKey => {
                     const roomColor = CONFIG.ROOM_COLORS[groupKey] || '#00ff88';
                     return (
                     <div key={groupKey} style={{ background:'rgba(15,23,42,0.85)', border:`1px solid ${roomColor}33`, borderRadius:'14px', overflow:'hidden' }}>
@@ -6002,7 +6651,8 @@ ${filteredArchive.map(r => `<tr>
     });
 
     // ── Auto-updating Service Worker ─────────────────────────────────────────
-    if ('serviceWorker' in navigator) {
+    // Only register Service Worker if NOT using file:// protocol (needs HTTP/HTTPS)
+    if ('serviceWorker' in navigator && window.location.protocol !== 'file:') {
       window.addEventListener('load', async () => {
         try {
           const reg = await navigator.serviceWorker.register('./sw.js');
