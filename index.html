@@ -691,6 +691,53 @@
     }
     // ──────────────────────────────────────────────────────────────────────
 
+    // ── Native OS notification helper ─────────────────────────────────────
+    // Fires an OS-level notification (phone lock screen / desktop popover).
+    // Uses the Service Worker registration when available — required on Android
+    // Chrome for reliable delivery, and enables vibration via notification options.
+    const _vibrateMap = {
+      new_request:  [100, 50, 100, 50, 100],
+      high_priority:[150, 80, 150, 80, 150, 80, 200],
+      completed:    [100, 50, 200],
+      cancelled:    [200, 100, 200],
+      chat:         [80, 40, 80],
+      break:        [120, 60, 120],
+    };
+    const _badgeIcon = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y="80" font-size="80">📦</text></svg>';
+
+    async function _showNativeNotif(title, body, type) {
+      if (!('Notification' in window)) return;
+      if (Notification.permission !== 'granted') return;
+      if (localStorage.getItem('wd_mute_av') === '1') return;
+
+      // Always attempt immediate vibration (works in foreground, ignored if no haptics)
+      _vibrate(_vibrateMap[type] || [100, 50, 100]);
+
+      const opts = {
+        body:    body || '',
+        icon:    _badgeIcon,
+        badge:   _badgeIcon,
+        vibrate: _vibrateMap[type] || [100, 50, 100],
+        tag:     type || 'warehouse',
+        renotify:true,
+        silent:  false,
+      };
+
+      try {
+        // Prefer SW registration — enables vibrate option + works when tab is backgrounded
+        const swReg = window._swReg || (navigator.serviceWorker && await navigator.serviceWorker.ready.catch(()=>null));
+        if (swReg && swReg.showNotification) {
+          await swReg.showNotification(title, opts);
+        } else {
+          new Notification(title, opts);
+        }
+      } catch(e) {
+        try { new Notification(title, { body, icon: _badgeIcon }); } catch(e2) {}
+      }
+    }
+    window._showNativeNotif = _showNativeNotif;
+    // ─────────────────────────────────────────────────────────────────────────
+
     // Data adapter (LocalStorage OR Supabase)
     function createAdapter({ onRemoteChange, onSettingsChange, onChatChange }) {
       const useSupabase = CONFIG.ENABLE_SUPABASE && CONFIG.SUPABASE_URL && CONFIG.SUPABASE_ANON_KEY && window.supabase;
@@ -1033,11 +1080,17 @@
             bc?.postMessage({ type:"chat_updated" });
             return;
           }
-          const { error } = await supabaseClient
+          // Delete all messages in this conversation
+          const { error, count } = await supabaseClient
             .from("warehouse_chat")
             .delete()
-            .eq("conversation_id", conversationId);
-          if (error) throw error;
+            .eq("conversation_id", conversationId)
+            .select();
+          if (error) {
+            console.error("Chat delete failed — check RLS policies on warehouse_chat:", error);
+            throw error;
+          }
+          console.log(`Deleted ${(count || 0)} messages from conversation: ${conversationId}`);
         },
         // ── BREAKS ────────────────────────────────────────────────────────
         async loadBreaks({ from, to } = {}) {
@@ -1263,6 +1316,7 @@
             if (req.status === "pending") {
               const pri = req.priority ? " \u{1F525} HIGH PRIORITY" : "";
               _notifyAV("new_request"); _showToast("\u{1F4E6}", "New Request: " + lbl, rm + pri, "#fbbf24", _onNotif);
+              _showNativeNotif("📦 New Request: " + lbl, rm + pri, "new_request");
               _sendPush({title:"📦 New Request: "+lbl, body:rm+pri, type:"new_request"});
             }
 
@@ -1270,12 +1324,15 @@
             // Supervisor/Admin: high priority new requests + all completions + all cancellations
             if (req.status === "pending" && req.priority) {
               _notifyAV("high_priority"); _showToast("\u{1F525}", "HIGH PRIORITY: " + lbl, "New request \u00b7 " + rm, "#ff4444", _onNotif);
+              _showNativeNotif("🔥 HIGH PRIORITY: " + lbl, "New request · " + rm, "high_priority");
               _sendPush({title:"🔥 HIGH PRIORITY: "+lbl, body:"New request · "+rm, type:"high_priority"});
             } else if (req.status === "completed") {
               _notifyAV("completed"); _showToast("\u2705", lbl + " — Delivered", "Completed by " + (req.completedBy||"warehouse") + " \u00b7 " + rm, "#00ff88", _onNotif);
+              _showNativeNotif("✅ " + lbl + " — Delivered", "Completed by " + (req.completedBy||"warehouse") + " · " + rm, "completed");
               _sendPush({title:"✅ Delivered: "+lbl, body:"Completed by "+(req.completedBy||"warehouse")+" · "+rm, type:"completed", targetUsers: req.submittedBy ? [req.submittedBy] : undefined});
             } else if (req.status === "cancelled") {
               _notifyAV("cancelled"); _showToast("\u274c", lbl + " — Cancelled", "Cancelled \u00b7 " + rm + " \u00b7 by " + (req.cancelledBy||"warehouse"), "#ff4444", _onNotif);
+              _showNativeNotif("❌ " + lbl + " — Cancelled", "Cancelled · " + rm + " · by " + (req.cancelledBy||"warehouse"), "cancelled");
             }
 
           } else if (_wdUserRole === "room") {
@@ -1283,10 +1340,12 @@
             if (req.submittedBy !== _wdUser) return;
             if (req.status === "completed") {
               _notifyAV("completed"); _showToast("\u2705", "Order Delivered! " + lbl, "Your order for " + rm + " is done — picked up by warehouse", "#00ff88", _onNotif);
+              _showNativeNotif("✅ Order Delivered! " + lbl, "Your order for " + rm + " is done", "completed");
               _sendPush({title:"✅ Order Delivered! "+lbl, body:"Your order for "+rm+" is done", type:"completed", targetUsers:[userName]});
             }
             if (req.status === "cancelled") {
               _notifyAV("cancelled"); _showToast("\u274c", "Order Cancelled: " + lbl, rm + " — contact your supervisor", "#ff4444", _onNotif);
+              _showNativeNotif("❌ Order Cancelled: " + lbl, rm + " — contact your supervisor", "cancelled");
               _sendPush({title:"❌ Order Cancelled: "+lbl, body:rm+" — contact your supervisor", type:"cancelled", targetUsers:[userName]});
             }
           }
@@ -1674,7 +1733,11 @@
       useEffect(() => {
         (async ()=>{
           try {
-            setNotificationsEnabled(await requestNotifyPermission());
+            const granted = await requestNotifyPermission();
+            // Restore push enabled state from saved preference
+            const savedPush = localStorage.getItem("wd_push_enabled") === "1";
+            setNotificationsEnabled(granted && savedPush);
+            if (granted && savedPush) setPushEnabled(true);
             const adapter = createAdapter({
               onRemoteChange: loadAll,
               onSettingsChange: async () => {
@@ -1726,6 +1789,7 @@
                 if (msg.recipientName === me) {
                   setChatUnreadFrom(prev => ({ ...prev, [msg.senderName]: (prev[msg.senderName]||0) + 1 }));
                   _notifyAV("chat");
+                  _showNativeNotif("💬 " + msg.senderName, msg.message?.slice(0, 80) || "New message", "chat");
                   _sendPush({title:"💬 "+msg.senderName, body:msg.message?.slice(0,80)||"New message", type:"chat", targetUsers:[msg.recipientName]});
                 }
               });
@@ -1764,20 +1828,26 @@
         if (is404) { setChatTableReady(false); chatTableReadyRef.current = false; }
       };
 
-      const deleteChatConv = async (contactName) => {
-        const cid = convId(userName, contactName);
+      const deleteChatConv = async (contactName, monitorConvId) => {
+        // Use monitorConvId if admin is deleting a monitored conversation between other users
+        const cid = monitorConvId || (contactName ? convId(userName, contactName) : null);
+        if (!cid) return;
         try {
           await adapterRef.current.deleteChatConversation(cid);
-          // Persist deletion timestamp — prevents conversation reappearing on next poll
+          // Persist deletion timestamp — fallback guard against stale realtime data
           const deleted = JSON.parse(localStorage.getItem("wd_deleted_convs") || "{}");
           deleted[cid] = new Date().toISOString();
           localStorage.setItem("wd_deleted_convs", JSON.stringify(deleted));
           setChatConvList(prev => prev.filter(cv => cv.conversationId !== cid));
-          setChatUnreadFrom(prev => { const n={...prev}; delete n[contactName]; return n; });
-          if (chatContact?.name === contactName) {
+          if (contactName) setChatUnreadFrom(prev => { const n={...prev}; delete n[contactName]; return n; });
+          if ((contactName && chatContact?.name === contactName) || monitorConvId) {
             setChatContact(null); setChatView("list"); setChatMessages([]);
           }
-        } catch(err) { console.error("Delete chat failed:", err); }
+          _showToast("🗑️", "Chat deleted", `Conversation ${monitorConvId ? cid.replace("::"," ↔ ") : 'with ' + contactName} removed`, "#64748b", _onNotif);
+        } catch(err) {
+          console.error("Delete chat failed:", err);
+          _showToast("❌", "Delete failed", "Check console — may need RLS policy for warehouse_chat DELETE", "#ff4444", _onNotif);
+        }
       };
 
       const loadChatMessages = async (contact) => {
@@ -1891,13 +1961,32 @@
       };
 
       const togglePush = async () => {
-        if (!CONFIG.ENABLE_SUPABASE || !CONFIG.SUPABASE_URL) return;
         if (pushEnabled) {
-          await _unsubscribePush(userName, CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
-          localStorage.setItem("wd_push_enabled","0"); setPushEnabled(false);
+          // Turn off: unsubscribe from web push (Supabase) and clear local flag
+          if (CONFIG.ENABLE_SUPABASE && CONFIG.SUPABASE_URL) {
+            await _unsubscribePush(userName, CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
+          }
+          localStorage.setItem("wd_push_enabled","0");
+          setPushEnabled(false);
+          setNotificationsEnabled(false);
         } else {
-          const ok = await _subscribePush(userName, CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
-          if (ok) { localStorage.setItem("wd_push_enabled","1"); setPushEnabled(true); }
+          // Turn on: request OS permission first (works with or without Supabase)
+          const granted = await requestNotifyPermission();
+          if (!granted) {
+            alert("Notifications blocked by browser. Please enable them in your browser/phone settings, then try again.");
+            return;
+          }
+          setNotificationsEnabled(true);
+          localStorage.setItem("wd_push_enabled","1");
+          setPushEnabled(true);
+          // Also subscribe to web push if Supabase is configured
+          if (CONFIG.ENABLE_SUPABASE && CONFIG.SUPABASE_URL) {
+            await _subscribePush(userName, CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
+          }
+          // Fire a test native notification so the user sees it working immediately
+          setTimeout(() => {
+            _showNativeNotif("🔔 Notifications enabled", "You'll now receive alerts for new requests, deliveries & chat.", "new_request");
+          }, 500);
         }
       };
 
@@ -2087,6 +2176,7 @@
                   // New break started
                   if (b.workerName !== _wdUser) { // don't toast your own
                     _notifyAV("break"); _showToast("🍵", `${b.workerName} on break`, "Back in 15 mins", "#ff9f43", _onNotif);
+                    _showNativeNotif(`🍵 ${b.workerName} on break`, "Back in 15 mins", "break");
                   }
                 }
               });
@@ -2096,7 +2186,9 @@
                   const ended = data.find(b => b.id === p.id);
                   if (ended && ended.workerName !== _wdUser) {
                     const d = ended.durationMins || "?";
-                    _showToast("✅", `${ended.workerName} back`, `Break: ${d}m${ended.wasOverdue?" ⚠️ OVERDUE":""}`, ended.wasOverdue?"#ff4444":"#00ff88", _onNotif);
+                    const overdue = ended.wasOverdue ? " ⚠️ OVERDUE" : "";
+                    _showToast("✅", `${ended.workerName} back`, `Break: ${d}m${overdue}`, ended.wasOverdue?"#ff4444":"#00ff88", _onNotif);
+                    _showNativeNotif(`✅ ${ended.workerName} back from break`, `${d}m${overdue}`, ended.wasOverdue?"cancelled":"completed");
                   }
                 }
               });
@@ -2335,9 +2427,43 @@
             r.completedAt = nowIso();
             r.completedBy = userName;
             r.lastUpdatedAt = nowIso();
-            completedRow = r;
+            completedRow = { ...r };
             return r;
           });
+
+          // ── PARTIAL PICK: auto-create balance request ──────────────────
+          // If adjQty was set AND is less than original qty, there's a remaining balance
+          if (completedRow && completedRow.adjQty > 0 && completedRow.adjQty < completedRow.qty) {
+            const balanceQty = completedRow.qty - completedRow.adjQty;
+            const parentNote = `🔄 Balance: ${balanceQty} remaining (from #${completedRow.id})`;
+            const existingComments = (completedRow.comments || "").replace(/🔄 Balance:.*?(?:\n|$)/g, "").trim();
+            const balanceReq = {
+              id: Date.now() + Math.floor(Math.random() * 1000),
+              item: completedRow.item,
+              room: completedRow.room,
+              qty: balanceQty,
+              adjQty: 0,
+              priority: completedRow.priority, // inherit priority
+              comments: existingComments ? `${parentNote}\n${existingComments}` : parentNote,
+              status: "pending",
+              submittedAt: nowIso(),
+              submittedBy: completedRow.submittedBy || userName,
+              submittedByRole: completedRow.submittedByRole || "warehouse",
+              claimedBy: null,
+              claimedAt: null,
+              startedAt: null,
+              completedAt: null,
+              completedBy: null,
+              cancelledAt: null,
+              cancelledBy: null,
+              version: 1,
+              lastUpdatedAt: nowIso()
+            };
+            await adapterRef.current.upsert(balanceReq);
+            _notifyAV("new_request");
+            _showToast("🔄", `Balance created: ${balanceQty} × ${completedRow.item}`, `${completedRow.room} — from partial pick`, "#fbbf24", _onNotif);
+          }
+
           await loadAll();
           if (completedRow) showNotification("✅ Completed", `${completedRow.item} delivered to ${completedRow.room} by ${userName}`);
         } catch (error) {
@@ -2857,6 +2983,16 @@
                       <div style={{color:"#64748b",fontSize:"0.65rem",marginTop:"0.1rem",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{conv.message}</div>
                     </div>
                     <div style={{color:"#475569",fontSize:"0.6rem",flexShrink:0}}>{_fmtTime(conv.sentAt)}</div>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if(window.confirm(`Delete conversation "${label}"? All messages will be permanently removed.`))
+                          deleteChatConv(null, conv.conversationId);
+                      }}
+                      title="Delete conversation"
+                      style={{flexShrink:0,background:"rgba(255,68,68,0.1)",border:"1px solid rgba(255,68,68,0.3)",borderRadius:"8px",color:"#ff4444",padding:"0.2rem 0.4rem",cursor:"pointer",fontWeight:900,fontSize:"0.7rem",marginLeft:"0.3rem"}}>
+                      🗑
+                    </button>
                   </div>
                 );
               })}
@@ -2988,10 +3124,17 @@
                     {chatContact._monitorLabel ? "👁 monitoring" : chatContact.role}
                   </div>
                 </div>
-                {!chatContact._monitorLabel && (
+                {!chatContact._monitorLabel ? (
                   <button
                     onClick={() => { if(window.confirm(`Delete chat with ${chatContact.name}? This cannot be undone.`)) deleteChatConv(chatContact.name); }}
                     title="Delete conversation"
+                    style={{flexShrink:0,background:"rgba(255,68,68,0.1)",border:"1px solid rgba(255,68,68,0.3)",borderRadius:"8px",color:"#ff4444",padding:"0.25rem 0.55rem",cursor:"pointer",fontWeight:900,fontSize:"0.8rem"}}>
+                    🗑
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => { if(window.confirm(`Delete this monitored conversation? All messages will be permanently removed.`)) deleteChatConv(chatContact.name, chatContact._monitorConvId); }}
+                    title="Delete monitored conversation"
                     style={{flexShrink:0,background:"rgba(255,68,68,0.1)",border:"1px solid rgba(255,68,68,0.3)",borderRadius:"8px",color:"#ff4444",padding:"0.25rem 0.55rem",cursor:"pointer",fontWeight:900,fontSize:"0.8rem"}}>
                     🗑
                   </button>
@@ -3599,6 +3742,7 @@
                                   {req.qty}× {req.item}
                                 </div>
                                 {req.priority && <span style={{ marginLeft:'auto', padding:'0.2rem 0.5rem', background:'#ff4444', borderRadius:'8px', color:'#fff', fontWeight:900, fontSize:'0.72rem' }}>HIGH</span>}
+                                {(req.comments || "").includes("🔄 Balance:") && <span style={{ marginLeft: req.priority ? '0.3rem' : 'auto', padding:'0.15rem 0.4rem', background:'rgba(251,191,36,0.2)', border:'1px solid #fbbf24', borderRadius:'8px', color:'#fbbf24', fontWeight:900, fontSize:'0.65rem' }}>🔄 BAL</span>}
                               </div>
                               <div style={{ display:'flex', gap:'0.5rem', alignItems:'center', marginTop:'0.4rem', flexWrap:'wrap' }}>
                                 <span style={{ padding:'0.2rem 0.5rem', borderRadius:'8px', background: statusColor, color: req.status==="pending" ? "#0a0e1a" : "#0a0e1a", fontWeight:900, fontSize:'0.72rem', textTransform:'uppercase' }}>
@@ -6381,6 +6525,9 @@ ${filteredArchive.map(r => `<tr>
                                     {req.priority && (
                                       <span style={{ padding:'0.15rem 0.45rem', background:'#ff4444', borderRadius:'8px', color:'#fff', fontWeight:900, fontSize:'0.68rem', flexShrink:0 }}>HIGH</span>
                                     )}
+                                    {(req.comments || "").includes("🔄 Balance:") && (
+                                      <span style={{ padding:'0.15rem 0.45rem', background:'rgba(251,191,36,0.2)', border:'1px solid #fbbf24', borderRadius:'8px', color:'#fbbf24', fontWeight:900, fontSize:'0.65rem', flexShrink:0 }}>🔄 BALANCE</span>
+                                    )}
                                     <span style={{ padding:'0.2rem 0.5rem', borderRadius:'8px', background:statusColor, color:'#0a0e1a', fontWeight:900, fontSize:'0.68rem', textTransform:'uppercase', flexShrink:0 }}>
                                       {req.status.replace("_"," ")}
                                     </span>
@@ -6650,12 +6797,106 @@ ${filteredArchive.map(r => `<tr>
       window.dispatchEvent(new CustomEvent('wd-install-done'));
     });
 
+    // ── Inline Service Worker (blob URL — no external sw.js file needed) ────
+    // Handles: push events, notification clicks, offline cache, vibration
+    const _SW_CODE = `
+const CACHE = 'wlf-v1';
+const SHELL = ['/'];
+
+self.addEventListener('install', e => {
+  e.waitUntil(
+    caches.open(CACHE).then(c => c.addAll(SHELL).catch(()=>{})).then(() => self.skipWaiting())
+  );
+});
+
+self.addEventListener('activate', e => {
+  e.waitUntil(
+    caches.keys().then(keys =>
+      Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))
+    ).then(() => self.clients.claim())
+  );
+});
+
+self.addEventListener('fetch', e => {
+  // Cache-first for same-origin navigations; network-first for API calls
+  if (e.request.method !== 'GET') return;
+  if (e.request.url.includes('supabase') || e.request.url.includes('api.anthropic')) return;
+  e.respondWith(
+    caches.match(e.request).then(cached => cached || fetch(e.request).then(res => {
+      if (res && res.status === 200 && res.type === 'basic') {
+        const clone = res.clone();
+        caches.open(CACHE).then(c => c.put(e.request, clone));
+      }
+      return res;
+    }).catch(() => cached || new Response('Offline', {status: 503})))
+  );
+});
+
+// ── Push notification handler ──────────────────────────────────────────────
+self.addEventListener('push', e => {
+  let data = { title: '📦 Warehouse Update', body: '', type: 'default' };
+  try { data = { ...data, ...e.data.json() }; } catch(err) {}
+
+  const vibrateMap = {
+    new_request:  [100, 50, 100, 50, 100],
+    high_priority:[150, 80, 150, 80, 150, 80, 200],
+    completed:    [100, 50, 200],
+    cancelled:    [200, 100, 200],
+    chat:         [80, 40, 80],
+    break:        [120, 60, 120],
+  };
+  const badgeMap = {
+    new_request:  '📦', high_priority: '🔥', completed: '✅',
+    cancelled:    '❌', chat: '💬',          break: '🍵',
+  };
+
+  const opts = {
+    body:    data.body || '',
+    icon:    data.icon  || 'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%2275%22 font-size=%2275%22>📦</text></svg>',
+    badge:   'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%2280%22 font-size=%2280%22>' + (badgeMap[data.type]||'📦') + '</text></svg>',
+    vibrate: vibrateMap[data.type] || [100, 50, 100],
+    tag:     data.type || 'warehouse',
+    renotify:true,
+    data:    { url: self.location.origin, type: data.type },
+    actions: [{ action: 'open', title: 'Open App' }],
+  };
+
+  e.waitUntil(self.registration.showNotification(data.title, opts));
+});
+
+// ── Notification click — focus or open the app ────────────────────────────
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  const target = (e.notification.data && e.notification.data.url) || self.location.origin;
+  e.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
+      const match = list.find(c => c.url.startsWith(self.location.origin) && 'focus' in c);
+      if (match) return match.focus();
+      return self.clients.openWindow(target);
+    })
+  );
+});
+
+// ── skipWaiting message (for update banner) ───────────────────────────────
+self.addEventListener('message', e => {
+  if (e.data === 'SKIP_WAITING') self.skipWaiting();
+});
+`;
+
     // ── Auto-updating Service Worker ─────────────────────────────────────────
     // Only register Service Worker if NOT using file:// protocol (needs HTTP/HTTPS)
     if ('serviceWorker' in navigator && window.location.protocol !== 'file:') {
       window.addEventListener('load', async () => {
         try {
-          const reg = await navigator.serviceWorker.register('./sw.js');
+          // Register from inline blob so no external sw.js file is needed
+          const swBlob = new Blob([_SW_CODE], { type: 'application/javascript' });
+          const swUrl  = URL.createObjectURL(swBlob);
+          const reg    = await navigator.serviceWorker.register(swUrl, { scope: '/' })
+            .catch(() => navigator.serviceWorker.register('./sw.js'))  // fallback if blob scope rejected
+            .catch(() => null);
+          if (!reg) throw new Error('SW registration failed');
+          // Expose for _showNativeNotif
+          window._swReg = reg;
 
           const banner = document.getElementById('wd-update-banner');
           let waitingSW = null;
