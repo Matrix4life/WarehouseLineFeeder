@@ -1540,6 +1540,14 @@
         try { localStorage.setItem("wd_selectedRooms", JSON.stringify(selectedRooms)); } catch {}
       }, [selectedRooms]);
       const [timeFilter, setTimeFilter] = useState("today"); // for dashboard analytics
+
+      // Yesterday: midnight-to-midnight of the previous calendar day
+      const getYesterday = () => {
+        const now = new Date();
+        const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 0, 0, 0, 0);
+        const end   = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 23, 59, 59, 999);
+        return { start, end };
+      };
       const [roomsDropdownOpen, setRoomsDropdownOpen] = useState(false); // for board rooms dropdown
       const [dashboardSettingsOpen, setDashboardSettingsOpen] = useState(false); // for dashboard customization
       const [dashboardLayout, setDashboardLayout] = useState({
@@ -4092,14 +4100,16 @@
         const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
         const thisWeek = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
         const thisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+        const yesterday = getYesterday();
         
         // Include archived requests — completed orders may be archived
         const allReqs = [...requests, ...archivedRequests];
         const filteredReqs = allReqs.filter(r => {
           const submitted = new Date(r.submittedAt);
-          if (timeFilter === "today"  && submitted < today) return false;
-          if (timeFilter === "week"   && submitted < thisWeek) return false;
-          if (timeFilter === "month"  && submitted < thisMonth) return false;
+          if (timeFilter === "today"     && submitted < today) return false;
+          if (timeFilter === "week"      && submitted < thisWeek) return false;
+          if (timeFilter === "month"     && submitted < thisMonth) return false;
+          if (timeFilter === "yesterday" && (submitted < yesterday.start || submitted > yesterday.end)) return false;
           if (timeFilter === "custom") {
             if (exportDateFrom && submitted < new Date(exportDateFrom)) return false;
             if (exportDateTo   && submitted > new Date(exportDateTo + "T23:59:59")) return false;
@@ -4553,14 +4563,14 @@
                 <div style={{ display:'flex', gap:'0.6rem', flexWrap:'wrap', alignItems:'center', justifyContent:'space-between' }}>
                   <div style={{ display:'flex', gap:'0.6rem', flexWrap:'wrap', alignItems:'center' }}>
                     <span style={{ color:'#475569', fontSize:'0.72rem', textTransform:'uppercase', letterSpacing:'0.08em', minWidth:'38px' }}>Time</span>
-                    {["today","week","month","all","custom"].map(filter => (
+                    {["today","yesterday","week","month","all","custom"].map(filter => (
                       <button key={filter} onClick={() => setTimeFilter(filter)}
                         style={{ padding:'0.5rem 1rem', borderRadius:'10px',
                           background: timeFilter===filter ? 'linear-gradient(135deg,#00ff88,#00cc6f)' : 'rgba(15,23,42,0.85)',
                           border: timeFilter===filter ? 'none' : '1px solid #334155',
                           color: timeFilter===filter ? '#0a0e1a' : '#8b9dc3',
                           fontWeight:900, cursor:'pointer', textTransform:'uppercase', fontSize:'0.78rem' }}>
-                        {filter==="all"?"All Time":filter==="week"?"This Week":filter==="month"?"This Month":filter==="custom"?"Custom":"Today"}
+                        {filter==="all"?"All Time":filter==="week"?"This Week":filter==="month"?"This Month":filter==="custom"?"Custom":filter==="yesterday"?"Yesterday":"Today"}
                       </button>
                     ))}
                   </div>
@@ -4590,7 +4600,7 @@
                       const csv = [headers.join(","), ...rows.map(r => r.map(v => `"${String(v).replace(/"/g,"\"")}"`).join(","))].join("\n");
                       const a = document.createElement("a");
                       a.href = URL.createObjectURL(new Blob([csv],{type:"text/csv"}));
-                      const dateLabel = timeFilter==="custom" ? `${exportDateFrom||"start"}-to-${exportDateTo||"end"}` : timeFilter;
+                      const dateLabel = timeFilter==="custom" ? `${exportDateFrom||"start"}-to-${exportDateTo||"end"}` : timeFilter==="yesterday" ? "yesterday" : timeFilter;
                       const roomLabel = dashRoomFilter==="all" ? "all-rooms" : dashRoomFilter.replace(/\/| /g,"-");
                       a.download = `dashboard-${dateLabel}-${roomLabel}-${new Date().toISOString().split("T")[0]}.csv`;
                       a.click();
@@ -5002,15 +5012,17 @@
         const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
         const thisWeek = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
         const thisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+        const yesterday = getYesterday();
         
         // Include archived requests — completed orders get archived after daily cutoff
         const completedReqs = [...requests, ...archivedRequests].filter(r => r.status === "completed");
         
         const filteredCompletedReqs = completedReqs.filter(r => {
           const completed = new Date(r.completedAt);
-          if (timeFilter === "today") return completed >= today;
-          if (timeFilter === "week") return completed >= thisWeek;
-          if (timeFilter === "month") return completed >= thisMonth;
+          if (timeFilter === "today")     return completed >= today;
+          if (timeFilter === "week")      return completed >= thisWeek;
+          if (timeFilter === "month")     return completed >= thisMonth;
+          if (timeFilter === "yesterday") return completed >= yesterday.start && completed <= yesterday.end;
           // "custom" — use exportDateFrom/To
           if (timeFilter === "custom") {
             if (exportDateFrom && completed < new Date(exportDateFrom)) return false;
@@ -5057,13 +5069,13 @@
           const blob = new Blob([csv], { type:'text/csv;charset=utf-8;' });
           const a = document.createElement('a');
           a.href = URL.createObjectURL(blob);
-          const label = timeFilter==="custom" ? `${exportDateFrom||'start'}-to-${exportDateTo||'end'}` : timeFilter;
+          const label = timeFilter==="custom" ? `${exportDateFrom||'start'}-to-${exportDateTo||'end'}` : timeFilter==="yesterday" ? "yesterday" : timeFilter;
           a.download = `completed-${label}${exportRoom?'-'+exportRoom:''}-${new Date().toISOString().split('T')[0]}.csv`;
           a.click();
         };
 
         const exportToPDF = () => {
-          const label = timeFilter==="custom" ? `${exportDateFrom||'start'} → ${exportDateTo||'end'}` : timeFilter.charAt(0).toUpperCase()+timeFilter.slice(1);
+          const label = timeFilter==="custom" ? `${exportDateFrom||'start'} → ${exportDateTo||'end'}` : timeFilter==="yesterday" ? "Yesterday" : timeFilter.charAt(0).toUpperCase()+timeFilter.slice(1);
           const roomLabel = exportRoom ? ` · ${exportRoom}` : "";
           const w = window.open('','_blank');
           w.document.write(`<!DOCTYPE html><html><head><title>Completed Requests Export</title>
@@ -5104,7 +5116,7 @@ ${sortedCompleted.map(r => {
               {/* Time Filter & Export */}
               <div style={{ marginBottom:'1.25rem', background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.25rem' }}>
                 <div style={{ display:'flex', gap:'0.6rem', flexWrap:'wrap', marginBottom:'0.75rem' }}>
-                  {["today","week","month","all","custom"].map(filter => (
+                  {["today","yesterday","week","month","all","custom"].map(filter => (
                     <button key={filter} onClick={() => setTimeFilter(filter)}
                       style={{
                         padding:'0.55rem 1rem', borderRadius:'10px',
@@ -5113,7 +5125,7 @@ ${sortedCompleted.map(r => {
                         color: timeFilter === filter ? '#0a0e1a' : '#8b9dc3',
                         fontWeight:900, cursor:'pointer', textTransform:'uppercase', fontSize:'0.78rem'
                       }}>
-                      {filter==="all"?"All Time":filter==="week"?"This Week":filter==="month"?"This Month":filter==="custom"?"Custom Range":"Today"}
+                      {filter==="all"?"All Time":filter==="week"?"This Week":filter==="month"?"This Month":filter==="custom"?"Custom Range":filter==="yesterday"?"Yesterday":"Today"}
                     </button>
                   ))}
                 </div>
@@ -5185,7 +5197,7 @@ ${sortedCompleted.map(r => {
               <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px', overflow:'hidden' }}>
                 <div style={{ padding:'1.2rem 1.5rem', background:'linear-gradient(135deg, rgba(0,255,136,0.15) 0%, rgba(0,255,136,0.04) 100%)', borderBottom:'2px solid #00ff88' }}>
                   <div style={{ color:'#00ff88', fontWeight:900, fontSize:'1.1rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>
-                    ✅ Completed Requests {timeFilter !== "all" && `(${timeFilter === "today" ? "Today" : timeFilter === "week" ? "This Week" : "This Month"})`}
+                    ✅ Completed Requests {timeFilter !== "all" && `(${timeFilter === "today" ? "Today" : timeFilter === "week" ? "This Week" : timeFilter === "month" ? "This Month" : timeFilter === "yesterday" ? "Yesterday" : ""})`}
                   </div>
                 </div>
 
