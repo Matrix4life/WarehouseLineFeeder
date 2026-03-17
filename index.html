@@ -308,14 +308,20 @@
      *   started_at timestamptz not null default now(),
      *   ended_at timestamptz,
      *   duration_mins numeric,
-     *   was_overdue boolean default false
+     *   was_overdue boolean default false,
+     *   archived_at timestamptz,
+     *   archived_by text
      * );
+     * -- If table already exists, run these migrations:
+     * -- alter table warehouse_breaks add column if not exists archived_at timestamptz;
+     * -- alter table warehouse_breaks add column if not exists archived_by text;
      * create index if not exists idx_wb_worker on warehouse_breaks(worker_name);
      * create index if not exists idx_wb_date on warehouse_breaks(started_at desc);
      * alter table warehouse_breaks enable row level security;
      * create policy "read all" on warehouse_breaks for select using (true);
      * create policy "insert all" on warehouse_breaks for insert with check (true);
      * create policy "update all" on warehouse_breaks for update using (true);
+     * create policy "delete all" on warehouse_breaks for delete using (true);
      * -- Enable realtime for warehouse_breaks in Database -> Publications
      *
      * create policy "read all" on warehouse_assignments for select using (true);
@@ -703,7 +709,7 @@
       chat:         [80, 40, 80],
       break:        [120, 60, 120],
     };
-    const _badgeIcon = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y="80" font-size="80">📦</text></svg>';
+    const _badgeIcon = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%2280%22 font-size=%2280%22%3E%F0%9F%93%A6%3C/text%3E%3C/svg%3E';
 
     async function _showNativeNotif(title, body, type) {
       if (!('Notification' in window)) return;
@@ -1098,6 +1104,7 @@
           if (!useSupabase) {
             const all = safeJsonParse(localStorage.getItem(KEY), []);
             return all.filter(b => {
+              if (b.archivedAt) return false;  // exclude archived
               if (from && b.startedAt < from) return false;
               if (to   && b.startedAt > to)   return false;
               return true;
@@ -1112,11 +1119,14 @@
           const error = e1 || e2;
           const data = [...(activeData||[]), ...(histData||[])];
           if (error) throw error;
-          return (data||[]).map(r => ({
-            id: r.id, workerName: r.worker_name, workerRole: r.worker_role,
-            startedAt: r.started_at, endedAt: r.ended_at || null,
-            durationMins: r.duration_mins || null, wasOverdue: r.was_overdue || false
-          }));
+          return (data||[])
+            .filter(r => !r.archived_at)  // default: exclude archived
+            .map(r => ({
+              id: r.id, workerName: r.worker_name, workerRole: r.worker_role,
+              startedAt: r.started_at, endedAt: r.ended_at || null,
+              durationMins: r.duration_mins || null, wasOverdue: r.was_overdue || false,
+              archivedAt: r.archived_at || null, archivedBy: r.archived_by || null
+            }));
         },
         async startBreak({ id, workerName, workerRole, startedAt }) {
           const rec = { id, workerName, workerRole, startedAt, endedAt: null, durationMins: null, wasOverdue: false };
@@ -1148,6 +1158,62 @@
             .eq("id", id);
           if (error) throw error;
           return true;
+        },
+        async deleteBreak(id) {
+          if (!useSupabase) {
+            const KEY = "wd_breaks_v1";
+            const all = safeJsonParse(localStorage.getItem(KEY), []);
+            localStorage.setItem(KEY, JSON.stringify(all.filter(b => b.id !== id)));
+            bc?.postMessage({ type:"breaks_updated" });
+            return true;
+          }
+          const { error } = await supabaseClient.from("warehouse_breaks").delete().eq("id", id);
+          if (error) throw error;
+          return true;
+        },
+        async archiveBreaks(ids, archivedBy) {
+          const archivedAt = new Date().toISOString();
+          if (!useSupabase) {
+            const KEY = "wd_breaks_v1";
+            const all = safeJsonParse(localStorage.getItem(KEY), []);
+            const updated = all.map(b => ids.includes(b.id) ? { ...b, archivedAt, archivedBy } : b);
+            localStorage.setItem(KEY, JSON.stringify(updated));
+            bc?.postMessage({ type:"breaks_updated" });
+            return ids.length;
+          }
+          const { error } = await supabaseClient.from("warehouse_breaks")
+            .update({ archived_at: archivedAt, archived_by: archivedBy })
+            .in("id", ids);
+          if (error) throw error;
+          return ids.length;
+        },
+        async loadArchivedBreaks({ from, to, workerName } = {}) {
+          const KEY = "wd_breaks_v1";
+          if (!useSupabase) {
+            const all = safeJsonParse(localStorage.getItem(KEY), []);
+            return all.filter(b => {
+              if (!b.archivedAt) return false;
+              if (workerName && b.workerName !== workerName) return false;
+              if (from && b.startedAt < from) return false;
+              if (to   && b.startedAt > to)   return false;
+              return true;
+            });
+          }
+          let q = supabaseClient.from("warehouse_breaks").select("*")
+            .not("archived_at", "is", null)
+            .order("started_at", { ascending: false })
+            .limit(2000);
+          if (workerName) q = q.eq("worker_name", workerName);
+          if (from) q = q.gte("started_at", from);
+          if (to)   q = q.lte("started_at", to);
+          const { data, error } = await q;
+          if (error) throw error;
+          return (data||[]).map(r => ({
+            id: r.id, workerName: r.worker_name, workerRole: r.worker_role,
+            startedAt: r.started_at, endedAt: r.ended_at || null,
+            durationMins: r.duration_mins || null, wasOverdue: r.was_overdue || false,
+            archivedAt: r.archived_at || null, archivedBy: r.archived_by || null
+          }));
         },
         subscribeBreaks(onMsg) {
           if (!useSupabase) return () => {};
@@ -2223,6 +2289,102 @@
         _showToast("✅", `${rec.workerName} back from break`, `${durationMins}m${wasOverdue?" — OVERDUE":""}`, wasOverdue?"#ff4444":"#00ff88", _onNotif);
       };
 
+      const deleteBreak = async (id) => {
+        if (!canAdmin) return;
+        try {
+          setBreaks(prev => prev.filter(b => b.id !== id));
+          await adapterRef.current?.deleteBreak(id);
+        } catch(e) {
+          console.error("deleteBreak error:", e);
+          _showToast("❌", "Delete failed", e?.message || "Could not delete break record", "#ff4444", _onNotif);
+          await loadBreaks(); // re-sync on failure
+        }
+      };
+
+      // ── BREAK ARCHIVE STATE & ACTIONS ──────────────────────────────────
+      const [archivedBreaks, setArchivedBreaks] = useState([]);
+      const [breakTab, setBreakTab] = useState("active"); // "active" | "archived"
+      const [archiveBreaksMsg, setArchiveBreaksMsg] = useState("");
+      const [lastBreakArchiveDate, setLastBreakArchiveDate] = useState(
+        () => localStorage.getItem("wd_lastBreakArchiveDate") || ""
+      );
+
+      const loadArchivedBreaks = async (opts = {}) => {
+        try {
+          const data = await adapterRef.current?.loadArchivedBreaks(opts);
+          if (Array.isArray(data)) setArchivedBreaks(data);
+        } catch(e) { console.error("loadArchivedBreaks error:", e); }
+      };
+
+      const archiveBreaksNow = async () => {
+        if (!canAdmin) return;
+        try {
+          const adapter = adapterRef.current;
+          // Archive all completed breaks (have endedAt) that aren't archived yet
+          const toArchive = breaks.filter(b => b.endedAt && !b.archivedAt);
+          if (toArchive.length === 0) {
+            setArchiveBreaksMsg("Nothing to archive — no completed breaks.");
+            setTimeout(() => setArchiveBreaksMsg(""), 3000);
+            return;
+          }
+          await adapter.archiveBreaks(toArchive.map(b => b.id), userName);
+          const today = new Date().toISOString().split("T")[0];
+          localStorage.setItem("wd_lastBreakArchiveDate", today);
+          setLastBreakArchiveDate(today);
+          await loadBreaks();
+          await loadArchivedBreaks();
+          setArchiveBreaksMsg(`✅ Archived ${toArchive.length} break record${toArchive.length !== 1 ? "s" : ""}.`);
+          setTimeout(() => setArchiveBreaksMsg(""), 4000);
+        } catch(err) {
+          console.error("archiveBreaksNow error:", err);
+          setArchiveBreaksMsg("❌ Archive failed — check console.");
+          setTimeout(() => setArchiveBreaksMsg(""), 4000);
+        }
+      };
+
+      // Auto-archive breaks at end of 2nd shift (or auto_archive_hour)
+      // Mirrors request auto-archive pattern
+      useEffect(() => {
+        const checkBreakAutoArchive = async () => {
+          const today = new Date().toISOString().split("T")[0];
+          const stored = localStorage.getItem("wd_lastBreakArchiveDate") || "";
+          if (stored === today) return; // already archived today
+          const adapter = adapterRef.current;
+          if (!adapter) return;
+
+          // Determine trigger hour: end of 2nd shift or auto_archive_hour setting
+          const shift2End   = settingsVal("shift_2_end", "22:00");   // e.g. "22:00"
+          const archiveHour = settingsVal("auto_archive_hour", 0);    // e.g. 0 = midnight
+          const now = new Date();
+          const nowH = now.getHours();
+          const nowM = now.getMinutes();
+          const [s2H, s2M] = shift2End.split(":").map(Number);
+          // Fire if current time is >= shift_2_end OR >= auto_archive_hour
+          const pastShiftEnd   = (nowH > s2H) || (nowH === s2H && nowM >= s2M);
+          const pastArchiveHour = nowH >= archiveHour;
+          if (!pastShiftEnd && !pastArchiveHour) return;
+
+          try {
+            const data = await adapter.loadBreaks();
+            const toArchive = (Array.isArray(data) ? data : []).filter(b => b.endedAt && !b.archivedAt);
+            if (toArchive.length === 0) {
+              localStorage.setItem("wd_lastBreakArchiveDate", today);
+              setLastBreakArchiveDate(today);
+              return;
+            }
+            await adapter.archiveBreaks(toArchive.map(b => b.id), "auto");
+            localStorage.setItem("wd_lastBreakArchiveDate", today);
+            setLastBreakArchiveDate(today);
+            await loadBreaks();
+          } catch(e) { console.warn("Auto-archive breaks failed:", e); }
+        };
+
+        const initTimer = setTimeout(() => { if (adapterRef.current) checkBreakAutoArchive(); }, 8000);
+        const hourTimer = setInterval(checkBreakAutoArchive, 60 * 60 * 1000);
+        return () => { clearTimeout(initTimer); clearInterval(hourTimer); };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [sysSettings]);
+
       // NOTE: breaks do NOT auto-end — they go red/overdue at 15 mins
       // The worker must manually tap "Back?" to end their break.
       // ──────────────────────────────────────────────────────────────────
@@ -2803,18 +2965,29 @@
               <button onClick={()=>setBreakPanelOpen(false)} style={{background:"rgba(255,68,68,0.15)",border:"1px solid rgba(255,68,68,0.5)",borderRadius:"10px",color:"#ff4444",padding:"0.5rem 0.85rem",cursor:"pointer",fontWeight:900,fontSize:"1rem",minWidth:44,minHeight:44,display:"flex",alignItems:"center",justifyContent:"center"}}>✕</button>
             </div>
 
-            <div style={{flex:1,overflowY:"auto",padding:"0.75rem 0.75rem calc(0.75rem + env(safe-area-inset-bottom, 0px))"}}>
+            {/* Tab bar */}
+            <div style={{display:"flex",borderBottom:"1px solid rgba(255,159,67,0.15)",flexShrink:0}}>
+              {[{key:"active",label:"🟢 Active / History"},{key:"archived",label:"🗂️ Archived"}].map(tab=>(
+                <button key={tab.key} onClick={()=>{ setBreakTab(tab.key); if(tab.key==="archived") loadArchivedBreaks(); }}
+                  style={{flex:1,padding:"0.6rem",background:breakTab===tab.key?"rgba(255,159,67,0.12)":"transparent",border:"none",borderBottom:breakTab===tab.key?"2px solid #ff9f43":"2px solid transparent",color:breakTab===tab.key?"#ff9f43":"#64748b",fontWeight:900,fontSize:"0.7rem",cursor:"pointer",fontFamily:"inherit",textTransform:"uppercase",letterSpacing:"0.05em"}}>
+                  {tab.label}
+                </button>
+              ))}
+            </div>
 
-              {/* ── CURRENTLY ON BREAK ── */}
-              <div style={{marginBottom:"1rem"}}>
-                <div style={{color:"#ff9f43",fontWeight:900,fontSize:"0.65rem",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:"0.5rem",display:"flex",alignItems:"center",gap:"0.4rem"}}>
-                  <span style={{width:8,height:8,borderRadius:"50%",background:"#ff9f43",display:"inline-block",animation:"pulse 1.2s infinite"}}/>
-                  On Break Now {activeBreaks.length > 0 && `(${activeBreaks.length})`}
-                </div>
-                {activeBreaks.length === 0 ? (
-                  <div style={{padding:"0.85rem",background:"rgba(15,23,42,0.5)",borderRadius:"10px",color:"#475569",fontSize:"0.78rem",textAlign:"center"}}>Everyone is working 💪</div>
-                ) : activeBreaks.map(b => {
-                  return (
+            {/* ── ACTIVE / HISTORY TAB ── */}
+            {breakTab === "active" && (
+              <div style={{flex:1,overflowY:"auto",padding:"0.75rem"}}>
+
+                {/* Currently on break */}
+                <div style={{marginBottom:"1rem"}}>
+                  <div style={{color:"#ff9f43",fontWeight:900,fontSize:"0.65rem",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:"0.5rem",display:"flex",alignItems:"center",gap:"0.4rem"}}>
+                    <span style={{width:8,height:8,borderRadius:"50%",background:"#ff9f43",display:"inline-block",animation:"pulse 1.2s infinite"}}/>
+                    On Break Now {activeBreaks.length > 0 && `(${activeBreaks.length})`}
+                  </div>
+                  {activeBreaks.length === 0 ? (
+                    <div style={{padding:"0.85rem",background:"rgba(15,23,42,0.5)",borderRadius:"10px",color:"#475569",fontSize:"0.78rem",textAlign:"center"}}>Everyone is working 💪</div>
+                  ) : activeBreaks.map(b => (
                     <div key={b.id} style={{marginBottom:"0.5rem",padding:"0.75rem",background:"rgba(255,159,67,0.08)",border:"1px solid rgba(255,159,67,0.3)",borderRadius:"12px",display:"flex",alignItems:"center",gap:"0.65rem"}}>
                       <div style={{width:36,height:36,borderRadius:"50%",background:"rgba(255,159,67,0.15)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"1.1rem",flexShrink:0}}>📦</div>
                       <div style={{flex:1,minWidth:0}}>
@@ -2822,105 +2995,220 @@
                         <div style={{color:"#64748b",fontSize:"0.65rem",marginTop:"0.1rem"}}>Started {fmtTime(b.startedAt)}</div>
                       </div>
                       <BreakRowCountdown b={b} breakMins={BREAK_MINS} />
+                      {canAdmin && (
+                        <button onClick={()=>{ if(window.confirm(`Remove active break for ${b.workerName}?`)) deleteBreak(b.id); }}
+                          style={{background:"rgba(255,68,68,0.12)",border:"1px solid rgba(255,68,68,0.35)",borderRadius:"7px",color:"#ff4444",cursor:"pointer",fontSize:"0.75rem",padding:"0.2rem 0.45rem",flexShrink:0,lineHeight:1,fontFamily:"inherit"}}>
+                          🗑️
+                        </button>
+                      )}
                     </div>
-                  );
-                })}
-              </div>
-
-              {/* ── DIVIDER ── */}
-              <div style={{borderBottom:"1px solid #1e293b",margin:"0.5rem 0 0.75rem"}}/>
-
-              {/* ── DATE RANGE PICKER (Admin only) ── */}
-              {canAdmin && (
-                <div style={{marginBottom:"0.85rem"}}>
-                  <div style={{color:"#ff4444",fontWeight:900,fontSize:"0.63rem",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:"0.5rem"}}>🔧 Filter by Person</div>
-                  <select value={breakSelectedWorker} onChange={e => setBreakSelectedWorker(e.target.value)}
-                    style={{width:"100%",background:"#1e293b",border:"1px solid #334155",borderRadius:"8px",color:breakSelectedWorker?"#e2e8f0":"#64748b",padding:"0.5rem 0.7rem",fontFamily:"inherit",fontSize:"0.8rem",outline:"none",marginBottom:"0.65rem",cursor:"pointer"}}>
-                    <option value="">All warehouse staff</option>
-                    {[...new Set(breaks.map(b => b.workerName))].sort().map(name => (
-                      <option key={name} value={name}>{name}</option>
-                    ))}
-                  </select>
-                  <div style={{color:"#ff4444",fontWeight:900,fontSize:"0.63rem",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:"0.5rem"}}>🔧 Date Range</div>
-                  <div style={{display:"flex",gap:"0.5rem",flexWrap:"wrap"}}>
-                    <div style={{display:"flex",flexDirection:"column",gap:"0.2rem",flex:1}}>
-                      <label style={{color:"#64748b",fontSize:"0.6rem",textTransform:"uppercase"}}>From</label>
-                      <input type="date" value={breakHistoryRange.from}
-                        onChange={e => setBreakHistoryRange(p => ({...p, from:e.target.value}))}
-                        style={{background:"#1e293b",border:"1px solid #334155",borderRadius:"8px",color:"#e2e8f0",padding:"0.4rem 0.6rem",fontFamily:"inherit",fontSize:"0.75rem",outline:"none"}}/>
-                    </div>
-                    <div style={{display:"flex",flexDirection:"column",gap:"0.2rem",flex:1}}>
-                      <label style={{color:"#64748b",fontSize:"0.6rem",textTransform:"uppercase"}}>To</label>
-                      <input type="date" value={breakHistoryRange.to}
-                        onChange={e => setBreakHistoryRange(p => ({...p, to:e.target.value}))}
-                        style={{background:"#1e293b",border:"1px solid #334155",borderRadius:"8px",color:"#e2e8f0",padding:"0.4rem 0.6rem",fontFamily:"inherit",fontSize:"0.75rem",outline:"none"}}/>
-                    </div>
-                    <button onClick={()=>loadBreaks({from:breakHistoryRange.from?breakHistoryRange.from+"T00:00:00Z":undefined,to:breakHistoryRange.to?breakHistoryRange.to+"T23:59:59Z":undefined})}
-                      style={{alignSelf:"flex-end",padding:"0.4rem 0.75rem",background:"linear-gradient(135deg,#ff4444,#cc2222)",border:"none",borderRadius:"8px",color:"#fff",fontWeight:900,cursor:"pointer",fontFamily:"inherit",fontSize:"0.72rem"}}>
-                      Load
-                    </button>
-                    <button onClick={()=>{setBreakHistoryRange({from:"",to:""});setBreakSelectedWorker("");loadBreaks();}}
-                      style={{alignSelf:"flex-end",padding:"0.4rem 0.65rem",background:"transparent",border:"1px solid #334155",borderRadius:"8px",color:"#64748b",fontWeight:900,cursor:"pointer",fontFamily:"inherit",fontSize:"0.72rem"}}>
-                      All
-                    </button>
-                  </div>
+                  ))}
                 </div>
-              )}
 
-              {/* ── HISTORY TABLE ── */}
-              <div>
-                <div style={{color: canAdmin?"#ff4444":"#a78bfa",fontWeight:900,fontSize:"0.63rem",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:"0.5rem"}}>
-                  {canAdmin
-                    ? (breakSelectedWorker ? `🔧 ${breakSelectedWorker} — Breaks` : "🔧 All Staff Breaks")
-                    : "📋 Today's Breaks"}
-                  {histFilter.length > 0 && ` (${histFilter.length})`}
-                </div>
-                {histFilter.length === 0 ? (
-                  <div style={{padding:"0.85rem",background:"rgba(15,23,42,0.5)",borderRadius:"10px",color:"#475569",fontSize:"0.75rem",textAlign:"center"}}>No break history {canAdmin?"for this range":"today"}</div>
-                ) : (
-                  <div style={{display:"flex",flexDirection:"column",gap:"0.35rem"}}>
-                    {/* Summary stats */}
-                    {histFilter.length > 0 && (()=>{
-                      const totalMins = histFilter.reduce((s,b) => s+(b.durationMins||0),0);
-                      const overdueCnt = histFilter.filter(b=>b.wasOverdue).length;
-                      const avgMins = Math.round(totalMins/histFilter.length);
-                      return (
-                        <div style={{display:"flex",gap:"0.5rem",marginBottom:"0.5rem",flexWrap:"wrap"}}>
-                          {[
-                            {label:"Total breaks",val:histFilter.length,color:"#e2e8f0"},
-                            {label:"Avg duration",val:avgMins+"m",color:"#ff9f43"},
-                            {label:"Overdue",val:overdueCnt,color:overdueCnt>0?"#ff4444":"#475569"},
-                          ].map(stat=>(
-                            <div key={stat.label} style={{flex:1,minWidth:80,padding:"0.45rem 0.55rem",background:"#1e293b",borderRadius:"8px",textAlign:"center"}}>
-                              <div style={{color:stat.color,fontWeight:900,fontSize:"0.85rem"}}>{stat.val}</div>
-                              <div style={{color:"#475569",fontSize:"0.6rem"}}>{stat.label}</div>
-                            </div>
-                          ))}
-                        </div>
-                      );
-                    })()}
-                    {histFilter.map(b => (
-                      <div key={b.id} style={{display:"flex",alignItems:"center",gap:"0.55rem",padding:"0.55rem 0.7rem",background:b.wasOverdue?"rgba(255,68,68,0.07)":"rgba(15,23,42,0.6)",border:`1px solid ${b.wasOverdue?"rgba(255,68,68,0.3)":"#1e293b"}`,borderRadius:"10px"}}>
-                        <div style={{flex:1,minWidth:0}}>
-                          <div style={{display:"flex",alignItems:"center",gap:"0.4rem"}}>
-                            <span style={{color:"#e2e8f0",fontWeight:800,fontSize:"0.77rem"}}>{b.workerName}</span>
-                            {b.wasOverdue && <span style={{color:"#ff4444",fontSize:"0.6rem",fontWeight:900}}>⚠️ LATE</span>}
-                          </div>
-                          <div style={{color:"#475569",fontSize:"0.62rem",marginTop:"0.1rem"}}>{fmtDate(b.startedAt)} · {fmtTime(b.startedAt)} → {fmtTime(b.endedAt)}</div>
-                        </div>
-                        <div style={{color:b.wasOverdue?"#ff4444":"#ff9f43",fontWeight:900,fontSize:"0.8rem",flexShrink:0}}>{b.durationMins||"?"}m</div>
+                <div style={{borderBottom:"1px solid #1e293b",margin:"0.5rem 0 0.75rem"}}/>
+
+                {/* Filter (Admin only) */}
+                {canAdmin && (
+                  <div style={{marginBottom:"0.85rem"}}>
+                    <div style={{color:"#ff4444",fontWeight:900,fontSize:"0.63rem",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:"0.5rem"}}>🔧 Filter by Person</div>
+                    <select value={breakSelectedWorker} onChange={e=>setBreakSelectedWorker(e.target.value)}
+                      style={{width:"100%",background:"#1e293b",border:"1px solid #334155",borderRadius:"8px",color:breakSelectedWorker?"#e2e8f0":"#64748b",padding:"0.5rem 0.7rem",fontFamily:"inherit",fontSize:"0.8rem",outline:"none",marginBottom:"0.65rem",cursor:"pointer"}}>
+                      <option value="">All warehouse staff</option>
+                      {[...new Set(breaks.map(b=>b.workerName))].sort().map(name=>(
+                        <option key={name} value={name}>{name}</option>
+                      ))}
+                    </select>
+                    <div style={{color:"#ff4444",fontWeight:900,fontSize:"0.63rem",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:"0.5rem"}}>🔧 Date Range</div>
+                    <div style={{display:"flex",gap:"0.5rem",flexWrap:"wrap"}}>
+                      <div style={{display:"flex",flexDirection:"column",gap:"0.2rem",flex:1}}>
+                        <label style={{color:"#64748b",fontSize:"0.6rem",textTransform:"uppercase"}}>From</label>
+                        <input type="date" value={breakHistoryRange.from}
+                          onChange={e=>setBreakHistoryRange(p=>({...p,from:e.target.value}))}
+                          style={{background:"#1e293b",border:"1px solid #334155",borderRadius:"8px",color:"#e2e8f0",padding:"0.4rem 0.6rem",fontFamily:"inherit",fontSize:"0.75rem",outline:"none"}}/>
                       </div>
-                    ))}
+                      <div style={{display:"flex",flexDirection:"column",gap:"0.2rem",flex:1}}>
+                        <label style={{color:"#64748b",fontSize:"0.6rem",textTransform:"uppercase"}}>To</label>
+                        <input type="date" value={breakHistoryRange.to}
+                          onChange={e=>setBreakHistoryRange(p=>({...p,to:e.target.value}))}
+                          style={{background:"#1e293b",border:"1px solid #334155",borderRadius:"8px",color:"#e2e8f0",padding:"0.4rem 0.6rem",fontFamily:"inherit",fontSize:"0.75rem",outline:"none"}}/>
+                      </div>
+                      <button onClick={()=>loadBreaks({from:breakHistoryRange.from?breakHistoryRange.from+"T00:00:00Z":undefined,to:breakHistoryRange.to?breakHistoryRange.to+"T23:59:59Z":undefined})}
+                        style={{alignSelf:"flex-end",padding:"0.4rem 0.75rem",background:"linear-gradient(135deg,#ff4444,#cc2222)",border:"none",borderRadius:"8px",color:"#fff",fontWeight:900,cursor:"pointer",fontFamily:"inherit",fontSize:"0.72rem"}}>
+                        Load
+                      </button>
+                      <button onClick={()=>{setBreakHistoryRange({from:"",to:""});setBreakSelectedWorker("");loadBreaks();}}
+                        style={{alignSelf:"flex-end",padding:"0.4rem 0.65rem",background:"transparent",border:"1px solid #334155",borderRadius:"8px",color:"#64748b",fontWeight:900,cursor:"pointer",fontFamily:"inherit",fontSize:"0.72rem"}}>
+                        All
+                      </button>
+                    </div>
                   </div>
                 )}
+
+                {/* History table */}
+                <div>
+                  <div style={{color:canAdmin?"#ff4444":"#a78bfa",fontWeight:900,fontSize:"0.63rem",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:"0.5rem"}}>
+                    {canAdmin ? (breakSelectedWorker?`🔧 ${breakSelectedWorker} — Breaks`:"🔧 All Staff Breaks") : "📋 Today's Breaks"}
+                    {histFilter.length > 0 && ` (${histFilter.length})`}
+                  </div>
+                  {histFilter.length === 0 ? (
+                    <div style={{padding:"0.85rem",background:"rgba(15,23,42,0.5)",borderRadius:"10px",color:"#475569",fontSize:"0.75rem",textAlign:"center"}}>No break history {canAdmin?"for this range":"today"}</div>
+                  ) : (
+                    <div style={{display:"flex",flexDirection:"column",gap:"0.35rem"}}>
+                      {histFilter.length > 0 && (()=>{
+                        const totalMins = histFilter.reduce((s,b)=>s+(b.durationMins||0),0);
+                        const overdueCnt = histFilter.filter(b=>b.wasOverdue).length;
+                        const avgMins = Math.round(totalMins/histFilter.length);
+                        return (
+                          <div style={{display:"flex",gap:"0.5rem",marginBottom:"0.5rem",flexWrap:"wrap"}}>
+                            {[
+                              {label:"Total breaks",val:histFilter.length,color:"#e2e8f0"},
+                              {label:"Avg duration",val:avgMins+"m",color:"#ff9f43"},
+                              {label:"Overdue",val:overdueCnt,color:overdueCnt>0?"#ff4444":"#475569"},
+                            ].map(stat=>(
+                              <div key={stat.label} style={{flex:1,minWidth:80,padding:"0.45rem 0.55rem",background:"#1e293b",borderRadius:"8px",textAlign:"center"}}>
+                                <div style={{color:stat.color,fontWeight:900,fontSize:"0.85rem"}}>{stat.val}</div>
+                                <div style={{color:"#475569",fontSize:"0.6rem"}}>{stat.label}</div>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })()}
+                      {histFilter.map(b=>(
+                        <div key={b.id} style={{display:"flex",alignItems:"center",gap:"0.55rem",padding:"0.55rem 0.7rem",background:b.wasOverdue?"rgba(255,68,68,0.07)":"rgba(15,23,42,0.6)",border:`1px solid ${b.wasOverdue?"rgba(255,68,68,0.3)":"#1e293b"}`,borderRadius:"10px"}}>
+                          <div style={{flex:1,minWidth:0}}>
+                            <div style={{display:"flex",alignItems:"center",gap:"0.4rem"}}>
+                              <span style={{color:"#e2e8f0",fontWeight:800,fontSize:"0.77rem"}}>{b.workerName}</span>
+                              {b.wasOverdue && <span style={{color:"#ff4444",fontSize:"0.6rem",fontWeight:900}}>⚠️ LATE</span>}
+                            </div>
+                            <div style={{color:"#475569",fontSize:"0.62rem",marginTop:"0.1rem"}}>{fmtDate(b.startedAt)} · {fmtTime(b.startedAt)} → {fmtTime(b.endedAt)}</div>
+                          </div>
+                          <div style={{color:b.wasOverdue?"#ff4444":"#ff9f43",fontWeight:900,fontSize:"0.8rem",flexShrink:0}}>{b.durationMins||"?"}m</div>
+                          {canAdmin && (
+                            <button onClick={()=>{ if(window.confirm(`Delete break record for ${b.workerName} on ${fmtDate(b.startedAt)}?`)) deleteBreak(b.id); }}
+                              style={{background:"rgba(255,68,68,0.12)",border:"1px solid rgba(255,68,68,0.35)",borderRadius:"7px",color:"#ff4444",cursor:"pointer",fontSize:"0.75rem",padding:"0.2rem 0.45rem",flexShrink:0,lineHeight:1,fontFamily:"inherit"}}>
+                              🗑️
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
               </div>
+            )}
 
-            </div>
+            {/* Archive action bar — admin only, active tab only, fixed above close */}
+            {breakTab === "active" && canAdmin && (
+              <div style={{padding:"0.75rem",borderTop:"1px solid rgba(255,159,67,0.12)",flexShrink:0,background:"rgba(15,23,42,0.6)"}}>
+                {archiveBreaksMsg && (
+                  <div style={{marginBottom:"0.5rem",padding:"0.4rem 0.65rem",background:archiveBreaksMsg.startsWith("✅")?"rgba(0,255,136,0.08)":"rgba(255,68,68,0.08)",border:"1px solid "+(archiveBreaksMsg.startsWith("✅")?"rgba(0,255,136,0.3)":"rgba(255,68,68,0.3)"),borderRadius:"8px",color:archiveBreaksMsg.startsWith("✅")?"#00ff88":"#ff4444",fontSize:"0.72rem",fontWeight:700}}>
+                    {archiveBreaksMsg}
+                  </div>
+                )}
+                <button onClick={archiveBreaksNow}
+                  style={{width:"100%",padding:"0.55rem",background:"rgba(255,159,67,0.1)",border:"1px solid rgba(255,159,67,0.4)",borderRadius:"9px",color:"#ff9f43",fontWeight:900,cursor:"pointer",fontFamily:"inherit",fontSize:"0.75rem",textTransform:"uppercase",letterSpacing:"0.05em"}}>
+                  🗂️ Archive Completed Breaks Now
+                </button>
+                <div style={{color:"#475569",fontSize:"0.6rem",textAlign:"center",marginTop:"0.35rem"}}>
+                  Last archived: {lastBreakArchiveDate || "Never"} · Auto-archives at end of 2nd shift
+                </div>
+              </div>
+            )}
 
-            {/* Bottom close bar — always reachable even with notch/status bar */}
+            {/* ── ARCHIVED TAB ── */}
+            {breakTab === "archived" && (
+              <div style={{flex:1,overflowY:"auto",padding:"0.75rem"}}>
+                {canAdmin && (
+                  <div style={{marginBottom:"0.75rem"}}>
+                    <div style={{color:"#64748b",fontWeight:900,fontSize:"0.62rem",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:"0.4rem"}}>Filter Archived</div>
+                    <select value={breakSelectedWorker} onChange={e=>setBreakSelectedWorker(e.target.value)}
+                      style={{width:"100%",background:"#1e293b",border:"1px solid #334155",borderRadius:"8px",color:breakSelectedWorker?"#e2e8f0":"#64748b",padding:"0.45rem 0.6rem",fontFamily:"inherit",fontSize:"0.78rem",outline:"none",marginBottom:"0.5rem",cursor:"pointer"}}>
+                      <option value="">All staff</option>
+                      {[...new Set(archivedBreaks.map(b=>b.workerName))].sort().map(n=>(
+                        <option key={n} value={n}>{n}</option>
+                      ))}
+                    </select>
+                    <div style={{display:"flex",gap:"0.4rem",flexWrap:"wrap"}}>
+                      <div style={{display:"flex",flexDirection:"column",gap:"0.15rem",flex:1}}>
+                        <label style={{color:"#64748b",fontSize:"0.58rem",textTransform:"uppercase"}}>From</label>
+                        <input type="date" value={breakHistoryRange.from}
+                          onChange={e=>setBreakHistoryRange(p=>({...p,from:e.target.value}))}
+                          style={{background:"#1e293b",border:"1px solid #334155",borderRadius:"7px",color:"#e2e8f0",padding:"0.35rem 0.5rem",fontFamily:"inherit",fontSize:"0.75rem",outline:"none"}}/>
+                      </div>
+                      <div style={{display:"flex",flexDirection:"column",gap:"0.15rem",flex:1}}>
+                        <label style={{color:"#64748b",fontSize:"0.58rem",textTransform:"uppercase"}}>To</label>
+                        <input type="date" value={breakHistoryRange.to}
+                          onChange={e=>setBreakHistoryRange(p=>({...p,to:e.target.value}))}
+                          style={{background:"#1e293b",border:"1px solid #334155",borderRadius:"7px",color:"#e2e8f0",padding:"0.35rem 0.5rem",fontFamily:"inherit",fontSize:"0.75rem",outline:"none"}}/>
+                      </div>
+                      <button onClick={()=>loadArchivedBreaks({workerName:breakSelectedWorker||undefined,from:breakHistoryRange.from?breakHistoryRange.from+"T00:00:00Z":undefined,to:breakHistoryRange.to?breakHistoryRange.to+"T23:59:59Z":undefined})}
+                        style={{alignSelf:"flex-end",padding:"0.35rem 0.65rem",background:"rgba(255,159,67,0.15)",border:"1px solid rgba(255,159,67,0.4)",borderRadius:"7px",color:"#ff9f43",fontWeight:900,cursor:"pointer",fontFamily:"inherit",fontSize:"0.72rem"}}>
+                        Load
+                      </button>
+                      <button onClick={()=>{setBreakHistoryRange({from:"",to:""});setBreakSelectedWorker("");loadArchivedBreaks();}}
+                        style={{alignSelf:"flex-end",padding:"0.35rem 0.6rem",background:"transparent",border:"1px solid #334155",borderRadius:"7px",color:"#64748b",fontWeight:900,cursor:"pointer",fontFamily:"inherit",fontSize:"0.72rem"}}>
+                        All
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {(() => {
+                  const filtered = archivedBreaks.filter(b=>
+                    (!breakSelectedWorker || b.workerName===breakSelectedWorker) &&
+                    (!breakHistoryRange.from || b.startedAt>=breakHistoryRange.from+"T00:00:00Z") &&
+                    (!breakHistoryRange.to   || b.startedAt<=breakHistoryRange.to+"T23:59:59Z")
+                  );
+                  if (filtered.length===0) return (
+                    <div style={{padding:"1rem",background:"rgba(15,23,42,0.5)",borderRadius:"10px",color:"#475569",fontSize:"0.75rem",textAlign:"center"}}>
+                      No archived breaks yet. Use "Archive Now" or wait for auto-archive.
+                    </div>
+                  );
+                  const totalMins = filtered.reduce((s,b)=>s+(b.durationMins||0),0);
+                  const overdueCnt = filtered.filter(b=>b.wasOverdue).length;
+                  const avgMins = Math.round(totalMins/filtered.length);
+                  const byWorker = {};
+                  filtered.forEach(b=>{ byWorker[b.workerName]=(byWorker[b.workerName]||0)+1; });
+                  return (
+                    <div>
+                      <div style={{display:"flex",gap:"0.45rem",marginBottom:"0.65rem",flexWrap:"wrap"}}>
+                        {[
+                          {label:"Records",val:filtered.length,color:"#e2e8f0"},
+                          {label:"Avg",val:avgMins+"m",color:"#ff9f43"},
+                          {label:"Overdue",val:overdueCnt,color:overdueCnt>0?"#ff4444":"#475569"},
+                          {label:"Workers",val:Object.keys(byWorker).length,color:"#a78bfa"},
+                        ].map(stat=>(
+                          <div key={stat.label} style={{flex:1,minWidth:60,padding:"0.4rem 0.45rem",background:"#1e293b",borderRadius:"8px",textAlign:"center"}}>
+                            <div style={{color:stat.color,fontWeight:900,fontSize:"0.82rem"}}>{stat.val}</div>
+                            <div style={{color:"#475569",fontSize:"0.58rem"}}>{stat.label}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{display:"flex",flexDirection:"column",gap:"0.3rem"}}>
+                        {filtered.map(b=>(
+                          <div key={b.id} style={{display:"flex",alignItems:"center",gap:"0.5rem",padding:"0.5rem 0.65rem",background:b.wasOverdue?"rgba(255,68,68,0.07)":"rgba(15,23,42,0.5)",border:`1px solid ${b.wasOverdue?"rgba(255,68,68,0.25)":"#1e293b"}`,borderRadius:"9px"}}>
+                            <div style={{flex:1,minWidth:0}}>
+                              <div style={{display:"flex",alignItems:"center",gap:"0.35rem"}}>
+                                <span style={{color:"#e2e8f0",fontWeight:800,fontSize:"0.75rem"}}>{b.workerName}</span>
+                                {b.wasOverdue && <span style={{color:"#ff4444",fontSize:"0.58rem",fontWeight:900}}>⚠️ LATE</span>}
+                              </div>
+                              <div style={{color:"#475569",fontSize:"0.6rem",marginTop:"0.08rem"}}>{fmtDate(b.startedAt)} · {fmtTime(b.startedAt)} → {fmtTime(b.endedAt)}</div>
+                              <div style={{color:"#334155",fontSize:"0.56rem",marginTop:"0.05rem"}}>Archived {fmtDate(b.archivedAt)} by {b.archivedBy||"auto"}</div>
+                            </div>
+                            <div style={{color:b.wasOverdue?"#ff4444":"#ff9f43",fontWeight:900,fontSize:"0.78rem",flexShrink:0}}>{b.durationMins||"?"}m</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+
+            {/* Bottom close bar */}
             <div style={{flexShrink:0,paddingBottom:"env(safe-area-inset-bottom, 0px)",borderTop:"1px solid rgba(255,159,67,0.15)",background:"rgba(15,23,42,0.95)"}}>
               <button onClick={()=>setBreakPanelOpen(false)}
-                style={{width:"100%",padding:"0.85rem",background:"rgba(255,68,68,0.08)",border:"none",borderTop:"none",color:"#ff4444",fontWeight:900,cursor:"pointer",fontFamily:"inherit",fontSize:"0.85rem",textTransform:"uppercase",letterSpacing:"0.06em"}}>
+                style={{width:"100%",padding:"0.85rem",background:"rgba(255,68,68,0.08)",border:"none",color:"#ff4444",fontWeight:900,cursor:"pointer",fontFamily:"inherit",fontSize:"0.85rem",textTransform:"uppercase",letterSpacing:"0.06em"}}>
                 ✕ Close Break Panel
               </button>
             </div>
@@ -3592,6 +3880,18 @@
                       🍵 Break
                     </button>
                   )
+                )}
+                {/* Break panel button — supervisor/admin/superuser */}
+                {(userRole==="supervisor"||userRole==="admin"||userRole==="superuser") && (
+                  <button className="wd-nav-btn" onClick={()=>setBreakPanelOpen(o=>!o)}
+                    style={{background:breakPanelOpen?'rgba(255,159,67,0.15)':'transparent',border:'1px solid rgba(255,159,67,0.45)',color:'#ff9f43',position:'relative'}}>
+                    🍵 Breaks
+                    {breaks.filter(b=>!b.endedAt).length>0 && (
+                      <span style={{position:'absolute',top:-5,right:-5,background:'#ff4444',color:'#fff',borderRadius:'50%',width:16,height:16,fontSize:'0.55rem',fontWeight:900,display:'flex',alignItems:'center',justifyContent:'center',border:'2px solid #0a0e1a'}}>
+                        {breaks.filter(b=>!b.endedAt).length}
+                      </span>
+                    )}
+                  </button>
                 )}
                 <button className="wd-nav-btn" onClick={()=>{
                   localStorage.removeItem("wd_user");
@@ -5332,11 +5632,12 @@ ${sortedCompleted.map(r => {
                 <button onClick={()=>{setEditSettings({...DEFAULTS});setDirtyKeys(Object.fromEntries(Object.keys(DEFAULTS).map(k=>[k,true])));}} style={{padding:"0.5rem 1rem",borderRadius:"8px",border:"1px solid rgba(255,68,68,0.3)",background:"transparent",color:"#ff4444",fontWeight:700,cursor:"pointer",fontSize:"0.8rem"}}>Reset Defaults</button>
               </div>
             </div>
+          {_breakPanelJsx}
           </div>
         );
       }
 
-      if (screen === "admin") {
+if (screen === "admin") {
         if (!canAdmin) {
           return (
             <div style={{ minHeight:'100vh', ...bg, padding:'1.5rem', display:'flex', alignItems:'center', justifyContent:'center' }}>
