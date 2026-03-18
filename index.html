@@ -550,6 +550,7 @@
         room: r.room,
         qty: Number(r.qty||0),
         adjQty: Number(r.adj_qty||0),
+        qtyHistory: Array.isArray(r.qty_history) ? r.qty_history : [],
         priority: !!r.priority,
         comments: r.comments || "",
         status: r.status,
@@ -573,6 +574,7 @@
         room: r.room,
         qty: Number(r.qty||0),
         adj_qty: Number(r.adjQty||0),
+        qty_history: Array.isArray(r.qtyHistory) ? r.qtyHistory : [],
         priority: !!r.priority,
         comments: r.comments || "",
         status: r.status,
@@ -1160,7 +1162,8 @@
         });
       };
       const [editingId, setEditingId] = useState(null);
-      const [editQty, setEditQty] = useState(0);
+      const [editQty, setEditQty] = useState("");
+      const [expandedHistory, setExpandedHistory] = useState(null);
       const [sysSettings, setSysSettings] = useState({});
       const _prevSettingsJson = useRef("{}");
       const settingsVal = (key, fallback) => {
@@ -1749,7 +1752,7 @@
         let rows = [...(Array.isArray(requests) ? requests : [])];
         if (onlyActive) rows = rows.filter(r => r.status !== "completed" && r.status !== "cancelled");
         const safeSelectedRooms = Array.isArray(selectedRooms) ? selectedRooms : CONFIG.ROOMS;
-        rows = rows.filter(r => safeSelectedRooms.includes(r.room));
+        rows = rows.filter(r => safeSelectedRooms.some(sel => r.room === sel || r.room.startsWith(sel + " →")));
         if (q) {
           rows = rows.filter(r =>
             (r.item||"").toLowerCase().includes(q) ||
@@ -2020,6 +2023,7 @@
           subRoom: "",
           qty: 0,
           adjQty: 0,
+          qtyHistory: [],
           reqTime: timeString,
           delTime: "",
           priority: false,
@@ -2049,10 +2053,11 @@
           const id = Date.now(); // ok for MVP; Supabase primary key expects bigint
           const req = {
             id,
-            item: formData.item.trim(),
+            item: formData.item.trim().replace(/^0+(?=\d)/, ''),
             room: formData.room === "Film/Labels" && formData.subRoom ? `Film/Labels → ${formData.subRoom}` : formData.room,
             qty: Number(formData.qty) || 0,
             adjQty: Number(formData.adjQty) || 0,
+            qtyHistory: [],
             priority: !!formData.priority,
             comments: (formData.comments || "").trim(),
             status: "pending",
@@ -2161,16 +2166,21 @@
             return r;
           });
           if (completedRow && completedRow.adjQty > 0 && completedRow.adjQty < completedRow.qty) {
-            const balanceQty = completedRow.qty - completedRow.adjQty;
+            const balanceQty = completedRow.adjQty;
             const parentNote = `🔄 Balance: ${balanceQty} remaining (from #${completedRow.id})`;
             const existingComments = (completedRow.comments || "").replace(/🔄 Balance:.*?(?:\n|$)/g, "").trim();
+            // Log this delivery to history — Done is the trigger, not the pencil adjustment
+            const inheritedHistory = Array.isArray(completedRow.qtyHistory) ? [...completedRow.qtyHistory] : [];
+            const firstDelivered = completedRow.qty - completedRow.adjQty; // qty ordered minus balance = delivered this trip
+            inheritedHistory.push({ delivered: firstDelivered, newBalance: balanceQty, by: userName, at: nowIso() });
             const balanceReq = {
               id: Date.now() + Math.floor(Math.random() * 1000),
               item: completedRow.item,
               room: completedRow.room,
               qty: balanceQty,
               adjQty: 0,
-              priority: completedRow.priority, // inherit priority
+              qtyHistory: inheritedHistory,
+              priority: completedRow.priority,
               comments: existingComments ? `${parentNote}\n${existingComments}` : parentNote,
               status: "pending",
               submittedAt: nowIso(),
@@ -2219,7 +2229,11 @@
           await adapterRef.current.updatePartial(id, (r)=> {
             if (r.status === "completed" || r.status === "cancelled") return r;
             if (r.claimedBy && r.claimedBy !== userName && !canSupervisor) return r;
-            r.adjQty = Number(newQty) || 0;
+            const delivered = Number(newQty) || 0;
+            const currentBalance = r.adjQty > 0 ? r.adjQty : r.qty;
+            const newBalance = Math.max(0, currentBalance - delivered);
+            // Only update the balance — history is logged when Done is hit
+            r.adjQty = newBalance;
             r.lastUpdatedAt = nowIso();
             return r;
           });
@@ -5927,7 +5941,7 @@ ${filteredArchive.map(r => `<tr>
                 </div>
               </div>
 
-              {grouped.keys.filter(groupKey => safeSelectedRooms.includes(groupKey)).length === 0 ? (
+              {grouped.keys.filter(groupKey => safeSelectedRooms.some(sel => groupKey === sel || groupKey.startsWith(sel + " →"))).length === 0 ? (
                 <div style={{ padding:'4rem 2rem', textAlign:'center', background:'rgba(15,23,42,0.85)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px' }}>
                   <Package size={64} color="#334155" />
                   <h3 style={{ color:'#64748b', margin:'1rem 0 0 0' }}>
@@ -5939,8 +5953,9 @@ ${filteredArchive.map(r => `<tr>
                 </div>
               ) : (
                 <div style={{ display:'flex', flexDirection:'column', gap:'1rem' }}>
-                  {grouped.keys.filter(groupKey => safeSelectedRooms.includes(groupKey)).map(groupKey => {
-                    const roomColor = CONFIG.ROOM_COLORS[groupKey] || '#00ff88';
+                  {grouped.keys.filter(groupKey => safeSelectedRooms.some(sel => groupKey === sel || groupKey.startsWith(sel + " →"))).map(groupKey => {
+                    const _baseRoom = groupKey.includes(' → ') ? groupKey.split(' → ')[0] : groupKey;
+                    const roomColor = CONFIG.ROOM_COLORS[groupKey] || CONFIG.ROOM_COLORS[_baseRoom] || '#00ff88';
                     return (
                     <div key={groupKey} style={{ background:'rgba(15,23,42,0.85)', border:`1px solid ${roomColor}33`, borderRadius:'14px', overflow:'hidden' }}>
                       <div style={{ padding:'0.9rem 1.2rem', background:`linear-gradient(135deg, ${roomColor}22 0%, ${roomColor}08 100%)`, borderBottom:`2px solid ${roomColor}`, display:'flex', alignItems:'center', gap:'0.75rem' }}>
@@ -5969,7 +5984,7 @@ ${filteredArchive.map(r => `<tr>
                                     </span>
                                     <span style={{ display:'flex', alignItems:'center', gap:'0.35rem', fontWeight:900, color:'#e2e8f0', fontSize:'0.95rem', flex:1, minWidth:0 }}>
                                       <Package size={14} color="#00ff88" />
-                                      {req.item}
+                                      {/^\d+$/.test(req.item) ? String(Number(req.item)) : req.item}
                                     </span>
                                     {req.priority && (
                                       <span style={{ padding:'0.15rem 0.45rem', background:'#ff4444', borderRadius:'8px', color:'#fff', fontWeight:900, fontSize:'0.68rem', flexShrink:0 }}>HIGH</span>
@@ -5982,26 +5997,45 @@ ${filteredArchive.map(r => `<tr>
                                     </span>
                                   </div>
 
-                                  <div style={{ display:'flex', alignItems:'center', gap:'0.75rem', marginBottom:'0.5rem', flexWrap:'wrap', fontSize:'0.78rem', color:'#8b9dc3' }}>
-                                    <span>
-                                      Qty: <span style={{ color:'#00ff88', fontWeight:900 }}>{req.qty}</span>
-                                      {req.adjQty > 0 && <span style={{ color:'#fbbf24', fontWeight:900 }}> → {req.adjQty}</span>}
-                                      {canActThis && (
-                                        editingId === req.id ? (
-                                          <span style={{ display:'inline-flex', gap:'0.3rem', alignItems:'center', marginLeft:'0.4rem' }}>
-                                            <input type="number" value={editQty} onChange={(e)=> setEditQty(parseInt(e.target.value)||0)}
-                                              style={{ width:'55px', padding:'0.2rem 0.3rem', background:'#1e293b', border:'2px solid #00ff88', borderRadius:'6px', color:'#e2e8f0', fontWeight:900, fontSize:'0.78rem' }} />
-                                            <button onClick={()=> adjustQty(req.id, editQty)}
-                                              style={{ padding:'0.2rem 0.4rem', background:'#00ff88', border:'none', borderRadius:'6px', cursor:'pointer' }}>
-                                              <Save size={12} color="#0a0e1a" />
-                                            </button>
-                                          </span>
-                                        ) : (
-                                          <button onClick={() => { setEditingId(req.id); setEditQty(req.adjQty || req.qty); }}
-                                            style={{ marginLeft:'0.3rem', padding:'0.15rem 0.35rem', background:'transparent', border:'1px solid #334155', borderRadius:'6px', cursor:'pointer' }}>
-                                            <Edit2 size={11} color="#64748b" />
+                                  <div style={{ display:'flex', alignItems:'center', gap:'0.6rem', marginBottom:'0.5rem', flexWrap:'wrap', fontSize:'0.78rem', color:'#8b9dc3' }}>
+                                    <span style={{ display:'inline-flex', alignItems:'center', gap:'0.35rem' }}>
+                                      <span style={{ fontSize:'0.78rem', color:'#8b9dc3' }}>Qty:</span>
+                                      {editingId === req.id ? (
+                                        <span style={{ display:'inline-flex', gap:'0.3rem', alignItems:'center', flexWrap:'wrap' }}>
+                                          <span style={{ fontSize:'0.7rem', color:'#64748b', width:'100%' }}>How many still need delivering? (current: {req.adjQty > 0 ? req.adjQty : req.qty})</span>
+                                          <input type="tel" inputMode="numeric" value={editQty}
+                                            placeholder="0"
+                                            onChange={(e)=>{ const r=e.target.value.replace(/[^0-9]/g,''); setEditQty(r===''?'':String(Number(r))); }}
+                                            style={{ width:'55px', padding:'0.22rem 0.35rem', background:'#1e293b', border:'2px solid #38bdf8', borderRadius:'6px', color:'#38bdf8', fontWeight:900, fontSize:'0.95rem', outline:'none' }} />
+                                          <button onClick={()=> adjustQty(req.id, Number(editQty)||0)}
+                                            style={{ padding:'0.22rem 0.5rem', background:'#38bdf8', border:'none', borderRadius:'6px', cursor:'pointer', display:'inline-flex', alignItems:'center' }}>
+                                            <Save size={14} color="#0a0e1a" />
                                           </button>
-                                        )
+                                          <button onClick={()=> setEditingId(null)}
+                                            style={{ padding:'0.22rem 0.4rem', background:'transparent', border:'1px solid #334155', borderRadius:'6px', cursor:'pointer', color:'#64748b', fontSize:'0.78rem' }}>
+                                            ✕
+                                          </button>
+                                        </span>
+                                      ) : (
+                                        <>
+                                          <span style={{ color:'#38bdf8', fontWeight:900, fontSize:'1.15rem', lineHeight:1 }}>{req.adjQty > 0 ? req.adjQty : req.qty}</span>
+                                          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
+                                          <span style={{ color:'#fbbf24', fontWeight:900, fontSize:'0.85rem' }}>{req.qty}→</span>
+                                          {Array.isArray(req.qtyHistory) && req.qtyHistory.length > 0 && (
+                                            <button onClick={()=> setExpandedHistory(prev => prev === req.id ? null : req.id)}
+                                              style={{ display:'inline-flex', alignItems:'center', gap:'4px', padding:'2px 8px', background:'transparent', border:'1px solid #334155', borderRadius:'20px', cursor:'pointer', fontSize:'0.72rem', color:'#64748b', fontFamily:'inherit' }}>
+                                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ transform: expandedHistory===req.id ? 'rotate(180deg)' : 'rotate(0deg)', transition:'transform 0.15s' }}><polyline points="6 9 12 15 18 9"/></svg>
+                                              {req.qtyHistory.length} {req.qtyHistory.length === 1 ? 'delivery' : 'deliveries'}
+                                            </button>
+                                          )}
+                                          {canActThis && (
+                                            <button onClick={()=>{ setEditingId(req.id); setEditQty(''); }}
+                                              title="Adjust picked quantity"
+                                              style={{ padding:'0.22rem 0.45rem', background:'transparent', border:'1px solid #334155', borderRadius:'6px', cursor:'pointer', display:'inline-flex', alignItems:'center' }}>
+                                              <Edit2 size={14} color="#64748b" />
+                                            </button>
+                                          )}
+                                        </>
                                       )}
                                     </span>
                                     <span style={{ display:'flex', alignItems:'center', gap:'0.25rem' }}>
@@ -6014,12 +6048,57 @@ ${filteredArchive.map(r => `<tr>
                                         🔒 {req.claimedBy}
                                       </span>
                                     )}
-                                    {req.comments && (
-                                      <span style={{ color:'#64748b', fontStyle:'italic', maxWidth:'180px', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                                        💬 {req.comments}
-                                      </span>
-                                    )}
                                   </div>
+                                  {expandedHistory === req.id && Array.isArray(req.qtyHistory) && req.qtyHistory.length > 0 && (()=>{
+                                    const fmtT = (iso) => { try { return new Date(iso).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'}); } catch{return '';} };
+                                    const steps = req.qtyHistory;
+                                    const rows = steps.map((h, i) => {
+                                      // Support both old format (qty only) and new format (delivered + newBalance)
+                                      const delivered = h.delivered !== undefined ? h.delivered
+                                        : (i === 0 ? req.qty - h.qty : steps[i-1].qty - h.qty);
+                                      return { delivered, qty: h.newBalance !== undefined ? h.newBalance : h.qty, by: h.by, at: h.at };
+                                    });
+                                    return (
+                                      <div style={{ background:'rgba(56,189,248,0.06)', border:'1px solid rgba(56,189,248,0.2)', borderLeft:'2px solid #38bdf8', borderRadius:'8px', padding:'0.55rem 0.75rem', marginBottom:'0.5rem' }}>
+                                        <div style={{ fontSize:'0.65rem', fontWeight:900, color:'#38bdf8', textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:'0.4rem' }}>Delivery history</div>
+                                        <div style={{ display:'flex', flexDirection:'column', gap:'4px' }}>
+                                          {rows.map((row, i) => (
+                                            <div key={i} style={{ display:'flex', alignItems:'center', gap:'8px', fontSize:'0.78rem' }}>
+                                              <span style={{ width:6, height:6, borderRadius:'50%', background:'#4ade80', flexShrink:0, display:'inline-block' }}/>
+                                              <span style={{ fontWeight:900, color:'#e2e8f0' }}>{row.delivered !== undefined ? row.delivered : row.picked} delivered</span>
+                                              <span style={{ color:'#64748b' }}>by {row.by}</span>
+                                              <span style={{ color:'#475569', marginLeft:'auto' }}>{fmtT(row.at)}</span>
+                                            </div>
+                                          ))}
+                                          <div style={{ borderTop:'1px solid rgba(56,189,248,0.15)', marginTop:'3px', paddingTop:'5px', display:'flex', alignItems:'center', gap:'8px', fontSize:'0.78rem' }}>
+                                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" strokeWidth="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
+                                            <span style={{ fontWeight:900, color:'#38bdf8' }}>{req.adjQty > 0 ? req.adjQty : req.qty} still needed</span>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    );
+                                  })()}
+                                  {req.comments && (()=>{
+                                    const _c = req.comments || "";
+                                    const _bi = _c.indexOf("Balance: ");
+                                    const _nl = _bi >= 0 ? _c.indexOf("\n", _bi) : -1;
+                                    const _clean = _bi >= 0
+                                      ? (_c.slice(0, Math.max(0,_bi-2)) + (_nl >= 0 ? _c.slice(_nl+1) : "")).trim()
+                                      : _c.trim();
+                                    const _bNum = _bi >= 0 ? _c.slice(_bi+9).match(/^(\d+)/) : null;
+                                    return (<>
+                                      {_bNum && (
+                                        <div style={{ color:'#fbbf24', fontSize:'0.75rem', marginBottom:'0.25rem', fontWeight:700 }}>
+                                          🔄 Previous remaining balance: {_bNum[1]}
+                                        </div>
+                                      )}
+                                      {_clean && (
+                                        <div style={{ color:'#8b9dc3', fontStyle:'italic', fontSize:'0.78rem', marginBottom:'0.4rem', lineHeight:1.45, wordBreak:'break-word' }}>
+                                          💬 {_clean}
+                                        </div>
+                                      )}
+                                    </>);
+                                  })()}
 
                                   <div style={{ display:'flex', gap:'0.4rem', flexWrap:'wrap' }}>
                                     {req.status === "pending" && (
