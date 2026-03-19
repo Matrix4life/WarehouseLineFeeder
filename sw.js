@@ -4,7 +4,7 @@
 // Vercel automatically serves the new sw.js on each push — this triggers
 // the updatefound → SKIP_WAITING → controllerchange → reload chain in the app
 // ─────────────────────────────────────────────────────────────────────────────
-const CACHE_VERSION = "wds-v1.3";
+const CACHE_VERSION = "wds-v1.4";
 const CACHE_NAME = `wds-cache-${CACHE_VERSION}`;
 const PRECACHE_URLS = [
   "./",
@@ -101,10 +101,12 @@ self.addEventListener("push", (event) => {
     catch(e) { data.body = event.data.text(); }
   }
   const vibrate = {
-    high_priority: [150, 80, 150, 80, 150],
-    completed:     [100],
-    chat:          [80],
+    new_request:   [100, 50, 100, 50, 100],
+    high_priority: [150, 80, 150, 80, 150, 80, 200],
+    completed:     [100, 50, 200],
     cancelled:     [200, 100, 200],
+    chat:          [80, 40, 80],
+    break:         [120, 60, 120],
   }[data.type] || [100, 50, 100];
 
   event.waitUntil(
@@ -113,6 +115,7 @@ self.addEventListener("push", (event) => {
       icon:    data.icon || "./icons/icon-192.png",
       badge:   "./icons/icon-72.png",
       tag:     data.tag || data.type || "wds",
+      renotify: true,
       vibrate,
       data:    data.data || { url: "/" },
       requireInteraction: data.type === "high_priority",
