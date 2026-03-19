@@ -235,7 +235,7 @@
       STORAGE_KEY: "warehouse-requests-v3",
       CHAT_KEY: "warehouse-chat-v1",
       REFRESH_MS: 2500, // polling fallback; realtime will override
-      VAPID_PUBLIC_KEY: 'BEPNdzUnQGAu3LaQ7Y86AfZ-jtGHUkV7wDKi_jHpP8T8zx5gXR4-Bcvf51arMLH95GNWMRItwqddEPUDY7iLptk',
+      VAPID_PUBLIC_KEY: 'BNUjsh2qkn1CQj0Zg4F9hDiHr0GbWlWsza13bUx7zkyydOQGWg1wnjJZ5u2KQgrZYLLTsYUC5t1NfKoDpFk_2XA',
       SLA_MINUTES_WARN: 5,
       SLA_MINUTES_BAD: 10,
       SLA_MINUTES_CRIT: 20,
@@ -6348,119 +6348,27 @@ ${filteredArchive.map(r => `<tr>
       window.dispatchEvent(new CustomEvent('wd-install-done'));
     });
 
-    // ── Inline Service Worker (blob URL — no external sw.js file needed) ────
-    // Handles: push events, notification clicks, offline cache, vibration
-    const _SW_CODE = `
-const CACHE = 'wlf-v1';
-const SHELL = ['/'];
-
-self.addEventListener('install', e => {
-  e.waitUntil(
-    caches.open(CACHE).then(c => c.addAll(SHELL).catch(()=>{})).then(() => self.skipWaiting())
-  );
-});
-
-self.addEventListener('activate', e => {
-  e.waitUntil(
-    caches.keys().then(keys =>
-      Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))
-    ).then(() => self.clients.claim())
-  );
-});
-
-self.addEventListener('fetch', e => {
-  // Cache-first for same-origin navigations; network-first for API calls
-  if (e.request.method !== 'GET') return;
-  if (e.request.url.includes('supabase') || e.request.url.includes('api.anthropic')) return;
-  e.respondWith(
-    caches.match(e.request).then(cached => cached || fetch(e.request).then(res => {
-      if (res && res.status === 200 && res.type === 'basic') {
-        const clone = res.clone();
-        caches.open(CACHE).then(c => c.put(e.request, clone));
-      }
-      return res;
-    }).catch(() => cached || new Response('Offline', {status: 503})))
-  );
-});
-
-// ── Push notification handler ──────────────────────────────────────────────
-self.addEventListener('push', e => {
-  let data = { title: '📦 Warehouse Update', body: '', type: 'default' };
-  try { data = { ...data, ...e.data.json() }; } catch(err) {}
-
-  const vibrateMap = {
-    new_request:  [100, 50, 100, 50, 100],
-    high_priority:[150, 80, 150, 80, 150, 80, 200],
-    completed:    [100, 50, 200],
-    cancelled:    [200, 100, 200],
-    chat:         [80, 40, 80],
-    break:        [120, 60, 120],
-  };
-  const badgeMap = {
-    new_request:  '📦', high_priority: '🔥', completed: '✅',
-    cancelled:    '❌', chat: '💬',          break: '🍵',
-  };
-
-  const opts = {
-    body:    data.body || '',
-    icon:    data.icon  || 'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%2275%22 font-size=%2275%22>📦</text></svg>',
-    badge:   'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%2280%22 font-size=%2280%22>' + (badgeMap[data.type]||'📦') + '</text></svg>',
-    vibrate: vibrateMap[data.type] || [100, 50, 100],
-    tag:     data.type || 'warehouse',
-    renotify:true,
-    data:    { url: self.location.origin, type: data.type },
-    actions: [{ action: 'open', title: 'Open App' }],
-  };
-
-  e.waitUntil(self.registration.showNotification(data.title, opts));
-});
-
-// ── Notification click — focus or open the app ────────────────────────────
-self.addEventListener('notificationclick', e => {
-  e.notification.close();
-  const target = (e.notification.data && e.notification.data.url) || self.location.origin;
-  e.waitUntil(
-    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
-      const match = list.find(c => c.url.startsWith(self.location.origin) && 'focus' in c);
-      if (match) return match.focus();
-      return self.clients.openWindow(target);
-    })
-  );
-});
-
-// ── skipWaiting message (for update banner) ───────────────────────────────
-self.addEventListener('message', e => {
-  if (e.data === 'SKIP_WAITING') self.skipWaiting();
-});
-`;
-
-    // ── Auto-updating Service Worker ─────────────────────────────────────────
-    // Only register Service Worker if NOT using file:// protocol (needs HTTP/HTTPS)
+    // ── Service Worker Registration (real sw.js file — required for push) ───
+    // IMPORTANT: Blob-URL service workers CANNOT receive push events.
+    // The sw.js file must be deployed alongside index.html at the same root.
     if ('serviceWorker' in navigator && window.location.protocol !== 'file:') {
       window.addEventListener('load', async () => {
         try {
-          // Register from inline blob so no external sw.js file is needed
-          const swBlob = new Blob([_SW_CODE], { type: 'application/javascript' });
-          const swUrl  = URL.createObjectURL(swBlob);
-          const reg    = await navigator.serviceWorker.register(swUrl, { scope: '/' })
-            .catch(() => navigator.serviceWorker.register('./sw.js'))  // fallback if blob scope rejected
-            .catch(() => null);
-          if (!reg) throw new Error('SW registration failed');
+          const reg = await navigator.serviceWorker.register('./sw.js', { scope: '/' });
           // Expose for _showNativeNotif
           window._swReg = reg;
+          console.log('[SW] Registered from sw.js — push notifications enabled');
 
           const banner = document.getElementById('wd-update-banner');
           let waitingSW = null;
 
-          // Show the update banner
           function showUpdateBanner(sw) {
             waitingSW = sw;
-            banner.classList.add('wd-update-visible');
+            if (banner) banner.classList.add('wd-update-visible');
           }
 
-          // User taps "Update" — activate the new SW then reload
           window._wdDoUpdate = () => {
-            banner.classList.remove('wd-update-visible');
+            if (banner) banner.classList.remove('wd-update-visible');
             if (waitingSW) {
               waitingSW.postMessage('SKIP_WAITING');
             } else {
@@ -6468,31 +6376,24 @@ self.addEventListener('message', e => {
             }
           };
 
-          // User taps "✕" — hide for now, will reappear next time they switch tabs
           window._wdDismissUpdate = () => {
-            banner.classList.remove('wd-update-visible');
+            if (banner) banner.classList.remove('wd-update-visible');
           };
 
-          // When a NEW service worker is found (you pushed an update to Vercel):
           reg.addEventListener('updatefound', () => {
             const newSW = reg.installing;
             if (!newSW) return;
-
             newSW.addEventListener('statechange', () => {
-              // New SW installed and waiting — show banner instead of auto-reloading
               if (newSW.state === 'installed' && navigator.serviceWorker.controller) {
                 showUpdateBanner(newSW);
               }
             });
           });
 
-          // If there's already a waiting SW when the page loads (e.g. update landed
-          // while the tab was in the background and the user just came back)
           if (reg.waiting && navigator.serviceWorker.controller) {
             showUpdateBanner(reg.waiting);
           }
 
-          // After skipWaiting, the controller changes — reload to use new SW
           let refreshing = false;
           navigator.serviceWorker.addEventListener('controllerchange', () => {
             if (refreshing) return;
@@ -6507,6 +6408,16 @@ self.addEventListener('message', e => {
           document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'visible') reg.update();
           });
+
+          // Auto-subscribe to push if user previously had it enabled
+          if (localStorage.getItem('wd_push_enabled') === '1') {
+            const userName = sessionStorage.getItem('wd_user_name') || localStorage.getItem('wd_user_name');
+            if (userName) {
+              _subscribePush(userName, CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY)
+                .then(() => console.log('[Push] Auto-resubscribed'))
+                .catch(() => {});
+            }
+          }
 
         } catch (err) {
           console.warn('[SW] Registration failed:', err);
