@@ -550,6 +550,7 @@
         room: r.room,
         qty: Number(r.qty||0),
         adjQty: Number(r.adj_qty||0),
+        adjQtyAtClaim: r.adj_qty_at_claim !== undefined ? Number(r.adj_qty_at_claim) : undefined,
         qtyHistory: Array.isArray(r.qty_history) ? r.qty_history : [],
         priority: !!r.priority,
         comments: r.comments || "",
@@ -574,6 +575,7 @@
         room: r.room,
         qty: Number(r.qty||0),
         adj_qty: Number(r.adjQty||0),
+        adj_qty_at_claim: r.adjQtyAtClaim !== undefined ? Number(r.adjQtyAtClaim) : null,
         qty_history: Array.isArray(r.qtyHistory) ? r.qtyHistory : [],
         priority: !!r.priority,
         comments: r.comments || "",
@@ -1719,17 +1721,78 @@
           setPushEnabled(false);
           setNotificationsEnabled(false);
         } else {
-          const granted = await requestNotifyPermission();
-          if (!granted) {
-            alert("Notifications blocked by browser. Please enable them in your browser/phone settings, then try again.");
+          // ── Device capability checks with user-friendly messages ──
+          const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+          const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+
+          // iOS must be running as installed PWA
+          if (isIOS && !isStandalone) {
+            alert(
+              "📱 iPhone/iPad Setup Required\n\n" +
+              "Push notifications on iOS only work when the app is installed to your Home Screen:\n\n" +
+              "1. Tap the Share button (□↑) at the bottom of Safari\n" +
+              "2. Scroll down and tap \"Add to Home Screen\"\n" +
+              "3. Tap \"Add\"\n" +
+              "4. Open the app from your Home Screen\n" +
+              "5. Then enable notifications again\n\n" +
+              "This is an Apple requirement for all web apps."
+            );
             return;
           }
+
+          // Check if browser supports notifications at all
+          if (!('Notification' in window)) {
+            alert(
+              "⚠️ Notifications Not Supported\n\n" +
+              "Your browser doesn't support notifications. " +
+              (isIOS ? "Make sure you're running iOS 16.4 or newer, and open the app from the Home Screen." : "Try using Chrome or Edge instead.")
+            );
+            return;
+          }
+
+          // Check if PushManager is available (needed for background push)
+          if (!('PushManager' in window)) {
+            alert(
+              "⚠️ Background Push Not Available\n\n" +
+              "Your browser supports basic notifications but not background push. " +
+              "You'll get alerts while the app is open, but not when it's closed.\n\n" +
+              (isIOS ? "Make sure you're on iOS 16.4+ and opened the app from the Home Screen." : "Try updating your browser to the latest version.")
+            );
+            // Still allow basic notifications even without push
+          }
+
+          // Request permission
+          const granted = await requestNotifyPermission();
+          if (!granted) {
+            const isDenied = Notification.permission === 'denied';
+            if (isDenied) {
+              alert(
+                "🚫 Notifications Are Blocked\n\n" +
+                "You previously blocked notifications. To fix this:\n\n" +
+                (isIOS ?
+                  "Go to Settings → Notifications → find this app → turn ON" :
+                  navigator.userAgent.includes('Android') ?
+                    "1. Tap the 🔒 lock icon in the address bar\n2. Tap \"Permissions\"\n3. Turn on Notifications\n\nOr: Phone Settings → Apps → Chrome → Notifications → ON" :
+                    "1. Click the 🔒 lock icon in the address bar\n2. Find Notifications → set to Allow\n3. Reload the page")
+              );
+            } else {
+              alert("Notifications were not enabled. Please try again and tap \"Allow\" when prompted.");
+            }
+            return;
+          }
+
           setNotificationsEnabled(true);
           localStorage.setItem("wd_push_enabled","1");
           setPushEnabled(true);
+
+          // Subscribe for background push
           if (CONFIG.ENABLE_SUPABASE && CONFIG.SUPABASE_URL) {
-            await _subscribePush(userName, CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
+            const subOk = await _subscribePush(userName, CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
+            if (!subOk && 'PushManager' in window) {
+              console.warn('[Push] Subscription failed — foreground-only notifications');
+            }
           }
+
           setTimeout(() => {
             _showNativeNotif("🔔 Notifications enabled", "You'll now receive alerts for new requests, deliveries & chat.", "new_request");
           }, 500);
@@ -2094,6 +2157,7 @@
             r.status = "claimed";
             r.claimedBy = userName;
             r.claimedAt = nowIso();
+            r.adjQtyAtClaim = r.adjQty || 0; // snapshot so Done knows if pencil was used
             r.lastUpdatedAt = nowIso();
             return r;
           });
@@ -2108,6 +2172,20 @@
           await adapterRef.current.updatePartial(id, (r)=> {
             if (r.status !== "claimed") return r;
             if (r.claimedBy !== userName && !canSupervisor) return r;
+            // Revert any pencil adjustments made during this claim session
+            const claimedAt = r.claimedAt || '';
+            if (claimedAt && Array.isArray(r.qtyHistory) && r.qtyHistory.length > 0) {
+              // Remove history entries added during this claim, restore adjQty
+              const beforeClaim = r.qtyHistory.filter(h => h.at && h.at < claimedAt);
+              const duringClaim = r.qtyHistory.filter(h => h.at && h.at >= claimedAt);
+              if (duringClaim.length > 0) {
+                const revertedAmount = duringClaim.reduce((s, h) => s + (h.delivered || 0), 0);
+                r.adjQty = (r.adjQty || 0) + revertedAmount;
+                r.qtyHistory = beforeClaim;
+                // If adjQty is now back to original qty, reset to 0 (no adjustment)
+                if (r.adjQty >= r.qty) r.adjQty = 0;
+              }
+            }
             r.status = "pending";
             r.claimedBy = null;
             r.claimedAt = null;
@@ -2151,6 +2229,10 @@
           console.error("Failed to start request:", error);
         }
       };
+      // Get the remaining balance — adjQty tracks remaining, qty is original
+      const getRemainingQty = (req) => {
+        return req.adjQty > 0 ? req.adjQty : req.qty;
+      };
       const completeRequest = async (id)=> {
         if (!canWarehouseAct) return;
         try {
@@ -2165,20 +2247,23 @@
             completedRow = { ...r };
             return r;
           });
-          if (completedRow && completedRow.adjQty > 0 && completedRow.adjQty < completedRow.qty) {
+          if (completedRow && completedRow.adjQty > 0) {
+            // Only create balance if the worker used the pencil this session
+            // (adjQty changed from what it was at claim time)
+            const adjAtClaim = completedRow.adjQtyAtClaim !== undefined ? completedRow.adjQtyAtClaim : -1;
+            const pencilWasUsed = completedRow.adjQty !== adjAtClaim;
+            if (pencilWasUsed) {
             const balanceQty = completedRow.adjQty;
+            const totalTarget = completedRow.qty;
             const parentNote = `🔄 Balance: ${balanceQty} remaining (from #${completedRow.id})`;
             const existingComments = (completedRow.comments || "").replace(/🔄 Balance:.*?(?:\n|$)/g, "").trim();
-            // Log this delivery to history — Done is the trigger, not the pencil adjustment
             const inheritedHistory = Array.isArray(completedRow.qtyHistory) ? [...completedRow.qtyHistory] : [];
-            const firstDelivered = completedRow.qty - completedRow.adjQty; // qty ordered minus balance = delivered this trip
-            inheritedHistory.push({ delivered: firstDelivered, newBalance: balanceQty, by: userName, at: nowIso() });
             const balanceReq = {
               id: Date.now() + Math.floor(Math.random() * 1000),
               item: completedRow.item,
               room: completedRow.room,
-              qty: balanceQty,
-              adjQty: 0,
+              qty: totalTarget,
+              adjQty: balanceQty,
               qtyHistory: inheritedHistory,
               priority: completedRow.priority,
               comments: existingComments ? `${parentNote}\n${existingComments}` : parentNote,
@@ -2199,6 +2284,7 @@
             await adapterRef.current.upsert(balanceReq);
             _notifyAV("new_request");
             _showToast("🔄", `Balance created: ${balanceQty} × ${completedRow.item}`, `${completedRow.room} — from partial pick`, "#fbbf24", _onNotif);
+            }
           }
           await loadAll();
           if (completedRow) showNotification("✅ Completed", `${completedRow.item} delivered to ${completedRow.room} by ${userName}`);
@@ -2228,11 +2314,17 @@
         try {
           await adapterRef.current.updatePartial(id, (r)=> {
             if (r.status === "completed" || r.status === "cancelled") return r;
+            if (!r.claimedBy) return r; // must be claimed before adjusting qty
             if (r.claimedBy && r.claimedBy !== userName && !canSupervisor) return r;
             const delivered = Number(newQty) || 0;
+            if (delivered <= 0) return r;
             const currentBalance = r.adjQty > 0 ? r.adjQty : r.qty;
             const newBalance = Math.max(0, currentBalance - delivered);
-            // Only update the balance — history is logged when Done is hit
+            // Log delivery to history
+            const history = Array.isArray(r.qtyHistory) ? [...r.qtyHistory] : [];
+            history.push({ delivered, newBalance, by: userName, at: nowIso() });
+            r.qtyHistory = history;
+            // Update adjQty to remaining balance
             r.adjQty = newBalance;
             r.lastUpdatedAt = nowIso();
             return r;
@@ -3990,7 +4082,7 @@
                     <button onClick={() => {
                       const headers = ["ID","Item","Room","Qty","Priority","Submitted","Submitted By","Claimed By","Claimed At","Completed At","Completed By","Room Wait (min)","Pick Time (min)","Status","Comments"];
                       const rows = filteredReqs.map(r => [
-                        r.id, r.item, r.room, r.qty + (r.adjQty?` adj:${r.adjQty}`:""),
+                        r.id, r.item, r.room, r.qty + (r.adjQty?` remaining:${r.adjQty}`:""),
                         r.priority?"HIGH":"NORMAL",
                         r.submittedAt ? new Date(r.submittedAt).toLocaleString() : "",
                         r.submittedBy||"", r.claimedBy||"",
@@ -4392,7 +4484,7 @@
           const start = new Date(r.submittedAt);
           const end = new Date(r.completedAt);
           const timeMin = Math.round((end - start) / 60000);
-          return [r.id, r.item, r.room, r.qty + (r.adjQty ? ` (adj:${r.adjQty})` : ''),
+          return [r.id, r.item, r.room, r.qty + (r.adjQty ? ` (remaining:${r.adjQty})` : ''),
             r.priority ? 'HIGH' : 'NORMAL', new Date(r.submittedAt).toLocaleString(),
             r.submittedBy||'', r.claimedBy||'', new Date(r.completedAt).toLocaleString(),
             r.completedBy||'', timeMin, (r.comments||'').replace(/,/g,';')];
@@ -4431,7 +4523,7 @@
 ${sortedCompleted.map(r => {
   const tmin = Math.round((new Date(r.completedAt)-new Date(r.submittedAt))/60000);
   const tc = tmin<=5?'time-ok':tmin<=10?'time-warn':'time-bad';
-  return `<tr><td><strong>${r.item}</strong></td><td>${r.room}</td><td>${r.qty}${r.adjQty?` <small>(adj:${r.adjQty})</small>`:''}</td>
+  return `<tr><td><strong>${r.item}</strong></td><td>${r.room}</td><td>${r.qty}${r.adjQty?` <small>(remaining:${r.adjQty})</small>`:''}</td>
 <td>${r.priority?'<span class="high">HIGH</span>':''}</td>
 <td>${new Date(r.submittedAt).toLocaleString()}<br><small style="color:#666">${r.submittedBy||''}</small></td>
 <td>${new Date(r.completedAt).toLocaleString()}</td>
@@ -4562,7 +4654,7 @@ ${sortedCompleted.map(r => {
                               </td>
                               <td style={cellStyle}>
                                 <div style={{ fontWeight:900 }}>{req.qty}</div>
-                                {req.adjQty > 0 && <div style={{ fontSize:'0.75rem', color:'#8b9dc3' }}>adj: {req.adjQty}</div>}
+                                {req.adjQty > 0 && <div style={{ fontSize:'0.75rem', color:'#8b9dc3' }}>remaining: {req.adjQty}</div>}
                               </td>
                               <td style={cellStyle}>
                                 {req.priority && <span style={{ padding:'0.3rem 0.6rem', background:'#ff4444', borderRadius:'8px', color:'#fff', fontWeight:900, fontSize:'0.7rem' }}>HIGH</span>}
@@ -5483,7 +5575,7 @@ if (screen === "admin") {
 <button onclick="window.print()" style="margin-bottom:10px;padding:7px 14px;background:#0a0e1a;color:#00ff88;border:none;border-radius:5px;cursor:pointer;font-weight:700;">🖨️ Print / Save PDF</button>
 <table><thead><tr><th>Item</th><th>Room</th><th>Qty</th><th>Pri</th><th>Status</th><th>Submitted</th><th>Completed</th><th>Completed By</th><th>Archived</th><th>Comments</th></tr></thead><tbody>
 ${filteredArchive.map(r => `<tr>
-<td><strong>${r.item}</strong></td><td>${r.room}</td><td>${r.qty}${r.adjQty?`<small>(adj:${r.adjQty})</small>`:''}</td>
+<td><strong>${r.item}</strong></td><td>${r.room}</td><td>${r.qty}${r.adjQty?`<small>(remaining:${r.adjQty})</small>`:''}</td>
 <td>${r.priority?'<span class="high">HIGH</span>':''}</td>
 <td style="text-transform:uppercase;font-size:0.7rem;font-weight:700">${r.status.replace('_',' ')}</td>
 <td>${r.submittedAt?new Date(r.submittedAt).toLocaleString():''}<br><small>${r.submittedBy||''}</small></td>
@@ -5571,7 +5663,7 @@ ${filteredArchive.map(r => `<tr>
                                   <tr key={r.id} style={{ borderBottom: idx<filteredArchive.length-1?'1px solid #1e293b':'none', background:idx%2===0?'transparent':'rgba(139,157,195,0.03)' }}>
                                     <td style={cellStyle}><div style={{ fontWeight:900 }}>{r.item}</div></td>
                                     <td style={cellStyle}><div style={{ display:'flex', alignItems:'center', gap:'0.3rem' }}><MapPin size={13} color={CONFIG.ROOM_COLORS[r.room]||'#8b9dc3'} />{r.room}</div></td>
-                                    <td style={cellStyle}><div style={{ fontWeight:900 }}>{r.qty}{r.adjQty>0&&<div style={{ fontSize:'0.72rem', color:'#8b9dc3' }}>adj:{r.adjQty}</div>}</div></td>
+                                    <td style={cellStyle}><div style={{ fontWeight:900 }}>{r.qty}{r.adjQty>0&&<div style={{ fontSize:'0.72rem', color:'#8b9dc3' }}>remaining:{r.adjQty}</div>}</div></td>
                                     <td style={cellStyle}>{r.priority&&<span style={{ padding:'0.25rem 0.5rem', background:'#ff4444', borderRadius:'6px', color:'#fff', fontWeight:900, fontSize:'0.68rem' }}>HIGH</span>}</td>
                                     <td style={cellStyle}><span style={{ padding:'0.2rem 0.55rem', borderRadius:'6px', background: r.status==='completed'?'rgba(0,255,136,0.15)':'rgba(255,68,68,0.15)', color:r.status==='completed'?'#00ff88':'#ff4444', fontWeight:900, fontSize:'0.7rem', textTransform:'uppercase' }}>{r.status.replace('_',' ')}</span></td>
                                     <td style={cellStyle}><div style={{ fontSize:'0.8rem' }}>{r.submittedAt?niceTime(r.submittedAt):''}</div><div style={{ fontSize:'0.72rem', color:'#64748b' }}>{r.submittedBy}</div></td>
@@ -6002,7 +6094,7 @@ ${filteredArchive.map(r => `<tr>
                                       <span style={{ fontSize:'0.78rem', color:'#8b9dc3' }}>Qty:</span>
                                       {editingId === req.id ? (
                                         <span style={{ display:'inline-flex', gap:'0.3rem', alignItems:'center', flexWrap:'wrap' }}>
-                                          <span style={{ fontSize:'0.7rem', color:'#64748b', width:'100%' }}>How many still need delivering? (current: {req.adjQty > 0 ? req.adjQty : req.qty})</span>
+                                          <span style={{ fontSize:'0.7rem', color:'#64748b', width:'100%' }}>How many are you delivering now? (remaining: {getRemainingQty(req)})</span>
                                           <input type="tel" inputMode="numeric" value={editQty}
                                             placeholder="0"
                                             onChange={(e)=>{ const r=e.target.value.replace(/[^0-9]/g,''); setEditQty(r===''?'':String(Number(r))); }}
@@ -6018,9 +6110,9 @@ ${filteredArchive.map(r => `<tr>
                                         </span>
                                       ) : (
                                         <>
-                                          <span style={{ color:'#38bdf8', fontWeight:900, fontSize:'1.15rem', lineHeight:1 }}>{req.adjQty > 0 ? req.adjQty : req.qty}</span>
+                                          <span style={{ color:'#38bdf8', fontWeight:900, fontSize:'1.15rem', lineHeight:1 }}>{getRemainingQty(req)}</span>
                                           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
-                                          <span style={{ color:'#fbbf24', fontWeight:900, fontSize:'0.85rem' }}>{req.qty}→</span>
+                                          {req.adjQty > 0 && req.adjQty < req.qty && <span style={{ color:'#fbbf24', fontWeight:900, fontSize:'0.85rem' }}>{req.qty}</span>}
                                           {Array.isArray(req.qtyHistory) && req.qtyHistory.length > 0 && (
                                             <button onClick={()=> setExpandedHistory(prev => prev === req.id ? null : req.id)}
                                               style={{ display:'inline-flex', alignItems:'center', gap:'4px', padding:'2px 8px', background:'transparent', border:'1px solid #334155', borderRadius:'20px', cursor:'pointer', fontSize:'0.72rem', color:'#64748b', fontFamily:'inherit' }}>
@@ -6028,7 +6120,7 @@ ${filteredArchive.map(r => `<tr>
                                               {req.qtyHistory.length} {req.qtyHistory.length === 1 ? 'delivery' : 'deliveries'}
                                             </button>
                                           )}
-                                          {canActThis && (
+                                          {canActThis && req.claimedBy && (
                                             <button onClick={()=>{ setEditingId(req.id); setEditQty(''); }}
                                               title="Adjust picked quantity"
                                               style={{ padding:'0.22rem 0.45rem', background:'transparent', border:'1px solid #334155', borderRadius:'6px', cursor:'pointer', display:'inline-flex', alignItems:'center' }}>
@@ -6072,7 +6164,7 @@ ${filteredArchive.map(r => `<tr>
                                           ))}
                                           <div style={{ borderTop:'1px solid rgba(56,189,248,0.15)', marginTop:'3px', paddingTop:'5px', display:'flex', alignItems:'center', gap:'8px', fontSize:'0.78rem' }}>
                                             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" strokeWidth="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
-                                            <span style={{ fontWeight:900, color:'#38bdf8' }}>{req.adjQty > 0 ? req.adjQty : req.qty} still needed</span>
+                                            <span style={{ fontWeight:900, color:'#38bdf8' }}>{getRemainingQty(req)} still needed</span>
                                           </div>
                                         </div>
                                       </div>
