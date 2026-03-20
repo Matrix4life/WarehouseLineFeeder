@@ -1,11 +1,11 @@
 {
-  "name": "Warehouse Delivery System",
-  "short_name": "WH Delivery",
-  "description": "Real-time warehouse delivery request and management system",
+  "name": "LineFeeder",
+  "short_name": "LineFeeder",
+  "description": "Real-time production line ingredient delivery coordination",
   "start_url": "./",
   "display": "standalone",
   "orientation": "any",
-  "background_color": "#0a0e1a",
+  "background_color": "#090e1a",
   "theme_color": "#00ff88",
   "scope": "./",
   "categories": ["productivity", "utilities"],
@@ -44,7 +44,13 @@
       "src": "./icons/icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-192-maskable.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
     },
     {
       "src": "./icons/icon-384.png",
@@ -56,7 +62,13 @@
       "src": "./icons/icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-512-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
   ],
   "shortcuts": [
