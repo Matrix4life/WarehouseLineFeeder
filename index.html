@@ -1493,7 +1493,7 @@
               'Content-Type': 'application/json',
               'Authorization': `Bearer ${CONFIG.SUPABASE_ANON_KEY}`
             },
-            body: JSON.stringify({ shift, daysBack: 30 })
+            body: JSON.stringify({ shift, daysBack: 90 })
           });
           const data = await res.json();
           if (!data.success) throw new Error(data.error || 'Failed to generate');
