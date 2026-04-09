@@ -231,7 +231,7 @@
     const CONFIG = {
       ENABLE_SUPABASE: true, // <- set true for real multi-user across devices
       SUPABASE_URL: "https://smmbxhkcslcarmlxwzji.supabase.co",
-      SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNtbWJ4aGtjc2xjYXJtbHh3emppIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzNTc0MTUsImV4cCI6MjA4OTkzMzQxNX0.aN9FGQWuwsDk8LwLWpcLCgkDVnhf4HEyj3LRYZ6q1Es",
+      SUPABASE_ANON_KEY: "sb_publishable_Brr0Xwk-ur2ABeFXFGGI9A__WtHsR_p",
       STORAGE_KEY: "warehouse-requests-v3",
       CHAT_KEY: "warehouse-chat-v1",
       REFRESH_MS: 2500, // polling fallback; realtime will override
@@ -1493,7 +1493,7 @@
               'Content-Type': 'application/json',
               'Authorization': `Bearer ${CONFIG.SUPABASE_ANON_KEY}`
             },
-            body: JSON.stringify({ shift, daysBack: 180 })
+            body: JSON.stringify({ shift, daysBack: 30 })
           });
           const data = await res.json();
           if (!data.success) throw new Error(data.error || 'Failed to generate');
@@ -1573,10 +1573,10 @@
       };
 
       const approvePrepList = async (listId) => {
-  setPrepListError(null);
-  const list = prepLists.find(p => p.id === listId);
-  if (!list || list.status !== 'draft') return;
-  try {
+        setPrepListError(null);
+        const list = prepLists.find(p => p.id === listId);
+        if (!list || list.status !== 'draft') return;
+        try {
           // Insert items as warehouse_requests
           const newRequests = list.items.map(item => ({
             item: item.item,
@@ -1615,6 +1615,78 @@
           await loadAll();
         } catch (err) {
           console.error('approvePrepList error:', err);
+          setPrepListError(err.message);
+        }
+      };
+
+      const approveRoomFromPrepList = async (listId, room) => {
+        setPrepListError(null);
+        const list = prepLists.find(p => p.id === listId);
+        if (!list || list.status !== 'draft') return;
+        
+        const roomItems = list.items.filter(item => item.room === room);
+        const remainingItems = list.items.filter(item => item.room !== room);
+        
+        if (roomItems.length === 0) return;
+        
+        try {
+          // Insert only this room's items
+          const newRequests = roomItems.map(item => ({
+            item: item.item,
+            room: item.room,
+            qty: item.suggestedQty,
+            adj_qty: 0,
+            priority: item.priority === 'high',
+            status: 'pending',
+            submitted_at: new Date().toISOString(),
+            submitted_by: userName,
+            submitted_by_role: userRole,
+            comments: `🅰️ AI Prep List #${listId}`,
+            is_ai_generated: true,
+            prep_list_id: listId
+          }));
+          
+          const { error: insertError } = await adapterRef.current.client
+            .from('warehouse_requests')
+            .insert(newRequests);
+          if (insertError) throw insertError;
+
+          // Update prep list - remove approved items, add history
+          const historyEntry = { 
+            action: 'approved_room', 
+            at: new Date().toISOString(), 
+            by: userName, 
+            detail: `${room} (${roomItems.length} items)` 
+          };
+          
+          // If no items remaining, mark as fully approved
+          const newStatus = remainingItems.length === 0 ? 'approved' : 'draft';
+          const updateData = {
+            items: remainingItems,
+            history: [...(list.history || []), historyEntry]
+          };
+          
+          if (newStatus === 'approved') {
+            updateData.status = 'approved';
+            updateData.approved_by = userName;
+            updateData.approved_at = new Date().toISOString();
+          }
+          
+          const { error: updateError } = await adapterRef.current.client
+            .from('ai_prep_lists')
+            .update(updateData)
+            .eq('id', listId);
+          if (updateError) throw updateError;
+
+          await loadPrepLists();
+          await loadAll();
+          
+          // If all items approved, close the editor
+          if (remainingItems.length === 0) {
+            setEditingPrepList(null);
+          }
+        } catch (err) {
+          console.error('approveRoomFromPrepList error:', err);
           setPrepListError(err.message);
         }
       };
@@ -5334,38 +5406,60 @@ ${sortedCompleted.map(r => {
                     </div>
                   )}
 
-                  {/* Items List */}
-                  <div style={{ display:'flex', flexDirection:'column', gap:'0.5rem' }}>
-                    {(currentList.items || []).map((item, idx) => {
-                      const roomColor = CONFIG.ROOM_COLORS[item.room] || '#00ff88';
+                  {/* Items List - Grouped by Room */}
+                  {(() => {
+                    const roomsInList = [...new Set((currentList.items || []).map(i => i.room))];
+                    return roomsInList.map(room => {
+                      const roomItems = (currentList.items || []).filter(i => i.room === room);
+                      const roomColor = CONFIG.ROOM_COLORS[room] || '#00ff88';
                       return (
-                        <div key={idx} style={{ display:'flex', alignItems:'center', gap:'0.75rem', padding:'0.75rem', background:'rgba(30,41,59,0.5)', border:'1px solid #334155', borderRadius:'10px' }}>
-                          <div style={{ width:'8px', height:'8px', borderRadius:'50%', background: roomColor, flexShrink:0 }} />
-                          <div style={{ color: roomColor, fontWeight:900, fontSize:'0.85rem', minWidth:'90px' }}>{item.room}</div>
-                          <div style={{ color:'#e2e8f0', fontWeight:900, flex:1 }}>{item.item}</div>
-                          {currentList.status === 'draft' ? (
-                            <input type="number" value={item.suggestedQty}
-                              onChange={(e) => updatePrepListItem(currentList.id, idx, { suggestedQty: Number(e.target.value) || 1 })}
-                              style={{ width:'60px', padding:'0.4rem', background:'#1e293b', border:'1px solid #334155', borderRadius:'6px', color:'#38bdf8', fontWeight:900, textAlign:'center' }} />
-                          ) : (
-                            <div style={{ color:'#38bdf8', fontWeight:900 }}>{item.suggestedQty}</div>
-                          )}
-                          {item.priority === 'high' && (
-                            <span style={{ padding:'0.2rem 0.5rem', background:'#ff4444', borderRadius:'6px', color:'#fff', fontWeight:900, fontSize:'0.7rem' }}>HIGH</span>
-                          )}
-                          {item.isManual && (
-                            <span style={{ padding:'0.2rem 0.5rem', background:'rgba(0,255,136,0.15)', border:'1px solid #00ff88', borderRadius:'6px', color:'#00ff88', fontWeight:900, fontSize:'0.65rem' }}>MANUAL</span>
-                          )}
-                          {currentList.status === 'draft' && (
-                            <button onClick={() => removePrepListItem(currentList.id, idx)}
-                              style={{ padding:'0.3rem 0.5rem', background:'transparent', border:'1px solid #ff4444', borderRadius:'6px', color:'#ff4444', cursor:'pointer', fontSize:'0.8rem' }}>
-                              ✕
-                            </button>
-                          )}
+                        <div key={room} style={{ marginBottom:'1rem', background:'rgba(15,23,42,0.5)', border:`1px solid ${roomColor}33`, borderRadius:'12px', overflow:'hidden' }}>
+                          <div style={{ padding:'0.75rem 1rem', background:`${roomColor}15`, borderBottom:`1px solid ${roomColor}33`, display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+                            <div style={{ display:'flex', alignItems:'center', gap:'0.6rem' }}>
+                              <div style={{ width:'10px', height:'10px', borderRadius:'50%', background: roomColor }} />
+                              <span style={{ color: roomColor, fontWeight:900, textTransform:'uppercase', letterSpacing:'0.05em' }}>{room}</span>
+                              <span style={{ color:'#64748b', fontSize:'0.8rem' }}>({roomItems.length} items)</span>
+                            </div>
+                            {currentList.status === 'draft' && (
+                              <button onClick={() => approveRoomFromPrepList(currentList.id, room)}
+                                style={{ padding:'0.45rem 0.85rem', background:`${roomColor}22`, border:`1px solid ${roomColor}`, borderRadius:'8px', color: roomColor, fontWeight:900, fontSize:'0.75rem', cursor:'pointer' }}>
+                                ✅ Approve {room}
+                              </button>
+                            )}
+                          </div>
+                          <div style={{ display:'flex', flexDirection:'column', gap:'0' }}>
+                            {roomItems.map((item, idx) => {
+                              const globalIdx = (currentList.items || []).findIndex(i => i === item);
+                              return (
+                                <div key={idx} style={{ display:'flex', alignItems:'center', gap:'0.75rem', padding:'0.65rem 1rem', borderBottom: idx < roomItems.length - 1 ? '1px solid #1e293b' : 'none' }}>
+                                  <div style={{ color:'#e2e8f0', fontWeight:900, flex:1 }}>{item.item}</div>
+                                  {currentList.status === 'draft' ? (
+                                    <input type="number" value={item.suggestedQty}
+                                      onChange={(e) => updatePrepListItem(currentList.id, globalIdx, { suggestedQty: Number(e.target.value) || 1 })}
+                                      style={{ width:'60px', padding:'0.4rem', background:'#1e293b', border:'1px solid #334155', borderRadius:'6px', color:'#38bdf8', fontWeight:900, textAlign:'center' }} />
+                                  ) : (
+                                    <div style={{ color:'#38bdf8', fontWeight:900 }}>{item.suggestedQty}</div>
+                                  )}
+                                  {item.priority === 'high' && (
+                                    <span style={{ padding:'0.2rem 0.5rem', background:'#ff4444', borderRadius:'6px', color:'#fff', fontWeight:900, fontSize:'0.7rem' }}>HIGH</span>
+                                  )}
+                                  {item.isManual && (
+                                    <span style={{ padding:'0.2rem 0.5rem', background:'rgba(0,255,136,0.15)', border:'1px solid #00ff88', borderRadius:'6px', color:'#00ff88', fontWeight:900, fontSize:'0.65rem' }}>MANUAL</span>
+                                  )}
+                                  {currentList.status === 'draft' && (
+                                    <button onClick={() => removePrepListItem(currentList.id, globalIdx)}
+                                      style={{ padding:'0.3rem 0.5rem', background:'transparent', border:'1px solid #ff4444', borderRadius:'6px', color:'#ff4444', cursor:'pointer', fontSize:'0.8rem' }}>
+                                      ✕
+                                    </button>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
                         </div>
                       );
-                    })}
-                  </div>
+                    });
+                  })()}
 
                   {/* History Log */}
                   {currentList.history && currentList.history.length > 0 && (
