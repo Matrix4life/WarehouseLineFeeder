@@ -1573,9 +1573,10 @@
       };
 
       const approvePrepList = async (listId) => {
-        const list = prepLists.find(p => p.id === listId);
-        if (!list || list.status !== 'draft') return;
-        try {
+  setPrepListError(null);
+  const list = prepLists.find(p => p.id === listId);
+  if (!list || list.status !== 'draft') return;
+  try {
           // Insert items as warehouse_requests
           const newRequests = list.items.map(item => ({
             item: item.item,
