@@ -1493,7 +1493,7 @@
               'Content-Type': 'application/json',
               'Authorization': `Bearer ${CONFIG.SUPABASE_ANON_KEY}`
             },
-            body: JSON.stringify({ shift, daysBack: 90 })
+            body: JSON.stringify({ shift, daysBack: 30 })
           });
           const data = await res.json();
           if (!data.success) throw new Error(data.error || 'Failed to generate');
@@ -5328,16 +5328,20 @@ ${sortedCompleted.map(r => {
               {!editingPrepList && (
                 <div style={{ marginBottom:'1.5rem', padding:'1.25rem', background:'rgba(167,139,250,0.08)', border:'1px solid rgba(167,139,250,0.3)', borderRadius:'14px' }}>
                   <div style={{ color:'#a78bfa', fontWeight:900, fontSize:'0.9rem', marginBottom:'1rem', textTransform:'uppercase', letterSpacing:'0.06em' }}>
-                    Generate New Prep List
+                    Generate Prep List / Current Demand
                   </div>
                   <div style={{ display:'flex', gap:'1rem', flexWrap:'wrap' }}>
                     <button onClick={() => generatePrepList('1st')} disabled={prepListLoading}
-                      style={{ padding:'1rem 2rem', background:'linear-gradient(135deg, #a78bfa 0%, #7c3aed 100%)', border:'none', borderRadius:'12px', color:'#fff', fontWeight:900, fontSize:'1rem', cursor: prepListLoading ? 'wait' : 'pointer', opacity: prepListLoading ? 0.6 : 1 }}>
-                      {prepListLoading ? '⏳ Generating...' : '☀️ Generate for 1st Shift (4am-4pm)'}
+                      style={{ padding:'1rem 1.5rem', background:'linear-gradient(135deg, #a78bfa 0%, #7c3aed 100%)', border:'none', borderRadius:'12px', color:'#fff', fontWeight:900, fontSize:'0.95rem', cursor: prepListLoading ? 'wait' : 'pointer', opacity: prepListLoading ? 0.6 : 1 }}>
+                      {prepListLoading ? '⏳ Generating...' : '☀️ Prep for 2nd Shift'}
                     </button>
                     <button onClick={() => generatePrepList('2nd')} disabled={prepListLoading}
-                      style={{ padding:'1rem 2rem', background:'linear-gradient(135deg, #7c3aed 0%, #5b21b6 100%)', border:'none', borderRadius:'12px', color:'#fff', fontWeight:900, fontSize:'1rem', cursor: prepListLoading ? 'wait' : 'pointer', opacity: prepListLoading ? 0.6 : 1 }}>
-                      {prepListLoading ? '⏳ Generating...' : '🌙 Generate for 2nd Shift (3pm-3am)'}
+                      style={{ padding:'1rem 1.5rem', background:'linear-gradient(135deg, #7c3aed 0%, #5b21b6 100%)', border:'none', borderRadius:'12px', color:'#fff', fontWeight:900, fontSize:'0.95rem', cursor: prepListLoading ? 'wait' : 'pointer', opacity: prepListLoading ? 0.6 : 1 }}>
+                      {prepListLoading ? '⏳ Generating...' : '🌙 Prep for 1st Shift'}
+                    </button>
+                    <button onClick={() => generatePrepList('current')} disabled={prepListLoading}
+                      style={{ padding:'1rem 1.5rem', background:'linear-gradient(135deg, #38bdf8 0%, #0ea5e9 100%)', border:'none', borderRadius:'12px', color:'#fff', fontWeight:900, fontSize:'0.95rem', cursor: prepListLoading ? 'wait' : 'pointer', opacity: prepListLoading ? 0.6 : 1 }}>
+                      {prepListLoading ? '⏳ Analyzing...' : '📊 Current Demand'}
                     </button>
                   </div>
                   {prepListError && (
