@@ -259,6 +259,9 @@
   "Receiving" : "#e9c80e"       // Yellow
       }
     };
+    const CONFIG = {
+    console.log("APP SUPABASE URL:", CONFIG.SUPABASE_URL);
+     console.log("APP SUPABASE KEY:", CONFIG.SUPABASE_ANON_KEY);
     const Icon = ({ children, size=24, color="currentColor" }) => (
       <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         {children}
