@@ -231,7 +231,7 @@
     const CONFIG = {
       ENABLE_SUPABASE: true, // <- set true for real multi-user across devices
       SUPABASE_URL: "https://smmbxhkcslcarmlxwzji.supabase.co",
-      SUPABASE_ANON_KEY: "sb_publishable_Brr0Xwk-ur2ABeFXFGGI9A__WtHsR_p",
+      SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNtbWJ4aGtjc2xjYXJtbHh3emppIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzNTc0MTUsImV4cCI6MjA4OTkzMzQxNX0.aN9FGQWuwsDk8LwLWpcLCgkDVnhf4HEyj3LRYZ6q1Es",
       STORAGE_KEY: "warehouse-requests-v3",
       CHAT_KEY: "warehouse-chat-v1",
       REFRESH_MS: 2500, // polling fallback; realtime will override
@@ -259,10 +259,6 @@
   "Receiving" : "#e9c80e"       // Yellow
       }
     };
-  
-    console.log("APP SUPABASE URL:", CONFIG.SUPABASE_URL);
-     console.log("APP SUPABASE KEY:", CONFIG.SUPABASE_ANON_KEY);
-    
     const Icon = ({ children, size=24, color="currentColor" }) => (
       <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         {children}
@@ -1098,10 +1094,6 @@
       const [tempName, setTempName] = useState(userName);
       const [tempRole, setTempRole] = useState(userRole);
       const [requests, setRequests] = useState([]);
-      useEffect(() => {
-  window._debugRequests = requests;
-  console.log("REQUESTS STATE:", requests);
-}, [requests]);
       const [loading, setLoading] = useState(true);
       const [errors, setErrors] = useState({});
       const [successMsg, setSuccessMsg] = useState("");
@@ -1501,7 +1493,7 @@
               'Content-Type': 'application/json',
               'Authorization': `Bearer ${CONFIG.SUPABASE_ANON_KEY}`
             },
-            body: JSON.stringify({ shift, daysBack: 120 })
+            body: JSON.stringify({ shift, daysBack: 30 })
           });
           const data = await res.json();
           if (!data.success) throw new Error(data.error || 'Failed to generate');
