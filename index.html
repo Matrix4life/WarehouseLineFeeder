@@ -567,7 +567,14 @@
         cancelledBy: r.cancelled_by || null,
         version: Number(r.version || 1),
         lastUpdatedAt: r.last_updated_at || r.submitted_at,
-        archivedAt: r.archived_at || null,
+        archivedAt:
+  (r.archived_at === null ||
+   r.archived_at === undefined ||
+   r.archived_at === "" ||
+   r.archived_at === "NULL" ||
+   r.archived_at === "null")
+    ? null
+    : r.archived_at,
         isAiGenerated: !!r.is_ai_generated,
         prepListId: r.prep_list_id || null
       });
@@ -1715,25 +1722,37 @@
     const adapter = adapterRef.current;
     if (!adapter) return;
 
-    console.log("1 ADAPTER KIND:", adapter.kind);
-
     const data = await adapter.loadAll();
-    console.log("2 RAW DATA:", data);
-
     const all = Array.isArray(data) ? data : [];
 
-const isArchived = (v) =>
-  !(v === null || v === undefined || v === "" || v === "NULL" || v === "null");
+    const isArchived = (v) =>
+      !(v === null || v === undefined || v === "" || v === "NULL" || v === "null");
 
-const active = all.filter(r => !isArchived(r.archivedAt ?? r.archived_at));
-const archived = all.filter(r => isArchived(r.archivedAt ?? r.archived_at));
+    const active = all.filter(r => !isArchived(r.archivedAt ?? r.archived_at));
+    const archived = all.filter(r => isArchived(r.archivedAt ?? r.archived_at));
 
-detectStatusChanges(active);
-setRequests(active);
-setArchivedRequests(archived);
+    detectStatusChanges(active);
+    setRequests(active);
+    setArchivedRequests(archived);
+
+    if (adapter.loadUsers) {
+      const [u, a] = await Promise.all([adapter.loadUsers(), adapter.loadAssignments()]);
+      setUsers(Array.isArray(u) ? u : []);
+      setAssignments(Array.isArray(a) ? a : []);
+    }
+
+    if (adapter.loadSettings) {
+      try {
+        const s = await adapter.loadSettings();
+        _updateSysSettings(s);
+      } catch(e) {
+        console.error("loadSettings error:", e);
+      }
+    }
+
     setLoading(false);
   } catch (error) {
-    console.error("LOADALL FAILED:", error);
+    console.error("Failed to load data:", error);
     setLoading(false);
   }
 };
