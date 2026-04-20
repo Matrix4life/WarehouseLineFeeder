@@ -1710,34 +1710,31 @@
         }
       };
 
-      const loadAll = async ()=> {
-        try {
-          const adapter = adapterRef.current;
-          if (!adapter) return;
-          const data = await adapter.loadAll();
-          const all = Array.isArray(data) ? data : [];
-          const active = all.filter(r => !r.archivedAt);
-          const archived = all.filter(r => !!r.archivedAt);
-          detectStatusChanges(active);
-          setRequests(active);
-          setArchivedRequests(archived);
-          if (adapter.loadUsers) {
-            const [u, a] = await Promise.all([adapter.loadUsers(), adapter.loadAssignments()]);
-            setUsers(Array.isArray(u) ? u : []);
-            setAssignments(Array.isArray(a) ? a : []);
-          }
-          if (adapter.loadSettings) {
-            try {
-              const s = await adapter.loadSettings();
-              _updateSysSettings(s);
-            } catch(e) { console.error("loadSettings error:", e); }
-          }
-          setLoading(false);
-        } catch (error) {
-          console.error("Failed to load data:", error);
-          setLoading(false);
-        }
-      };
+     onst loadAll = async ()=> {
+  try {
+    const adapter = adapterRef.current;
+    if (!adapter) return;
+
+    console.log("1 ADAPTER KIND:", adapter.kind);
+
+    const data = await adapter.loadAll();
+    console.log("2 RAW DATA:", data);
+
+    const all = Array.isArray(data) ? data : [];
+    const active = all.filter(r => !r.archivedAt);
+    console.log("3 ACTIVE:", active);
+
+    detectStatusChanges(active);
+    setRequests(active);
+    console.log("4 SETREQUESTS LENGTH:", active.length);
+
+    setArchivedRequests(all.filter(r => !!r.archivedAt));
+    setLoading(false);
+  } catch (error) {
+    console.error("LOADALL FAILED:", error);
+    setLoading(false);
+  }
+};
       useEffect(() => {
         (async ()=>{
           try {
