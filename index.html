@@ -1098,6 +1098,10 @@
       const [tempName, setTempName] = useState(userName);
       const [tempRole, setTempRole] = useState(userRole);
       const [requests, setRequests] = useState([]);
+      useEffect(() => {
+  window._debugRequests = requests;
+  console.log("REQUESTS STATE:", requests);
+}, [requests]);
       const [loading, setLoading] = useState(true);
       const [errors, setErrors] = useState({});
       const [successMsg, setSuccessMsg] = useState("");
