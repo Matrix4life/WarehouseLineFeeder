@@ -1721,14 +1721,16 @@
     console.log("2 RAW DATA:", data);
 
     const all = Array.isArray(data) ? data : [];
-    const active = all.filter(r => !r.archivedAt);
-    console.log("3 ACTIVE:", active);
 
-    detectStatusChanges(active);
-    setRequests(active);
-    console.log("4 SETREQUESTS LENGTH:", active.length);
+const isArchived = (v) =>
+  !(v === null || v === undefined || v === "" || v === "NULL" || v === "null");
 
-    setArchivedRequests(all.filter(r => !!r.archivedAt));
+const active = all.filter(r => !isArchived(r.archivedAt ?? r.archived_at));
+const archived = all.filter(r => isArchived(r.archivedAt ?? r.archived_at));
+
+detectStatusChanges(active);
+setRequests(active);
+setArchivedRequests(archived);
     setLoading(false);
   } catch (error) {
     console.error("LOADALL FAILED:", error);
