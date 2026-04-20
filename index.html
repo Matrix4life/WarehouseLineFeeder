@@ -1744,12 +1744,12 @@
             // Debounced loadAll — collapses rapid Realtime bursts into one call
             // and skips entirely when chat is open to prevent glitch
             let _reloadTimer = null;
-            const debouncedLoadAll = () => {
-              clearTimeout(_reloadTimer);
-              _reloadTimer = setTimeout(() => {
-                if (!chatOpenRef.current) loadAll().catch(console.error);
-              }, 300);
-            };
+           const debouncedLoadAll = () => {
+  clearTimeout(_reloadTimer);
+  _reloadTimer = setTimeout(() => {
+    loadAll().catch(console.error);
+  }, 300);
+};
             const adapter = createAdapter({
               onRemoteChange: debouncedLoadAll,
               onSettingsChange: async () => {
