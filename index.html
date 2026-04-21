@@ -633,14 +633,15 @@
         },
         destroy() { try { unsub?.(); } catch {} },
         async loadAll() {
-          if (!useSupabase) return await localLoad();
-          const { data, error } = await supabaseClient
-            .from("warehouse_requests")
-            .select("*")
-            .order("submitted_at", { ascending: true });
-          if (error) throw error;
-          return (data || []).map(supaNormalize);
-        },
+  if (!useSupabase) return await localLoad();
+  const { data, error } = await supabaseClient
+    .from("warehouse_requests")
+    .select("*")
+    .is("archived_at", null)
+    .order("submitted_at", { ascending: false });
+  if (error) throw error;
+  return (data || []).map(supaNormalize);
+},
         async upsert(row) {
           if (!useSupabase) {
             const rows = await localLoad();
