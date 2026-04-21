@@ -632,9 +632,11 @@
           }
         },
         destroy() { try { unsub?.(); } catch {} },
-        async loadAll() {
+       async loadAll() {
   if (!useSupabase) return await localLoad();
-  const { data, error } = await supabaseClient
+
+  // ACTIVE
+  const { data: activeData, error: activeError } = await supabaseClient
     .from("warehouse_requests")
     .select("*")
     .is("archived_at", null)
@@ -642,8 +644,22 @@
     .order("submitted_at", { ascending: false })
     .limit(500);
 
-  if (error) throw error;
-  return (data || []).map(supaNormalize);
+  if (activeError) throw activeError;
+
+  // ARCHIVED
+  const { data: archivedData, error: archivedError } = await supabaseClient
+    .from("warehouse_requests")
+    .select("*")
+    .in("status", ["completed", "cancelled"])
+    .order("submitted_at", { ascending: false })
+    .limit(300);
+
+  if (archivedError) throw archivedError;
+
+  return {
+    active: (activeData || []).map(supaNormalize),
+    archived: (archivedData || []).map(supaNormalize),
+  };
 },
         async upsert(row) {
           if (!useSupabase) {
@@ -1726,8 +1742,11 @@
     const adapter = adapterRef.current;
     if (!adapter) return;
 
-    const data = await adapter.loadAll();
-    const all = Array.isArray(data) ? data : [];
+    const { active, archived } = await adapter.loadAll();
+
+detectStatusChanges(active);
+setRequests(active);
+setArchivedRequests(archived);
 
         const isArchived = (v) =>
       !(v === null || v === undefined || v === "" || v === "NULL" || v === "null");
