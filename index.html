@@ -1725,34 +1725,30 @@
     const data = await adapter.loadAll();
     const all = Array.isArray(data) ? data : [];
 
+    console.log("ARCHIVE CHECK:", all.map(r => ({
+      id: r.id,
+      archivedAt: r.archivedAt,
+      archived_at: r.archived_at,
+      type1: typeof r.archivedAt,
+      type2: typeof r.archived_at
+    })));
+
     const isArchived = (v) =>
       !(v === null || v === undefined || v === "" || v === "NULL" || v === "null");
 
     const active = all.filter(r => !isArchived(r.archivedAt ?? r.archived_at));
     const archived = all.filter(r => isArchived(r.archivedAt ?? r.archived_at));
 
+    console.log("ACTIVE COUNT:", active.length);
+    console.log("ARCHIVED COUNT:", archived.length);
+
     detectStatusChanges(active);
     setRequests(active);
     setArchivedRequests(archived);
 
-    if (adapter.loadUsers) {
-      const [u, a] = await Promise.all([adapter.loadUsers(), adapter.loadAssignments()]);
-      setUsers(Array.isArray(u) ? u : []);
-      setAssignments(Array.isArray(a) ? a : []);
-    }
-
-    if (adapter.loadSettings) {
-      try {
-        const s = await adapter.loadSettings();
-        _updateSysSettings(s);
-      } catch(e) {
-        console.error("loadSettings error:", e);
-      }
-    }
-
     setLoading(false);
   } catch (error) {
-    console.error("Failed to load data:", error);
+    console.error("LOADALL FAILED:", error);
     setLoading(false);
   }
 };
