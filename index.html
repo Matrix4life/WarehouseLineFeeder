@@ -1725,13 +1725,14 @@
     const data = await adapter.loadAll();
     const all = Array.isArray(data) ? data : [];
 
-    console.log("ARCHIVE CHECK:", all.map(r => ({
-      id: r.id,
-      archivedAt: r.archivedAt,
-      archived_at: r.archived_at,
-      type1: typeof r.archivedAt,
-      type2: typeof r.archived_at
-    })));
+    console.log("ARCHIVE CHECK SAMPLE:", all.slice(0, 20).map(r => ({
+  id: r.id,
+  status: r.status,
+  archivedAt: r.archivedAt,
+  archived_at: r.archived_at,
+  type1: typeof r.archivedAt,
+  type2: typeof r.archived_at
+})));
 
     const isArchived = (v) =>
       !(v === null || v === undefined || v === "" || v === "NULL" || v === "null");
@@ -1742,6 +1743,7 @@
     console.log("ACTIVE COUNT:", active.length);
     console.log("ARCHIVED COUNT:", archived.length);
 
+    
     detectStatusChanges(active);
     setRequests(active);
     setArchivedRequests(archived);
