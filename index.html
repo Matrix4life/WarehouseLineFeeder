@@ -635,18 +635,16 @@
        async loadAll() {
   if (!useSupabase) return await localLoad();
 
-  // ACTIVE
   const { data: activeData, error: activeError } = await supabaseClient
     .from("warehouse_requests")
     .select("*")
     .is("archived_at", null)
-    .in("status", ["pending", "claimed", "started"])
+    .in("status", ["pending", "claimed", "in_progress"])
     .order("submitted_at", { ascending: false })
     .limit(500);
 
   if (activeError) throw activeError;
 
-  // ARCHIVED
   const { data: archivedData, error: archivedError } = await supabaseClient
     .from("warehouse_requests")
     .select("*")
@@ -2648,7 +2646,9 @@
       const archiveCompleted = async () => {
         try {
           const adapter = adapterRef.current;
-          const toArchive = requests.filter(r =>
+          const toArchive = archivedRequests.filter(r =>
+  (r.status === "completed" || r.status === "cancelled") && !r.archivedAt
+);
             (r.status === "completed" || r.status === "cancelled") && !r.archivedAt
           );
           if (toArchive.length === 0) {
@@ -2685,7 +2685,10 @@
           if (!adapter) return;
           try {
             const data = await adapter.loadAll();
-            const all = Array.isArray(data) ? data : [];
+const all = [
+  ...((data && Array.isArray(data.active)) ? data.active : []),
+  ...((data && Array.isArray(data.archived)) ? data.archived : [])
+];
             const toArchive = all.filter(r =>
               (r.status === "completed" || r.status === "cancelled") && !r.archivedAt
             );
