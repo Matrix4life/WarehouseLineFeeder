@@ -2644,38 +2644,43 @@
         }
       };
       const archiveCompleted = async () => {
-        try {
-          const adapter = adapterRef.current;
-          const toArchive = archivedRequests.filter(r =>
-  (r.status === "completed" || r.status === "cancelled") && !r.archivedAt
-);
-            (r.status === "completed" || r.status === "cancelled") && !r.archivedAt
-          );
-          if (toArchive.length === 0) {
-            setSuccessMsg("Nothing to archive — no completed/cancelled requests.");
-            setTimeout(() => setSuccessMsg(""), 3000);
-            return;
-          }
-          const archiveTs = new Date().toISOString();
-          for (const r of toArchive) {
-            await adapter.updatePartial(r.id, (rec) => {
-              rec.archivedAt = archiveTs;
-              rec.lastUpdatedAt = archiveTs;
-              return rec;
-            });
-          }
-          const today = new Date().toISOString().split("T")[0];
-          setLastArchiveDate(today);
-          localStorage.setItem("wd_lastArchiveDate", today);
-          await loadAll();
-          setSuccessMsg(`✅ Archived ${toArchive.length} completed/cancelled request${toArchive.length !== 1 ? "s" : ""}.`);
-          setTimeout(() => setSuccessMsg(""), 4000);
-        } catch (err) {
-          console.error("Archive failed:", err);
-          setSuccessMsg("❌ Archive failed — check console.");
-          setTimeout(() => setSuccessMsg(""), 4000);
-        }
-      };
+  try {
+    const adapter = adapterRef.current;
+    const toArchive = archivedRequests.filter(r =>
+      (r.status === "completed" || r.status === "cancelled") && !r.archivedAt
+    );
+
+    if (toArchive.length === 0) {
+      setSuccessMsg("Nothing to archive — no completed/cancelled requests.");
+      setTimeout(() => setSuccessMsg(""), 3000);
+      return;
+    }
+
+    const archiveTs = new Date().toISOString();
+
+    for (const r of toArchive) {
+      await adapter.updatePartial(r.id, (rec) => {
+        rec.archivedAt = archiveTs;
+        rec.lastUpdatedAt = archiveTs;
+        return rec;
+      });
+    }
+
+    const today = new Date().toISOString().split("T")[0];
+    setLastArchiveDate(today);
+    localStorage.setItem("wd_lastArchiveDate", today);
+    await loadAll();
+
+    setSuccessMsg(
+      `✅ Archived ${toArchive.length} completed/cancelled request${toArchive.length !== 1 ? "s" : ""}.`
+    );
+    setTimeout(() => setSuccessMsg(""), 4000);
+  } catch (err) {
+    console.error("Archive failed:", err);
+    setSuccessMsg("❌ Archive failed — check console.");
+    setTimeout(() => setSuccessMsg(""), 4000);
+  }
+};
       useEffect(() => {
         const checkMidnightArchive = async () => {
           const today = new Date().toISOString().split("T")[0];
