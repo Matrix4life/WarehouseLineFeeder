@@ -1744,24 +1744,13 @@
 
     const { active, archived } = await adapter.loadAll();
 
-detectStatusChanges(active);
-setRequests(active);
-setArchivedRequests(archived);
-
-        const isArchived = (v) =>
-      !(v === null || v === undefined || v === "" || v === "NULL" || v === "null");
-
-    const active = all.filter(r => !isArchived(r.archivedAt ?? r.archived_at));
-    const archived = all.filter(r => isArchived(r.archivedAt ?? r.archived_at));
-
-       
     detectStatusChanges(active);
     setRequests(active);
     setArchivedRequests(archived);
 
     setLoading(false);
   } catch (error) {
-    console.error("LOADALL FAILED:", error);
+    console.error("Failed to load data:", error);
     setLoading(false);
   }
 };
