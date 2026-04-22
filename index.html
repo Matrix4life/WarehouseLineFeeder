@@ -650,7 +650,7 @@
     .select("*")
     .in("status", ["completed", "cancelled"])
     .order("submitted_at", { ascending: false })
-    .limit(300);
+    .limit(2000);
 
   if (archivedError) throw archivedError;
 
