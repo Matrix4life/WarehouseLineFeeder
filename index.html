@@ -2754,7 +2754,7 @@ const all = [
           if (!name) { setLoginError("Please enter your name."); return; }
           if (noUsers) {
             const firstAdmin = { id: genId(), name, role: "admin", shift: null, createdAt: new Date().toISOString(), createdBy: "system" };
-            adapterRef.current.saveUser(firstAdmin).then(() => loadAll());
+            adapterRef.current.saveUser(firstAdmin).then(() => loadUsersAndAssignments());
             setUsers([firstAdmin]);
             setUserName(name); setUserRole("admin");
             localStorage.setItem("wd_userName", name);
