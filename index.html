@@ -5590,46 +5590,79 @@ if (screen === "admin") {
         const thisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
         const thisYear = new Date(now.getFullYear(), 0, 1);
         const handleCreateUser = () => {
-          const name = newUserName.trim();
-          if (!name) { alert("Enter a name"); return; }
-          if (users.find(u => u.name.toLowerCase() === name.toLowerCase())) { alert("A user with that name already exists!"); return; }
-          const shift = newUserRole === "admin" ? null : newUserShift;
-          const newUser = { id: genId(), name, role: newUserRole, shift, createdAt: new Date().toISOString(), createdBy: userName };
-          adapterRef.current.saveUser(newUser).then(() => loadAll());
-          setNewUserName(""); setNewUserRole("room"); setNewUserShift("1st");
-          setSuccessMsg(`User "${name}" created!`);
-          setTimeout(() => setSuccessMsg(""), 3000);
-        };
-        const handleDeleteUser = (id, name) => {
-          if (!confirm(`Delete user "${name}"? They will no longer be able to sign in.`)) return;
-          adapterRef.current.deleteUser(id).then(() => loadAll());
-          setSuccessMsg(`User "${name}" deleted.`);
-          setTimeout(() => setSuccessMsg(""), 3000);
-        };
-        const handleArchiveUser = (u) => {
-          if (!confirm(`Archive "${u.name}"?\n\nThey will no longer be able to sign in, but ALL their historical data (requests, breaks, chat) is preserved.`)) return;
-          const updated = { ...u, archivedAt: new Date().toISOString(), archivedBy: userName };
-          adapterRef.current.saveUser(updated).then(() => loadAll());
-          setSuccessMsg(`"${u.name}" archived. All historical data preserved.`);
-          setTimeout(() => setSuccessMsg(""), 4000);
-        };
-        const handleUnarchiveUser = (u) => {
-          if (!confirm(`Restore "${u.name}" as an active user?`)) return;
-          const updated = { ...u, archivedAt: null, archivedBy: null };
-          adapterRef.current.saveUser(updated).then(() => loadAll());
-          setSuccessMsg(`"${u.name}" restored to active.`);
-          setTimeout(() => setSuccessMsg(""), 3000);
-        };
-        const handleUpdateUser = (id) => {
-          const name = editUserName.trim();
-          if (!name) { alert("Name cannot be empty"); return; }
-          const existing = users.find(u => u.id === id);
-          const updated = { ...existing, name, role: editUserRole };
-          adapterRef.current.saveUser(updated).then(() => loadAll());
-          setEditUserId(null);
-          setSuccessMsg("User updated!");
-          setTimeout(() => setSuccessMsg(""), 3000);
-        };
+  const name = newUserName.trim();
+  if (!name) { alert("Enter a name"); return; }
+
+  if (users.find(u => u.name.trim().toLowerCase() === name.toLowerCase())) {
+    alert("A user with that name already exists!");
+    return;
+  }
+
+  const shift = (newUserRole === "admin" || newUserRole === "superuser") ? null : newUserShift;
+  const newUser = {
+    id: genId(),
+    name,
+    role: newUserRole,
+    shift,
+    createdAt: new Date().toISOString(),
+    createdBy: userName
+  };
+
+  adapterRef.current.saveUser(newUser).then(() => loadUsersAndAssignments());
+  setNewUserName("");
+  setNewUserRole("room");
+  setNewUserShift("1st");
+  setSuccessMsg(`User "${name}" created!`);
+  setTimeout(() => setSuccessMsg(""), 3000);
+};
+
+const handleDeleteUser = (id, name) => {
+  if (!confirm(`Delete user "${name}"? They will no longer be able to sign in.`)) return;
+  adapterRef.current.deleteUser(id).then(() => loadUsersAndAssignments());
+  setSuccessMsg(`User "${name}" deleted.`);
+  setTimeout(() => setSuccessMsg(""), 3000);
+};
+
+const handleArchiveUser = (u) => {
+  if (!confirm(`Archive "${u.name}"?\n\nThey will no longer be able to sign in, but ALL their historical data (requests, breaks, chat) is preserved.`)) return;
+  const updated = { ...u, archivedAt: new Date().toISOString(), archivedBy: userName };
+  adapterRef.current.saveUser(updated).then(() => loadUsersAndAssignments());
+  setSuccessMsg(`"${u.name}" archived. All historical data preserved.`);
+  setTimeout(() => setSuccessMsg(""), 4000);
+};
+
+const handleUnarchiveUser = (u) => {
+  if (!confirm(`Restore "${u.name}" as an active user?`)) return;
+  const updated = { ...u, archivedAt: null, archivedBy: null };
+  adapterRef.current.saveUser(updated).then(() => loadUsersAndAssignments());
+  setSuccessMsg(`"${u.name}" restored to active.`);
+  setTimeout(() => setSuccessMsg(""), 3000);
+};
+
+const handleUpdateUser = (id) => {
+  const name = editUserName.trim();
+  if (!name) { alert("Name cannot be empty"); return; }
+
+  if (users.find(u => u.id !== id && u.name.trim().toLowerCase() === name.toLowerCase())) {
+    alert("A user with that name already exists!");
+    return;
+  }
+
+  const existing = users.find(u => u.id === id);
+  if (!existing) return;
+
+  const updated = {
+    ...existing,
+    name,
+    role: editUserRole,
+    shift: (editUserRole === "admin" || editUserRole === "superuser") ? null : (existing.shift || "1st")
+  };
+
+  adapterRef.current.saveUser(updated).then(() => loadUsersAndAssignments());
+  setEditUserId(null);
+  setSuccessMsg("User updated!");
+  setTimeout(() => setSuccessMsg(""), 3000);
+};
         const roleColors = { room:'#8b9dc3', warehouse:'#fbbf24', supervisor:'#a78bfa', admin:'#ff4444', superuser:'#ff4444' };
         const roleEmojis = { room:'🍽️', warehouse:'📦', supervisor:'🧭', admin:'🔧', superuser:'🔧' };
         return (
