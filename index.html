@@ -567,9 +567,7 @@
         cancelledBy: r.cancelled_by || null,
         version: Number(r.version || 1),
         lastUpdatedAt: r.last_updated_at || r.submitted_at,
-        archivedAt: r.archived_at || null,
-        isAiGenerated: !!r.is_ai_generated,
-        prepListId: r.prep_list_id || null
+        archivedAt: r.archived_at || null
       });
       const supaDenormalize = (r)=> ({
         id: Number(r.id),
@@ -594,9 +592,7 @@
         cancelled_by: r.cancelledBy || null,
         version: Number(r.version||1),
         last_updated_at: r.lastUpdatedAt || nowIso(),
-        archived_at: r.archivedAt || null,
-        is_ai_generated: !!r.isAiGenerated,
-        prep_list_id: r.prepListId || null
+        archived_at: r.archivedAt || null
       });
       const adapter = {
         kind: useSupabase ? "supabase" : "local",
@@ -1283,13 +1279,6 @@
       };
       const [roomsDropdownOpen, setRoomsDropdownOpen] = useState(false); // for board rooms dropdown
       const [dashboardSettingsOpen, setDashboardSettingsOpen] = useState(false); // for dashboard customization
-
-      // ── AI Prep List State ──
-      const [prepLists, setPrepLists] = useState([]);
-      const [prepListLoading, setPrepListLoading] = useState(false);
-      const [prepListError, setPrepListError] = useState(null);
-      const [editingPrepList, setEditingPrepList] = useState(null);
-      const [prepListAddItem, setPrepListAddItem] = useState({ room: '', item: '', qty: '', priority: 'normal' });
       const [dashboardLayout, setDashboardLayout] = useState({
         order: ["total_requests", "completed", "archive_age", "room_wait_time", "warehouse_pick_time", "work_progress", "sla_compliance", "requests_by_status", "top_rooms", "staff_performance", "room_analytics"],
         visibility: {
@@ -1466,246 +1455,6 @@
           });
         } catch {}
       };
-
-      // ── AI Prep List Functions ──
-      const loadPrepLists = async () => {
-        if (!adapterRef.current?.client) return;
-        try {
-          const { data, error } = await adapterRef.current.client
-            .from('ai_prep_lists')
-            .select('*')
-            .order('created_at', { ascending: false })
-            .limit(20);
-          if (error) throw error;
-          setPrepLists(data || []);
-        } catch (err) {
-          console.error('loadPrepLists error:', err);
-        }
-      };
-
-      const generatePrepList = async (shift) => {
-        setPrepListLoading(true);
-        setPrepListError(null);
-        try {
-          const res = await fetch(`${CONFIG.SUPABASE_URL}/functions/v1/ai-prep-list`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${CONFIG.SUPABASE_ANON_KEY}`
-            },
-            body: JSON.stringify({ shift, daysBack: 30 })
-          });
-          const data = await res.json();
-          if (!data.success) throw new Error(data.error || 'Failed to generate');
-          await loadPrepLists();
-          setEditingPrepList(data.prepListId);
-        } catch (err) {
-          setPrepListError(err.message);
-        } finally {
-          setPrepListLoading(false);
-        }
-      };
-
-      const updatePrepListItem = async (listId, itemIndex, updates) => {
-        const list = prepLists.find(p => p.id === listId);
-        if (!list) return;
-        const newItems = [...list.items];
-        newItems[itemIndex] = { ...newItems[itemIndex], ...updates };
-        const historyEntry = { action: 'edited', at: new Date().toISOString(), by: userName, detail: `Updated item ${itemIndex}` };
-        const newHistory = [...(list.history || []), historyEntry];
-        try {
-          const { error } = await adapterRef.current.client
-            .from('ai_prep_lists')
-            .update({ items: newItems, history: newHistory })
-            .eq('id', listId);
-          if (error) throw error;
-          await loadPrepLists();
-        } catch (err) {
-          console.error('updatePrepListItem error:', err);
-        }
-      };
-
-      const removePrepListItem = async (listId, itemIndex) => {
-        const list = prepLists.find(p => p.id === listId);
-        if (!list) return;
-        const removedItem = list.items[itemIndex];
-        const newItems = list.items.filter((_, i) => i !== itemIndex);
-        const historyEntry = { action: 'removed', at: new Date().toISOString(), by: userName, detail: `Removed ${removedItem.item} from ${removedItem.room}` };
-        const newHistory = [...(list.history || []), historyEntry];
-        try {
-          const { error } = await adapterRef.current.client
-            .from('ai_prep_lists')
-            .update({ items: newItems, history: newHistory })
-            .eq('id', listId);
-          if (error) throw error;
-          await loadPrepLists();
-        } catch (err) {
-          console.error('removePrepListItem error:', err);
-        }
-      };
-
-      const addPrepListItem = async (listId) => {
-        if (!prepListAddItem.room || !prepListAddItem.item || !prepListAddItem.qty) return;
-        const list = prepLists.find(p => p.id === listId);
-        if (!list) return;
-        const newItem = {
-          room: prepListAddItem.room,
-          item: prepListAddItem.item,
-          suggestedQty: Number(prepListAddItem.qty) || 1,
-          priority: prepListAddItem.priority,
-          reason: 'Manually added',
-          isManual: true
-        };
-        const newItems = [...list.items, newItem];
-        const historyEntry = { action: 'added', at: new Date().toISOString(), by: userName, detail: `Added ${newItem.item} (${newItem.suggestedQty}) to ${newItem.room}` };
-        const newHistory = [...(list.history || []), historyEntry];
-        try {
-          const { error } = await adapterRef.current.client
-            .from('ai_prep_lists')
-            .update({ items: newItems, history: newHistory })
-            .eq('id', listId);
-          if (error) throw error;
-          setPrepListAddItem({ room: '', item: '', qty: '', priority: 'normal' });
-          await loadPrepLists();
-        } catch (err) {
-          console.error('addPrepListItem error:', err);
-        }
-      };
-
-      const approvePrepList = async (listId) => {
-        setPrepListError(null);
-        const list = prepLists.find(p => p.id === listId);
-        if (!list || list.status !== 'draft') return;
-        try {
-          // Insert items as warehouse_requests
-          const newRequests = list.items.map(item => ({
-            item: item.item,
-            room: item.room,
-            qty: item.suggestedQty,
-            adj_qty: 0,
-            priority: item.priority === 'high',
-            status: 'pending',
-            submitted_at: new Date().toISOString(),
-            submitted_by: userName,
-            submitted_by_role: userRole,
-            comments: `🅰️ AI Prep List #${listId}`,
-            is_ai_generated: true,
-            prep_list_id: listId
-          }));
-          const { error: insertError } = await adapterRef.current.client
-            .from('warehouse_requests')
-            .insert(newRequests);
-          if (insertError) throw insertError;
-
-          // Update prep list status
-          const historyEntry = { action: 'approved', at: new Date().toISOString(), by: userName };
-          const { error: updateError } = await adapterRef.current.client
-            .from('ai_prep_lists')
-            .update({
-              status: 'approved',
-              approved_by: userName,
-              approved_at: new Date().toISOString(),
-              history: [...(list.history || []), historyEntry]
-            })
-            .eq('id', listId);
-          if (updateError) throw updateError;
-
-          setEditingPrepList(null);
-          await loadPrepLists();
-          await loadAll();
-        } catch (err) {
-          console.error('approvePrepList error:', err);
-          setPrepListError(err.message);
-        }
-      };
-
-      const approveRoomFromPrepList = async (listId, room) => {
-        setPrepListError(null);
-        const list = prepLists.find(p => p.id === listId);
-        if (!list || list.status !== 'draft') return;
-        
-        const roomItems = list.items.filter(item => item.room === room);
-        const remainingItems = list.items.filter(item => item.room !== room);
-        
-        if (roomItems.length === 0) return;
-        
-        try {
-          // Insert only this room's items
-          const newRequests = roomItems.map(item => ({
-            item: item.item,
-            room: item.room,
-            qty: item.suggestedQty,
-            adj_qty: 0,
-            priority: item.priority === 'high',
-            status: 'pending',
-            submitted_at: new Date().toISOString(),
-            submitted_by: userName,
-            submitted_by_role: userRole,
-            comments: `🅰️ AI Prep List #${listId}`,
-            is_ai_generated: true,
-            prep_list_id: listId
-          }));
-          
-          const { error: insertError } = await adapterRef.current.client
-            .from('warehouse_requests')
-            .insert(newRequests);
-          if (insertError) throw insertError;
-
-          // Update prep list - remove approved items, add history
-          const historyEntry = { 
-            action: 'approved_room', 
-            at: new Date().toISOString(), 
-            by: userName, 
-            detail: `${room} (${roomItems.length} items)` 
-          };
-          
-          // If no items remaining, mark as fully approved
-          const newStatus = remainingItems.length === 0 ? 'approved' : 'draft';
-          const updateData = {
-            items: remainingItems,
-            history: [...(list.history || []), historyEntry]
-          };
-          
-          if (newStatus === 'approved') {
-            updateData.status = 'approved';
-            updateData.approved_by = userName;
-            updateData.approved_at = new Date().toISOString();
-          }
-          
-          const { error: updateError } = await adapterRef.current.client
-            .from('ai_prep_lists')
-            .update(updateData)
-            .eq('id', listId);
-          if (updateError) throw updateError;
-
-          await loadPrepLists();
-          await loadAll();
-          
-          // If all items approved, close the editor
-          if (remainingItems.length === 0) {
-            setEditingPrepList(null);
-          }
-        } catch (err) {
-          console.error('approveRoomFromPrepList error:', err);
-          setPrepListError(err.message);
-        }
-      };
-
-      const deletePrepList = async (listId) => {
-        if (!confirm('Delete this prep list?')) return;
-        try {
-          const { error } = await adapterRef.current.client
-            .from('ai_prep_lists')
-            .delete()
-            .eq('id', listId);
-          if (error) throw error;
-          setEditingPrepList(null);
-          await loadPrepLists();
-        } catch (err) {
-          console.error('deletePrepList error:', err);
-        }
-      };
-
       const loadAll = async ()=> {
         try {
           const adapter = adapterRef.current;
@@ -3490,12 +3239,6 @@
                     Assignments
                   </button>
                 )}
-                {canSupervisor && (
-                  <button className="wd-nav-btn" onClick={()=>{loadPrepLists();setRoute("preplist")}}
-                    style={{background:'transparent',border:'1px solid rgba(167,139,250,0.5)',color:'#a78bfa'}}>
-                    🅰️ Prep List
-                  </button>
-                )}
                 {canAdmin && (
                   <button className="wd-nav-btn" onClick={()=>setRoute("admin")}
                     style={{background:'transparent',border:'1px solid rgba(255,68,68,0.5)',color:'#ff4444'}}>
@@ -3700,12 +3443,6 @@
                     Assignments
                   </button>
                 )}
-                {(userRole==="supervisor"||userRole==="admin"||userRole==="superuser") && (
-                  <button className="wd-nav-btn" onClick={()=>{loadPrepLists();setRoute("preplist")}}
-                    style={{background:'transparent',border:'1px solid rgba(167,139,250,0.5)',color:'#a78bfa'}}>
-                    🅰️ Prep List
-                  </button>
-                )}
                 {(userRole==="admin"||userRole==="superuser") && (
                   <button className="wd-nav-btn" onClick={()=>setRoute("admin")}
                     style={{background:'transparent',border:'1px solid rgba(255,68,68,0.5)',color:'#ff4444'}}>
@@ -3872,7 +3609,6 @@
                                   {req.qty}× {req.item}
                                 </div>
                                 {req.priority && <span style={{ marginLeft:'auto', padding:'0.2rem 0.5rem', background:'#ff4444', borderRadius:'8px', color:'#fff', fontWeight:900, fontSize:'0.72rem' }}>HIGH</span>}
-                                {req.isAiGenerated && <span style={{ marginLeft: req.priority ? '0.3rem' : 'auto', padding:'0.15rem 0.4rem', background:'rgba(167,139,250,0.2)', border:'1px solid #a78bfa', borderRadius:'8px', color:'#a78bfa', fontWeight:900, fontSize:'0.65rem' }}>🅰️ AI</span>}
                                 {(req.comments || "").includes("🔄 Balance:") && <span style={{ marginLeft: req.priority ? '0.3rem' : 'auto', padding:'0.15rem 0.4rem', background:'rgba(251,191,36,0.2)', border:'1px solid #fbbf24', borderRadius:'8px', color:'#fbbf24', fontWeight:900, fontSize:'0.65rem' }}>🔄 BAL</span>}
                               </div>
                               <div style={{ display:'flex', gap:'0.5rem', alignItems:'center', marginTop:'0.4rem', flexWrap:'wrap' }}>
@@ -5299,256 +5035,6 @@ ${sortedCompleted.map(r => {
         );
       }
 
-      // ═══════════════════════════════════════════════════════════════════════════
-      // PREP LIST SCREEN
-      // ═══════════════════════════════════════════════════════════════════════════
-      if (screen === "preplist") {
-        if (!canSupervisor) {
-          return (
-            <div style={{ minHeight:'100vh', ...bg, padding:'1.5rem', display:'flex', alignItems:'center', justifyContent:'center' }}>
-              <div style={{ textAlign:'center', color:'#ff4444' }}>
-                <h2>⚠️ Supervisor Access Required</h2>
-                <button onClick={()=> setRoute("login")} style={{ padding:'0.7rem 1.5rem', background:'#ff4444', border:'none', borderRadius:'8px', color:'#fff', fontWeight:900, cursor:'pointer', marginTop:'1rem' }}>Go to Login</button>
-              </div>
-            </div>
-          );
-        }
-
-        const currentList = editingPrepList ? prepLists.find(p => p.id === editingPrepList) : null;
-        const draftLists = prepLists.filter(p => p.status === 'draft');
-        const approvedLists = prepLists.filter(p => p.status === 'approved');
-
-        return (
-          <div style={{ minHeight:'100vh', ...bg, padding:'1.5rem', position:'relative', overflow:'hidden' }}>
-            <div style={gridOverlay} />
-            <div style={{ maxWidth:'1200px', margin:'0 auto', position:'relative', zIndex:1 }}>
-              <EnhancedHeader title="🅰️ AI Prep List" description="Generate prep lists from historical data" />
-
-              {/* Generate Buttons */}
-              {!editingPrepList && (
-                <div style={{ marginBottom:'1.5rem', padding:'1.25rem', background:'rgba(167,139,250,0.08)', border:'1px solid rgba(167,139,250,0.3)', borderRadius:'14px' }}>
-                  <div style={{ color:'#a78bfa', fontWeight:900, fontSize:'0.9rem', marginBottom:'1rem', textTransform:'uppercase', letterSpacing:'0.06em' }}>
-                    Generate Prep List
-                  </div>
-                  <div style={{ display:'flex', gap:'1rem', flexWrap:'wrap', marginBottom:'1rem' }}>
-                    <button onClick={() => generatePrepList('1st')} disabled={prepListLoading}
-                      style={{ padding:'1rem 2rem', background:'linear-gradient(135deg, #a78bfa 0%, #7c3aed 100%)', border:'none', borderRadius:'12px', color:'#fff', fontWeight:900, fontSize:'1rem', cursor: prepListLoading ? 'wait' : 'pointer', opacity: prepListLoading ? 0.6 : 1 }}>
-                      {prepListLoading ? '⏳ Generating...' : '☀️ Prep List for 2nd Shift'}
-                    </button>
-                    <button onClick={() => generatePrepList('2nd')} disabled={prepListLoading}
-                      style={{ padding:'1rem 2rem', background:'linear-gradient(135deg, #7c3aed 0%, #5b21b6 100%)', border:'none', borderRadius:'12px', color:'#fff', fontWeight:900, fontSize:'1rem', cursor: prepListLoading ? 'wait' : 'pointer', opacity: prepListLoading ? 0.6 : 1 }}>
-                      {prepListLoading ? '⏳ Generating...' : '🌙 Prep List for 1st Shift'}
-                    </button>
-                  </div>
-                  <div style={{ color:'#38bdf8', fontWeight:900, fontSize:'0.9rem', marginBottom:'0.75rem', textTransform:'uppercase', letterSpacing:'0.06em' }}>
-                    Current Shift Demand
-                  </div>
-                  <div style={{ display:'flex', gap:'1rem', flexWrap:'wrap' }}>
-                    <button onClick={() => generatePrepList('current')} disabled={prepListLoading}
-                      style={{ padding:'1rem 2rem', background:'linear-gradient(135deg, #38bdf8 0%, #0ea5e9 100%)', border:'none', borderRadius:'12px', color:'#fff', fontWeight:900, fontSize:'1rem', cursor: prepListLoading ? 'wait' : 'pointer', opacity: prepListLoading ? 0.6 : 1 }}>
-                      {prepListLoading ? '⏳ Analyzing...' : '📊 Current Demand'}
-                    </button>
-                  </div>
-                  {prepListError && (
-                    <div style={{ marginTop:'1rem', padding:'0.75rem', background:'rgba(255,68,68,0.1)', border:'1px solid #ff4444', borderRadius:'8px', color:'#ff4444', fontSize:'0.85rem' }}>
-                      ⚠️ {prepListError}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Editing a Prep List */}
-              {currentList && (
-                <div style={{ marginBottom:'1.5rem', padding:'1.25rem', background:'rgba(15,23,42,0.9)', border:'2px solid #a78bfa', borderRadius:'14px' }}>
-                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'1rem', flexWrap:'wrap', gap:'0.75rem' }}>
-                    <div>
-                      <div style={{ color:'#a78bfa', fontWeight:900, fontSize:'1.1rem' }}>
-                        {currentList.shift} Shift — {currentList.target_date}
-                      </div>
-                      <div style={{ color:'#64748b', fontSize:'0.8rem', marginTop:'0.25rem' }}>
-                        Status: <span style={{ color: currentList.status === 'draft' ? '#fbbf24' : '#00ff88', fontWeight:900 }}>{currentList.status.toUpperCase()}</span>
-                        {' • '}{currentList.items?.length || 0} items
-                      </div>
-                    </div>
-                    <div style={{ display:'flex', gap:'0.5rem' }}>
-                      {currentList.status === 'draft' && (
-                        <button onClick={() => approvePrepList(currentList.id)}
-                          style={{ padding:'0.65rem 1.25rem', background:'linear-gradient(135deg, #00ff88 0%, #00cc6f 100%)', border:'none', borderRadius:'10px', color:'#0a0e1a', fontWeight:900, cursor:'pointer' }}>
-                          ✅ Approve & Send to Pick List
-                        </button>
-                      )}
-                      <button onClick={() => setEditingPrepList(null)}
-                        style={{ padding:'0.65rem 1rem', background:'transparent', border:'1px solid #64748b', borderRadius:'10px', color:'#64748b', fontWeight:900, cursor:'pointer' }}>
-                        ← Back
-                      </button>
-                      <button onClick={() => deletePrepList(currentList.id)}
-                        style={{ padding:'0.65rem 1rem', background:'rgba(255,68,68,0.1)', border:'1px solid #ff4444', borderRadius:'10px', color:'#ff4444', fontWeight:900, cursor:'pointer' }}>
-                        🗑️
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Add Item Form */}
-                  {currentList.status === 'draft' && (
-                    <div style={{ marginBottom:'1rem', padding:'1rem', background:'rgba(0,255,136,0.05)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'10px' }}>
-                      <div style={{ color:'#00ff88', fontWeight:900, fontSize:'0.8rem', marginBottom:'0.75rem', textTransform:'uppercase' }}>➕ Add Item</div>
-                      <div style={{ display:'flex', gap:'0.5rem', flexWrap:'wrap', alignItems:'flex-end' }}>
-                        <select value={prepListAddItem.room} onChange={(e) => setPrepListAddItem({...prepListAddItem, room: e.target.value})}
-                          style={{ padding:'0.6rem', background:'#1e293b', border:'1px solid #334155', borderRadius:'8px', color:'#e2e8f0', minWidth:'120px' }}>
-                          <option value="">Room...</option>
-                          {CONFIG.ROOMS.filter(r => !CONFIG.WAREHOUSE_ONLY_ROOMS.includes(r)).map(r => <option key={r} value={r}>{r}</option>)}
-                        </select>
-                        <input value={prepListAddItem.item} onChange={(e) => setPrepListAddItem({...prepListAddItem, item: e.target.value})}
-                          placeholder="Item #" style={{ padding:'0.6rem', background:'#1e293b', border:'1px solid #334155', borderRadius:'8px', color:'#e2e8f0', width:'100px' }} />
-                        <input type="number" value={prepListAddItem.qty} onChange={(e) => setPrepListAddItem({...prepListAddItem, qty: e.target.value})}
-                          placeholder="Qty" style={{ padding:'0.6rem', background:'#1e293b', border:'1px solid #334155', borderRadius:'8px', color:'#e2e8f0', width:'70px' }} />
-                        <select value={prepListAddItem.priority} onChange={(e) => setPrepListAddItem({...prepListAddItem, priority: e.target.value})}
-                          style={{ padding:'0.6rem', background:'#1e293b', border:'1px solid #334155', borderRadius:'8px', color:'#e2e8f0' }}>
-                          <option value="normal">Normal</option>
-                          <option value="high">High</option>
-                        </select>
-                        <button onClick={() => addPrepListItem(currentList.id)}
-                          style={{ padding:'0.6rem 1rem', background:'#00ff88', border:'none', borderRadius:'8px', color:'#0a0e1a', fontWeight:900, cursor:'pointer' }}>
-                          Add
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Items List - Grouped by Room */}
-                  {(() => {
-                    const roomsInList = [...new Set((currentList.items || []).map(i => i.room))];
-                    return roomsInList.map(room => {
-                      const roomItems = (currentList.items || []).filter(i => i.room === room);
-                      const roomColor = CONFIG.ROOM_COLORS[room] || '#00ff88';
-                      return (
-                        <div key={room} style={{ marginBottom:'1rem', background:'rgba(15,23,42,0.5)', border:`1px solid ${roomColor}33`, borderRadius:'12px', overflow:'hidden' }}>
-                          <div style={{ padding:'0.75rem 1rem', background:`${roomColor}15`, borderBottom:`1px solid ${roomColor}33`, display:'flex', alignItems:'center', justifyContent:'space-between' }}>
-                            <div style={{ display:'flex', alignItems:'center', gap:'0.6rem' }}>
-                              <div style={{ width:'10px', height:'10px', borderRadius:'50%', background: roomColor }} />
-                              <span style={{ color: roomColor, fontWeight:900, textTransform:'uppercase', letterSpacing:'0.05em' }}>{room}</span>
-                              <span style={{ color:'#64748b', fontSize:'0.8rem' }}>({roomItems.length} items)</span>
-                            </div>
-                            {currentList.status === 'draft' && (
-                              <button onClick={() => approveRoomFromPrepList(currentList.id, room)}
-                                style={{ padding:'0.45rem 0.85rem', background:`${roomColor}22`, border:`1px solid ${roomColor}`, borderRadius:'8px', color: roomColor, fontWeight:900, fontSize:'0.75rem', cursor:'pointer' }}>
-                                ✅ Approve {room}
-                              </button>
-                            )}
-                          </div>
-                          <div style={{ display:'flex', flexDirection:'column', gap:'0' }}>
-                            {roomItems.map((item, idx) => {
-                              const globalIdx = (currentList.items || []).findIndex(i => i === item);
-                              return (
-                                <div key={idx} style={{ display:'flex', alignItems:'center', gap:'0.75rem', padding:'0.65rem 1rem', borderBottom: idx < roomItems.length - 1 ? '1px solid #1e293b' : 'none' }}>
-                                  <div style={{ color:'#e2e8f0', fontWeight:900, flex:1 }}>{item.item}</div>
-                                  {currentList.status === 'draft' ? (
-                                    <input type="number" value={item.suggestedQty}
-                                      onChange={(e) => updatePrepListItem(currentList.id, globalIdx, { suggestedQty: Number(e.target.value) || 1 })}
-                                      style={{ width:'60px', padding:'0.4rem', background:'#1e293b', border:'1px solid #334155', borderRadius:'6px', color:'#38bdf8', fontWeight:900, textAlign:'center' }} />
-                                  ) : (
-                                    <div style={{ color:'#38bdf8', fontWeight:900 }}>{item.suggestedQty}</div>
-                                  )}
-                                  {item.priority === 'high' && (
-                                    <span style={{ padding:'0.2rem 0.5rem', background:'#ff4444', borderRadius:'6px', color:'#fff', fontWeight:900, fontSize:'0.7rem' }}>HIGH</span>
-                                  )}
-                                  {item.isManual && (
-                                    <span style={{ padding:'0.2rem 0.5rem', background:'rgba(0,255,136,0.15)', border:'1px solid #00ff88', borderRadius:'6px', color:'#00ff88', fontWeight:900, fontSize:'0.65rem' }}>MANUAL</span>
-                                  )}
-                                  {currentList.status === 'draft' && (
-                                    <button onClick={() => removePrepListItem(currentList.id, globalIdx)}
-                                      style={{ padding:'0.3rem 0.5rem', background:'transparent', border:'1px solid #ff4444', borderRadius:'6px', color:'#ff4444', cursor:'pointer', fontSize:'0.8rem' }}>
-                                      ✕
-                                    </button>
-                                  )}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      );
-                    });
-                  })()}
-
-                  {/* History Log */}
-                  {currentList.history && currentList.history.length > 0 && (
-                    <div style={{ marginTop:'1.25rem', padding:'1rem', background:'rgba(15,23,42,0.6)', border:'1px solid #334155', borderRadius:'10px' }}>
-                      <div style={{ color:'#64748b', fontWeight:900, fontSize:'0.75rem', marginBottom:'0.75rem', textTransform:'uppercase' }}>History</div>
-                      <div style={{ display:'flex', flexDirection:'column', gap:'0.4rem', maxHeight:'200px', overflowY:'auto' }}>
-                        {currentList.history.map((h, i) => (
-                          <div key={i} style={{ fontSize:'0.78rem', color:'#8b9dc3' }}>
-                            <span style={{ color:'#64748b' }}>{new Date(h.at).toLocaleString()}</span>
-                            {' — '}<span style={{ color:'#a78bfa' }}>{h.action}</span>
-                            {h.by && <span> by {h.by}</span>}
-                            {h.detail && <span style={{ color:'#64748b' }}> ({h.detail})</span>}
-                            {h.summary && <span style={{ color:'#64748b' }}> — {h.summary}</span>}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Draft Lists */}
-              {!editingPrepList && draftLists.length > 0 && (
-                <div style={{ marginBottom:'1.5rem' }}>
-                  <div style={{ color:'#fbbf24', fontWeight:900, fontSize:'0.9rem', marginBottom:'0.75rem', textTransform:'uppercase', letterSpacing:'0.06em' }}>
-                    📝 Draft Lists ({draftLists.length})
-                  </div>
-                  <div style={{ display:'flex', flexDirection:'column', gap:'0.5rem' }}>
-                    {draftLists.map(list => (
-                      <div key={list.id} onClick={() => setEditingPrepList(list.id)}
-                        style={{ padding:'1rem', background:'rgba(251,191,36,0.08)', border:'1px solid rgba(251,191,36,0.3)', borderRadius:'12px', cursor:'pointer', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-                        <div>
-                          <div style={{ color:'#fbbf24', fontWeight:900 }}>{list.shift} Shift — {list.target_date}</div>
-                          <div style={{ color:'#64748b', fontSize:'0.8rem' }}>{list.items?.length || 0} items • Generated {new Date(list.generated_at).toLocaleString()}</div>
-                        </div>
-                        <div style={{ color:'#fbbf24', fontSize:'1.2rem' }}>→</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Approved Lists */}
-              {!editingPrepList && approvedLists.length > 0 && (
-                <div style={{ marginBottom:'1.5rem' }}>
-                  <div style={{ color:'#00ff88', fontWeight:900, fontSize:'0.9rem', marginBottom:'0.75rem', textTransform:'uppercase', letterSpacing:'0.06em' }}>
-                    ✅ Approved Lists ({approvedLists.length})
-                  </div>
-                  <div style={{ display:'flex', flexDirection:'column', gap:'0.5rem' }}>
-                    {approvedLists.slice(0, 10).map(list => (
-                      <div key={list.id} onClick={() => setEditingPrepList(list.id)}
-                        style={{ padding:'1rem', background:'rgba(0,255,136,0.05)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'12px', cursor:'pointer', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-                        <div>
-                          <div style={{ color:'#00ff88', fontWeight:900 }}>{list.shift} Shift — {list.target_date}</div>
-                          <div style={{ color:'#64748b', fontSize:'0.8rem' }}>
-                            {list.items?.length || 0} items • Approved by {list.approved_by} on {new Date(list.approved_at).toLocaleString()}
-                          </div>
-                        </div>
-                        <div style={{ color:'#00ff88', fontSize:'1.2rem' }}>→</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {!editingPrepList && prepLists.length === 0 && !prepListLoading && (
-                <div style={{ padding:'3rem', textAlign:'center', background:'rgba(15,23,42,0.85)', border:'1px solid #334155', borderRadius:'14px' }}>
-                  <div style={{ fontSize:'3rem', marginBottom:'1rem' }}>🅰️</div>
-                  <div style={{ color:'#8b9dc3', fontSize:'1rem' }}>No prep lists yet. Generate one above!</div>
-                </div>
-              )}
-
-            </div>
-            {_breakPanelJsx}
-            {_chatUI}
-            {_chatFab}
-          </div>
-        );
-      }
-
 if (screen === "admin") {
         if (!canAdmin) {
           return (
@@ -6597,9 +6083,6 @@ ${filteredArchive.map(r => `<tr>
                                     </span>
                                     {req.priority && (
                                       <span style={{ padding:'0.15rem 0.45rem', background:'#ff4444', borderRadius:'8px', color:'#fff', fontWeight:900, fontSize:'0.68rem', flexShrink:0 }}>HIGH</span>
-                                    )}
-                                    {req.isAiGenerated && (
-                                      <span style={{ padding:'0.15rem 0.45rem', background:'rgba(167,139,250,0.2)', border:'1px solid #a78bfa', borderRadius:'8px', color:'#a78bfa', fontWeight:900, fontSize:'0.65rem', flexShrink:0 }}>🅰️ AI</span>
                                     )}
                                     {(req.comments || "").includes("🔄 Balance:") && (
                                       <span style={{ padding:'0.15rem 0.45rem', background:'rgba(251,191,36,0.2)', border:'1px solid #fbbf24', borderRadius:'8px', color:'#fbbf24', fontWeight:900, fontSize:'0.65rem', flexShrink:0 }}>🔄 BALANCE</span>
