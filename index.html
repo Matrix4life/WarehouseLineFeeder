@@ -567,14 +567,7 @@
         cancelledBy: r.cancelled_by || null,
         version: Number(r.version || 1),
         lastUpdatedAt: r.last_updated_at || r.submitted_at,
-        archivedAt:
-  (r.archived_at === null ||
-   r.archived_at === undefined ||
-   r.archived_at === "" ||
-   r.archived_at === "NULL" ||
-   r.archived_at === "null")
-    ? null
-    : r.archived_at,
+        archivedAt: r.archived_at || null,
         isAiGenerated: !!r.is_ai_generated,
         prepListId: r.prep_list_id || null
       });
@@ -632,33 +625,15 @@
           }
         },
         destroy() { try { unsub?.(); } catch {} },
-       async loadAll() {
-  if (!useSupabase) return await localLoad();
-
-  const { data: activeData, error: activeError } = await supabaseClient
-    .from("warehouse_requests")
-    .select("*")
-    .is("archived_at", null)
-    .in("status", ["pending", "claimed", "in_progress"])
-    .order("submitted_at", { ascending: false })
-    .limit(500);
-
-  if (activeError) throw activeError;
-
-  const { data: archivedData, error: archivedError } = await supabaseClient
-    .from("warehouse_requests")
-    .select("*")
-    .in("status", ["completed", "cancelled"])
-    .order("submitted_at", { ascending: false })
-    .limit(2000);
-
-  if (archivedError) throw archivedError;
-
-  return {
-    active: (activeData || []).map(supaNormalize),
-    archived: (archivedData || []).map(supaNormalize),
-  };
-},
+        async loadAll() {
+          if (!useSupabase) return await localLoad();
+          const { data, error } = await supabaseClient
+            .from("warehouse_requests")
+            .select("*")
+            .order("submitted_at", { ascending: true });
+          if (error) throw error;
+          return (data || []).map(supaNormalize);
+        },
         async upsert(row) {
           if (!useSupabase) {
             const rows = await localLoad();
@@ -1119,10 +1094,6 @@
       const [tempName, setTempName] = useState(userName);
       const [tempRole, setTempRole] = useState(userRole);
       const [requests, setRequests] = useState([]);
-      useEffect(() => {
-  window._debugRequests = requests;
-  console.log("REQUESTS STATE:", requests);
-}, [requests]);
       const [loading, setLoading] = useState(true);
       const [errors, setErrors] = useState({});
       const [successMsg, setSuccessMsg] = useState("");
@@ -1522,7 +1493,7 @@
               'Content-Type': 'application/json',
               'Authorization': `Bearer ${CONFIG.SUPABASE_ANON_KEY}`
             },
-            body: JSON.stringify({ shift, daysBack: 60 })
+            body: JSON.stringify({ shift, daysBack: 30 })
           });
           const data = await res.json();
           if (!data.success) throw new Error(data.error || 'Failed to generate');
@@ -1735,23 +1706,34 @@
         }
       };
 
-     const loadAll = async ()=> {
-  try {
-    const adapter = adapterRef.current;
-    if (!adapter) return;
-
-    const { active, archived } = await adapter.loadAll();
-
-    detectStatusChanges(active);
-    setRequests(active);
-    setArchivedRequests(archived);
-
-    setLoading(false);
-  } catch (error) {
-    console.error("Failed to load data:", error);
-    setLoading(false);
-  }
-};
+      const loadAll = async ()=> {
+        try {
+          const adapter = adapterRef.current;
+          if (!adapter) return;
+          const data = await adapter.loadAll();
+          const all = Array.isArray(data) ? data : [];
+          const active = all.filter(r => !r.archivedAt);
+          const archived = all.filter(r => !!r.archivedAt);
+          detectStatusChanges(active);
+          setRequests(active);
+          setArchivedRequests(archived);
+          if (adapter.loadUsers) {
+            const [u, a] = await Promise.all([adapter.loadUsers(), adapter.loadAssignments()]);
+            setUsers(Array.isArray(u) ? u : []);
+            setAssignments(Array.isArray(a) ? a : []);
+          }
+          if (adapter.loadSettings) {
+            try {
+              const s = await adapter.loadSettings();
+              _updateSysSettings(s);
+            } catch(e) { console.error("loadSettings error:", e); }
+          }
+          setLoading(false);
+        } catch (error) {
+          console.error("Failed to load data:", error);
+          setLoading(false);
+        }
+      };
       useEffect(() => {
         (async ()=>{
           try {
@@ -1762,12 +1744,12 @@
             // Debounced loadAll — collapses rapid Realtime bursts into one call
             // and skips entirely when chat is open to prevent glitch
             let _reloadTimer = null;
-           const debouncedLoadAll = () => {
-  clearTimeout(_reloadTimer);
-  _reloadTimer = setTimeout(() => {
-    loadAll().catch(console.error);
-  }, 300);
-};
+            const debouncedLoadAll = () => {
+              clearTimeout(_reloadTimer);
+              _reloadTimer = setTimeout(() => {
+                if (!chatOpenRef.current) loadAll().catch(console.error);
+              }, 300);
+            };
             const adapter = createAdapter({
               onRemoteChange: debouncedLoadAll,
               onSettingsChange: async () => {
@@ -2644,43 +2626,36 @@
         }
       };
       const archiveCompleted = async () => {
-  try {
-    const adapter = adapterRef.current;
-    const toArchive = archivedRequests.filter(r =>
-      (r.status === "completed" || r.status === "cancelled") && !r.archivedAt
-    );
-
-    if (toArchive.length === 0) {
-      setSuccessMsg("Nothing to archive — no completed/cancelled requests.");
-      setTimeout(() => setSuccessMsg(""), 3000);
-      return;
-    }
-
-    const archiveTs = new Date().toISOString();
-
-    for (const r of toArchive) {
-      await adapter.updatePartial(r.id, (rec) => {
-        rec.archivedAt = archiveTs;
-        rec.lastUpdatedAt = archiveTs;
-        return rec;
-      });
-    }
-
-    const today = new Date().toISOString().split("T")[0];
-    setLastArchiveDate(today);
-    localStorage.setItem("wd_lastArchiveDate", today);
-    await loadAll();
-
-    setSuccessMsg(
-      `✅ Archived ${toArchive.length} completed/cancelled request${toArchive.length !== 1 ? "s" : ""}.`
-    );
-    setTimeout(() => setSuccessMsg(""), 4000);
-  } catch (err) {
-    console.error("Archive failed:", err);
-    setSuccessMsg("❌ Archive failed — check console.");
-    setTimeout(() => setSuccessMsg(""), 4000);
-  }
-};
+        try {
+          const adapter = adapterRef.current;
+          const toArchive = requests.filter(r =>
+            (r.status === "completed" || r.status === "cancelled") && !r.archivedAt
+          );
+          if (toArchive.length === 0) {
+            setSuccessMsg("Nothing to archive — no completed/cancelled requests.");
+            setTimeout(() => setSuccessMsg(""), 3000);
+            return;
+          }
+          const archiveTs = new Date().toISOString();
+          for (const r of toArchive) {
+            await adapter.updatePartial(r.id, (rec) => {
+              rec.archivedAt = archiveTs;
+              rec.lastUpdatedAt = archiveTs;
+              return rec;
+            });
+          }
+          const today = new Date().toISOString().split("T")[0];
+          setLastArchiveDate(today);
+          localStorage.setItem("wd_lastArchiveDate", today);
+          await loadAll();
+          setSuccessMsg(`✅ Archived ${toArchive.length} completed/cancelled request${toArchive.length !== 1 ? "s" : ""}.`);
+          setTimeout(() => setSuccessMsg(""), 4000);
+        } catch (err) {
+          console.error("Archive failed:", err);
+          setSuccessMsg("❌ Archive failed — check console.");
+          setTimeout(() => setSuccessMsg(""), 4000);
+        }
+      };
       useEffect(() => {
         const checkMidnightArchive = async () => {
           const today = new Date().toISOString().split("T")[0];
@@ -2690,10 +2665,7 @@
           if (!adapter) return;
           try {
             const data = await adapter.loadAll();
-const all = [
-  ...((data && Array.isArray(data.active)) ? data.active : []),
-  ...((data && Array.isArray(data.archived)) ? data.archived : [])
-];
+            const all = Array.isArray(data) ? data : [];
             const toArchive = all.filter(r =>
               (r.status === "completed" || r.status === "cancelled") && !r.archivedAt
             );
@@ -2754,7 +2726,7 @@ const all = [
           if (!name) { setLoginError("Please enter your name."); return; }
           if (noUsers) {
             const firstAdmin = { id: genId(), name, role: "admin", shift: null, createdAt: new Date().toISOString(), createdBy: "system" };
-            adapterRef.current.saveUser(firstAdmin).then(() => loadUsersAndAssignments());
+            adapterRef.current.saveUser(firstAdmin).then(() => loadAll());
             setUsers([firstAdmin]);
             setUserName(name); setUserRole("admin");
             localStorage.setItem("wd_userName", name);
@@ -5356,19 +5328,24 @@ ${sortedCompleted.map(r => {
               {!editingPrepList && (
                 <div style={{ marginBottom:'1.5rem', padding:'1.25rem', background:'rgba(167,139,250,0.08)', border:'1px solid rgba(167,139,250,0.3)', borderRadius:'14px' }}>
                   <div style={{ color:'#a78bfa', fontWeight:900, fontSize:'0.9rem', marginBottom:'1rem', textTransform:'uppercase', letterSpacing:'0.06em' }}>
-                    Generate Prep List / Current Demand
+                    Generate Prep List
                   </div>
-                  <div style={{ display:'flex', gap:'1rem', flexWrap:'wrap' }}>
+                  <div style={{ display:'flex', gap:'1rem', flexWrap:'wrap', marginBottom:'1rem' }}>
                     <button onClick={() => generatePrepList('1st')} disabled={prepListLoading}
-                      style={{ padding:'1rem 1.5rem', background:'linear-gradient(135deg, #a78bfa 0%, #7c3aed 100%)', border:'none', borderRadius:'12px', color:'#fff', fontWeight:900, fontSize:'0.95rem', cursor: prepListLoading ? 'wait' : 'pointer', opacity: prepListLoading ? 0.6 : 1 }}>
-                      {prepListLoading ? '⏳ Generating...' : '☀️ Prep for 2nd Shift'}
+                      style={{ padding:'1rem 2rem', background:'linear-gradient(135deg, #a78bfa 0%, #7c3aed 100%)', border:'none', borderRadius:'12px', color:'#fff', fontWeight:900, fontSize:'1rem', cursor: prepListLoading ? 'wait' : 'pointer', opacity: prepListLoading ? 0.6 : 1 }}>
+                      {prepListLoading ? '⏳ Generating...' : '☀️ Prep List for 2nd Shift'}
                     </button>
                     <button onClick={() => generatePrepList('2nd')} disabled={prepListLoading}
-                      style={{ padding:'1rem 1.5rem', background:'linear-gradient(135deg, #7c3aed 0%, #5b21b6 100%)', border:'none', borderRadius:'12px', color:'#fff', fontWeight:900, fontSize:'0.95rem', cursor: prepListLoading ? 'wait' : 'pointer', opacity: prepListLoading ? 0.6 : 1 }}>
-                      {prepListLoading ? '⏳ Generating...' : '🌙 Prep for 1st Shift'}
+                      style={{ padding:'1rem 2rem', background:'linear-gradient(135deg, #7c3aed 0%, #5b21b6 100%)', border:'none', borderRadius:'12px', color:'#fff', fontWeight:900, fontSize:'1rem', cursor: prepListLoading ? 'wait' : 'pointer', opacity: prepListLoading ? 0.6 : 1 }}>
+                      {prepListLoading ? '⏳ Generating...' : '🌙 Prep List for 1st Shift'}
                     </button>
+                  </div>
+                  <div style={{ color:'#38bdf8', fontWeight:900, fontSize:'0.9rem', marginBottom:'0.75rem', textTransform:'uppercase', letterSpacing:'0.06em' }}>
+                    Current Shift Demand
+                  </div>
+                  <div style={{ display:'flex', gap:'1rem', flexWrap:'wrap' }}>
                     <button onClick={() => generatePrepList('current')} disabled={prepListLoading}
-                      style={{ padding:'1rem 1.5rem', background:'linear-gradient(135deg, #38bdf8 0%, #0ea5e9 100%)', border:'none', borderRadius:'12px', color:'#fff', fontWeight:900, fontSize:'0.95rem', cursor: prepListLoading ? 'wait' : 'pointer', opacity: prepListLoading ? 0.6 : 1 }}>
+                      style={{ padding:'1rem 2rem', background:'linear-gradient(135deg, #38bdf8 0%, #0ea5e9 100%)', border:'none', borderRadius:'12px', color:'#fff', fontWeight:900, fontSize:'1rem', cursor: prepListLoading ? 'wait' : 'pointer', opacity: prepListLoading ? 0.6 : 1 }}>
                       {prepListLoading ? '⏳ Analyzing...' : '📊 Current Demand'}
                     </button>
                   </div>
@@ -5590,79 +5567,46 @@ if (screen === "admin") {
         const thisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
         const thisYear = new Date(now.getFullYear(), 0, 1);
         const handleCreateUser = () => {
-  const name = newUserName.trim();
-  if (!name) { alert("Enter a name"); return; }
-
-  if (users.find(u => u.name.trim().toLowerCase() === name.toLowerCase())) {
-    alert("A user with that name already exists!");
-    return;
-  }
-
-  const shift = (newUserRole === "admin" || newUserRole === "superuser") ? null : newUserShift;
-  const newUser = {
-    id: genId(),
-    name,
-    role: newUserRole,
-    shift,
-    createdAt: new Date().toISOString(),
-    createdBy: userName
-  };
-
-  adapterRef.current.saveUser(newUser).then(() => loadUsersAndAssignments());
-  setNewUserName("");
-  setNewUserRole("room");
-  setNewUserShift("1st");
-  setSuccessMsg(`User "${name}" created!`);
-  setTimeout(() => setSuccessMsg(""), 3000);
-};
-
-const handleDeleteUser = (id, name) => {
-  if (!confirm(`Delete user "${name}"? They will no longer be able to sign in.`)) return;
-  adapterRef.current.deleteUser(id).then(() => loadUsersAndAssignments());
-  setSuccessMsg(`User "${name}" deleted.`);
-  setTimeout(() => setSuccessMsg(""), 3000);
-};
-
-const handleArchiveUser = (u) => {
-  if (!confirm(`Archive "${u.name}"?\n\nThey will no longer be able to sign in, but ALL their historical data (requests, breaks, chat) is preserved.`)) return;
-  const updated = { ...u, archivedAt: new Date().toISOString(), archivedBy: userName };
-  adapterRef.current.saveUser(updated).then(() => loadUsersAndAssignments());
-  setSuccessMsg(`"${u.name}" archived. All historical data preserved.`);
-  setTimeout(() => setSuccessMsg(""), 4000);
-};
-
-const handleUnarchiveUser = (u) => {
-  if (!confirm(`Restore "${u.name}" as an active user?`)) return;
-  const updated = { ...u, archivedAt: null, archivedBy: null };
-  adapterRef.current.saveUser(updated).then(() => loadUsersAndAssignments());
-  setSuccessMsg(`"${u.name}" restored to active.`);
-  setTimeout(() => setSuccessMsg(""), 3000);
-};
-
-const handleUpdateUser = (id) => {
-  const name = editUserName.trim();
-  if (!name) { alert("Name cannot be empty"); return; }
-
-  if (users.find(u => u.id !== id && u.name.trim().toLowerCase() === name.toLowerCase())) {
-    alert("A user with that name already exists!");
-    return;
-  }
-
-  const existing = users.find(u => u.id === id);
-  if (!existing) return;
-
-  const updated = {
-    ...existing,
-    name,
-    role: editUserRole,
-    shift: (editUserRole === "admin" || editUserRole === "superuser") ? null : (existing.shift || "1st")
-  };
-
-  adapterRef.current.saveUser(updated).then(() => loadUsersAndAssignments());
-  setEditUserId(null);
-  setSuccessMsg("User updated!");
-  setTimeout(() => setSuccessMsg(""), 3000);
-};
+          const name = newUserName.trim();
+          if (!name) { alert("Enter a name"); return; }
+          if (users.find(u => u.name.toLowerCase() === name.toLowerCase())) { alert("A user with that name already exists!"); return; }
+          const shift = newUserRole === "admin" ? null : newUserShift;
+          const newUser = { id: genId(), name, role: newUserRole, shift, createdAt: new Date().toISOString(), createdBy: userName };
+          adapterRef.current.saveUser(newUser).then(() => loadAll());
+          setNewUserName(""); setNewUserRole("room"); setNewUserShift("1st");
+          setSuccessMsg(`User "${name}" created!`);
+          setTimeout(() => setSuccessMsg(""), 3000);
+        };
+        const handleDeleteUser = (id, name) => {
+          if (!confirm(`Delete user "${name}"? They will no longer be able to sign in.`)) return;
+          adapterRef.current.deleteUser(id).then(() => loadAll());
+          setSuccessMsg(`User "${name}" deleted.`);
+          setTimeout(() => setSuccessMsg(""), 3000);
+        };
+        const handleArchiveUser = (u) => {
+          if (!confirm(`Archive "${u.name}"?\n\nThey will no longer be able to sign in, but ALL their historical data (requests, breaks, chat) is preserved.`)) return;
+          const updated = { ...u, archivedAt: new Date().toISOString(), archivedBy: userName };
+          adapterRef.current.saveUser(updated).then(() => loadAll());
+          setSuccessMsg(`"${u.name}" archived. All historical data preserved.`);
+          setTimeout(() => setSuccessMsg(""), 4000);
+        };
+        const handleUnarchiveUser = (u) => {
+          if (!confirm(`Restore "${u.name}" as an active user?`)) return;
+          const updated = { ...u, archivedAt: null, archivedBy: null };
+          adapterRef.current.saveUser(updated).then(() => loadAll());
+          setSuccessMsg(`"${u.name}" restored to active.`);
+          setTimeout(() => setSuccessMsg(""), 3000);
+        };
+        const handleUpdateUser = (id) => {
+          const name = editUserName.trim();
+          if (!name) { alert("Name cannot be empty"); return; }
+          const existing = users.find(u => u.id === id);
+          const updated = { ...existing, name, role: editUserRole };
+          adapterRef.current.saveUser(updated).then(() => loadAll());
+          setEditUserId(null);
+          setSuccessMsg("User updated!");
+          setTimeout(() => setSuccessMsg(""), 3000);
+        };
         const roleColors = { room:'#8b9dc3', warehouse:'#fbbf24', supervisor:'#a78bfa', admin:'#ff4444', superuser:'#ff4444' };
         const roleEmojis = { room:'🍽️', warehouse:'📦', supervisor:'🧭', admin:'🔧', superuser:'🔧' };
         return (
