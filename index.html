@@ -2218,7 +2218,7 @@
       const startBreak = async () => {
         const adapter = adapterRef.current;
         if (!adapter || !userName) return;
-        const id = "brk_" + Date.now();
+       const id = Date.now();
         const startedAt = nowIso();
         const rec = { id, workerName: userName, workerRole: userRole, startedAt, endedAt: null, durationMins: null, wasOverdue: false };
         setBreaks(prev => [rec, ...prev]);
