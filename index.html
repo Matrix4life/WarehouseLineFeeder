@@ -4376,9 +4376,10 @@ const all = [
                       ⚙️ Dashboard Settings
                     </button>
                     <button onClick={() => {
-                      const headers = ["ID","Item","Room","Qty","Priority","Submitted","Submitted By","Claimed By","Claimed At","Completed At","Completed By","Room Wait (min)","Pick Time (min)","Status","Comments"];
+                      const headers = ["ID","Item","Room","Qty","Unit","Priority","Submitted","Submitted By","Claimed By","Claimed At","Completed At","Completed By","Room Wait (min)","Pick Time (min)","Status","Comments"];
                       const rows = filteredReqs.map(r => [
                         r.id, r.item, r.room, r.qty + (r.adjQty?` remaining:${r.adjQty}`:""),
+                        r.unit||"cases",
                         r.priority?"HIGH":"NORMAL",
                         r.submittedAt ? new Date(r.submittedAt).toLocaleString() : "",
                         r.submittedBy||"", r.claimedBy||"",
@@ -4781,12 +4782,13 @@ const all = [
           const end = new Date(r.completedAt);
           const timeMin = Math.round((end - start) / 60000);
           return [r.id, r.item, r.room, r.qty + (r.adjQty ? ` (remaining:${r.adjQty})` : ''),
+            r.unit||'cases',
             r.priority ? 'HIGH' : 'NORMAL', new Date(r.submittedAt).toLocaleString(),
             r.submittedBy||'', r.claimedBy||'', new Date(r.completedAt).toLocaleString(),
             r.completedBy||'', timeMin, (r.comments||'').replace(/,/g,';')];
         });
         const exportToCSV = () => {
-          const headers = ["ID","Item","Room","Qty","Priority","Submitted At","Submitted By","Claimed By","Completed At","Completed By","Time (min)","Comments"];
+          const headers = ["ID","Item","Room","Qty","Unit","Priority","Submitted At","Submitted By","Claimed By","Completed At","Completed By","Time (min)","Comments"];
           const rows = buildRows(sortedCompleted);
           const csv = [headers.join(','), ...rows.map(row => row.map(c=>`"${c}"`).join(','))].join('\n');
           const blob = new Blob([csv], { type:'text/csv;charset=utf-8;' });
@@ -4815,11 +4817,11 @@ const all = [
 <h1>📦 Completed Requests Export</h1>
 <div class="meta">Period: ${label}${roomLabel} · Generated: ${new Date().toLocaleString()} · Total: ${sortedCompleted.length} records</div>
 <button onclick="window.print()" style="margin-bottom:12px;padding:8px 16px;background:#0a0e1a;color:#00ff88;border:none;border-radius:6px;cursor:pointer;font-weight:700;">🖨️ Print / Save as PDF</button>
-<table><thead><tr><th>Item</th><th>Room</th><th>Qty</th><th>Priority</th><th>Submitted</th><th>Completed</th><th>Time</th><th>Claimed By</th><th>Completed By</th><th>Comments</th></tr></thead><tbody>
+<table><thead><tr><th>Item</th><th>Room</th><th>Qty</th><th>Unit</th><th>Priority</th><th>Submitted</th><th>Completed</th><th>Time</th><th>Claimed By</th><th>Completed By</th><th>Comments</th></tr></thead><tbody>
 ${sortedCompleted.map(r => {
   const tmin = Math.round((new Date(r.completedAt)-new Date(r.submittedAt))/60000);
   const tc = tmin<=5?'time-ok':tmin<=10?'time-warn':'time-bad';
-  return `<tr><td><strong>${r.item}</strong></td><td>${r.room}</td><td>${r.qty}${r.adjQty?` <small>(remaining:${r.adjQty})</small>`:''}</td>
+  return `<tr><td><strong>${r.item}</strong></td><td>${r.room}</td><td>${r.qty}${r.adjQty?` <small>(remaining:${r.adjQty})</small>`:''}</td><td style="font-weight:700;color:${(r.unit||'cases')==='pallet'?'#c2410c':'#0369a1'}">${r.unit||'cases'}</td>
 <td>${r.priority?'<span class="high">HIGH</span>':''}</td>
 <td>${new Date(r.submittedAt).toLocaleString()}<br><small style="color:#666">${r.submittedBy||''}</small></td>
 <td>${new Date(r.completedAt).toLocaleString()}</td>
@@ -4954,6 +4956,7 @@ ${sortedCompleted.map(r => {
                                 ) : (
                                   <div style={{ fontWeight:900 }}>{req.qty}</div>
                                 )}
+                                <div style={{ fontSize:'0.72rem', color:(req.unit||'cases')==='pallet'?'#fb923c':'#38bdf8', fontWeight:700, textTransform:'uppercase', marginTop:'2px' }}>{req.unit||'cases'}</div>
                               </td>
                               <td style={cellStyle}>
                                 {req.priority && <span style={{ padding:'0.3rem 0.6rem', background:'#ff4444', borderRadius:'8px', color:'#fff', fontWeight:900, fontSize:'0.7rem' }}>HIGH</span>}
@@ -6112,9 +6115,10 @@ const handleUpdateUser = (id) => {
                       return true;
                     }).sort((a,b) => new Date(b.archivedAt||b.completedAt||0) - new Date(a.archivedAt||a.completedAt||0));
                     const exportArchiveCSV = () => {
-                      const headers = ["ID","Item","Room","Qty","Adj Qty","Priority","Status","Comments","Submitted At","Submitted By","Submitted By Role","Claimed By","Claimed At","Started At","Completed At","Completed By","Cancelled At","Cancelled By","Archived At"];
+                      const headers = ["ID","Item","Room","Qty","Adj Qty","Unit","Priority","Status","Comments","Submitted At","Submitted By","Submitted By Role","Claimed By","Claimed At","Started At","Completed At","Completed By","Cancelled At","Cancelled By","Archived At"];
                       const rows = filteredArchive.map(r => [
                         r.id, r.item, r.room, r.qty, r.adjQty||0,
+                        r.unit||'cases',
                         r.priority?'HIGH':'NORMAL', r.status,
                         (r.comments||'').replace(/,/g,';'),
                         r.submittedAt ? new Date(r.submittedAt).toLocaleString() : '',
@@ -6150,9 +6154,9 @@ const handleUpdateUser = (id) => {
 <h1>🗄️ Request Archive Export</h1>
 <div class="meta">Rooms: ${arcRoom||'All'} · Dates: ${arcFrom||'start'} → ${arcTo||'end'} · Generated: ${new Date().toLocaleString()} · Records: ${filteredArchive.length}</div>
 <button onclick="window.print()" style="margin-bottom:10px;padding:7px 14px;background:#0a0e1a;color:#00ff88;border:none;border-radius:5px;cursor:pointer;font-weight:700;">🖨️ Print / Save PDF</button>
-<table><thead><tr><th>Item</th><th>Room</th><th>Qty</th><th>Pri</th><th>Status</th><th>Submitted</th><th>Completed</th><th>Completed By</th><th>Archived</th><th>Comments</th></tr></thead><tbody>
+<table><thead><tr><th>Item</th><th>Room</th><th>Qty</th><th>Unit</th><th>Pri</th><th>Status</th><th>Submitted</th><th>Completed</th><th>Completed By</th><th>Archived</th><th>Comments</th></tr></thead><tbody>
 ${filteredArchive.map(r => `<tr>
-<td><strong>${r.item}</strong></td><td>${r.room}</td><td>${r.qty}${r.adjQty?`<small>(remaining:${r.adjQty})</small>`:''}</td>
+<td><strong>${r.item}</strong></td><td>${r.room}</td><td>${r.qty}${r.adjQty?`<small>(remaining:${r.adjQty})</small>`:''}</td><td style="font-weight:700">${r.unit||'cases'}</td>
 <td>${r.priority?'<span class="high">HIGH</span>':''}</td>
 <td style="text-transform:uppercase;font-size:0.7rem;font-weight:700">${r.status.replace('_',' ')}</td>
 <td>${r.submittedAt?new Date(r.submittedAt).toLocaleString():''}<br><small>${r.submittedBy||''}</small></td>
@@ -6230,7 +6234,7 @@ ${filteredArchive.map(r => `<tr>
                             <table style={{ width:'100%', borderCollapse:'collapse', minWidth:'900px' }}>
                               <thead>
                                 <tr style={{ background:'rgba(139,157,195,0.08)' }}>
-                                  {["Item","Room","Qty","Priority","Status","Submitted","Completed","Completed By","Archived","Comments"].map(h=>(
+                                  {["Item","Room","Qty / Unit","Priority","Status","Submitted","Completed","Completed By","Archived","Comments"].map(h=>(
                                     <th key={h} style={headerStyle}>{h}</th>
                                   ))}
                                 </tr>
