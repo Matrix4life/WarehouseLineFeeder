@@ -6980,19 +6980,12 @@ ${filteredArchive.map(r => `<tr>
                   <label style={{ display:'block', color:'#e2e8f0', fontSize:'0.85rem', fontWeight:900, marginBottom:'0.5rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>
                     Priority
                   </label>
-                  <div style={{ display:'flex', gap:'0.5rem' }}>
-                    {[
-                      { key:false, label:"Normal", bg:"#1e293b", border:"#334155", color:"#e2e8f0" },
-                      { key:true, label:"High", bg:"linear-gradient(135deg, #ff4444 0%, #cc0000 100%)", border:"#ff4444", color:"#fff" }
-                    ].map(opt => (
-                      <button key={String(opt.key)} type="button"
-                        onClick={()=> setFormData({ ...formData, priority: opt.key })}
-                        style={{ flex:1, padding:'0.875rem', borderRadius:'10px', background: formData.priority === opt.key ? opt.bg : "#1e293b", border: formData.priority === opt.key ? `2px solid ${opt.border}` : "2px solid #334155", color: formData.priority === opt.key ? opt.color : "#e2e8f0", fontWeight:900, cursor:'pointer', textTransform:'uppercase', letterSpacing:'0.06em' }}
-                      >
-                        {opt.label}
-                      </button>
-                    ))}
-                  </div>
+                  <button type="button"
+                    onClick={()=> setFormData({ ...formData, priority: !formData.priority })}
+                    style={{ width:'100%', padding:'0.875rem', borderRadius:'10px', background: formData.priority ? 'linear-gradient(135deg, #ff4444 0%, #cc0000 100%)' : '#1e293b', border: formData.priority ? '2px solid #ff4444' : '2px solid #334155', color: formData.priority ? '#fff' : '#64748b', fontWeight:900, cursor:'pointer', textTransform:'uppercase', letterSpacing:'0.06em' }}
+                  >
+                    {formData.priority ? '🚨 High' : 'High'}
+                  </button>
                 </div>
               </div>
 
