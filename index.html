@@ -6654,6 +6654,9 @@ ${filteredArchive.map(r => `<tr>
                                     <span style={{ display:'flex', alignItems:'center', gap:'0.35rem', fontWeight:900, color:'#e2e8f0', fontSize:'0.95rem', flex:1, minWidth:0 }}>
                                       <Package size={14} color="#00ff88" />
                                       {/^\d+$/.test(req.item) ? String(Number(req.item)) : req.item}
+                                      <span style={{ padding:'0.15rem 0.5rem', borderRadius:'6px', fontSize:'0.7rem', fontWeight:900, textTransform:'uppercase', letterSpacing:'0.06em', background: (req.unit||'cases')==='pallet' ? 'rgba(251,146,60,0.2)' : 'rgba(56,189,248,0.15)', color: (req.unit||'cases')==='pallet' ? '#fb923c' : '#38bdf8', border: `1px solid ${(req.unit||'cases')==='pallet' ? '#fb923c' : '#38bdf8'}`, flexShrink:0 }}>
+                                        {(req.unit||'cases')==='pallet' ? '🪵 Pallet' : '📦 Cases'}
+                                      </span>
                                     </span>
                                     {req.priority && (
                                       <span style={{ padding:'0.15rem 0.45rem', background:'#ff4444', borderRadius:'8px', color:'#fff', fontWeight:900, fontSize:'0.68rem', flexShrink:0 }}>HIGH</span>
@@ -6674,7 +6677,7 @@ ${filteredArchive.map(r => `<tr>
                                       <span style={{ fontSize:'0.78rem', color:'#8b9dc3' }}>Qty:</span>
                                       {editingId === req.id ? (
                                         <span style={{ display:'inline-flex', gap:'0.3rem', alignItems:'center', flexWrap:'wrap' }}>
-                                          <span style={{ fontSize:'0.7rem', color:'#64748b', width:'100%' }}>How many are you delivering now? (remaining: {getRemainingQty(req)})</span>
+                                          <span style={{ fontSize:'0.7rem', color:'#64748b', width:'100%' }}>How many {req.unit||'cases'} delivering now? (remaining: {getRemainingQty(req)})</span>
                                           <input type="tel" inputMode="numeric" value={editQty}
                                             placeholder="0"
                                             onChange={(e)=>{ const r=e.target.value.replace(/[^0-9]/g,''); setEditQty(r===''?'':String(Number(r))); }}
@@ -6691,6 +6694,7 @@ ${filteredArchive.map(r => `<tr>
                                       ) : (
                                         <>
                                           <span style={{ color:'#38bdf8', fontWeight:900, fontSize:'1.15rem', lineHeight:1 }}>{getRemainingQty(req)}</span>
+                                          <span style={{ color: (req.unit||'cases')==='pallet' ? '#fb923c' : '#38bdf8', fontWeight:700, fontSize:'0.78rem', textTransform:'uppercase' }}>{req.unit||'cases'}</span>
                                           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
                                           {req.adjQty > 0 && req.adjQty < req.qty && <span style={{ color:'#fbbf24', fontWeight:900, fontSize:'0.85rem' }}>{req.qty}</span>}
                                           {Array.isArray(req.qtyHistory) && req.qtyHistory.length > 0 && (
@@ -6737,7 +6741,7 @@ ${filteredArchive.map(r => `<tr>
                                           {rows.map((row, i) => (
                                             <div key={i} style={{ display:'flex', alignItems:'center', gap:'8px', fontSize:'0.78rem' }}>
                                               <span style={{ width:6, height:6, borderRadius:'50%', background:'#4ade80', flexShrink:0, display:'inline-block' }}/>
-                                              <span style={{ fontWeight:900, color:'#e2e8f0' }}>{row.delivered !== undefined ? row.delivered : row.picked} delivered</span>
+                                              <span style={{ fontWeight:900, color:'#e2e8f0' }}>{row.delivered !== undefined ? row.delivered : row.picked} {req.unit||'cases'} delivered</span>
                                               <span style={{ color:'#64748b' }}>by {row.by}</span>
                                               <span style={{ color:'#475569', marginLeft:'auto' }}>{fmtT(row.at)}</span>
                                             </div>
