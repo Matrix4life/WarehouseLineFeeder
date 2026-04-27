@@ -1145,11 +1145,7 @@
       const detectStatusChanges = (fresh) => {
         if (!_seeded) {
           fresh.forEach(r => {
-            _addSeen(r.id + ":pending");
-            _addSeen(r.id + ":claimed");
-            _addSeen(r.id + ":in_progress");
-            _addSeen(r.id + ":completed");
-            _addSeen(r.id + ":cancelled");
+            _addSeen(r.id + ":" + r.status); // only seed current status — future transitions will fire notifications
           });
           _seeded = true;
           return;
