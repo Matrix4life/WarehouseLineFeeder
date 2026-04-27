@@ -2,12 +2,12 @@
   "name": "LineFeeder",
   "short_name": "LineFeeder",
   "description": "Real-time production line ingredient delivery coordination",
-  "start_url": "./",
+  "start_url": "/",
   "display": "standalone",
   "orientation": "any",
   "background_color": "#090e1a",
   "theme_color": "#00ff88",
-  "scope": "./",
+  "scope": "/",
   "categories": ["productivity", "utilities"],
   "icons": [
     {
@@ -76,14 +76,14 @@
       "name": "Pick List",
       "short_name": "Pick List",
       "description": "View active warehouse requests",
-      "url": "./#picklist",
+      "url": "/#picklist",
       "icons": [{ "src": "./icons/icon-96.png", "sizes": "96x96" }]
     },
     {
       "name": "New Request",
       "short_name": "New Request",
       "description": "Submit a new delivery request",
-      "url": "./#form",
+      "url": "/#form",
       "icons": [{ "src": "./icons/icon-96.png", "sizes": "96x96" }]
     }
   ]
