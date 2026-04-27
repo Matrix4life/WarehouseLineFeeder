@@ -552,6 +552,7 @@
         adjQty: Number(r.adj_qty||0),
         adjQtyAtClaim: r.adj_qty_at_claim !== undefined ? Number(r.adj_qty_at_claim) : undefined,
         qtyHistory: Array.isArray(r.qty_history) ? r.qty_history : [],
+        unit: r.unit || 'cases',
         priority: !!r.priority,
         comments: r.comments || "",
         status: r.status,
@@ -586,6 +587,7 @@
         adj_qty: Number(r.adjQty||0),
         adj_qty_at_claim: r.adjQtyAtClaim !== undefined ? Number(r.adjQtyAtClaim) : null,
         qty_history: Array.isArray(r.qtyHistory) ? r.qtyHistory : [],
+        unit: r.unit || 'cases',
         priority: !!r.priority,
         comments: r.comments || "",
         status: r.status,
@@ -1157,7 +1159,7 @@
           const key = req.id + ":" + req.status;
           if (_seen.has(key)) return; // already toasted — never again
           _addSeen(key);
-          const lbl = req.item + " \u00d7 " + req.qty;
+          const lbl = req.item + " \u00d7 " + req.qty + " " + (req.unit || "cases");
           const rm = req.room;
           if (_wdUserRole === "warehouse") {
             if (req.status === "pending") {
@@ -2356,6 +2358,7 @@
           qty: 0,
           adjQty: 0,
           qtyHistory: [],
+          unit: 'cases',
           reqTime: timeString,
           delTime: "",
           priority: false,
@@ -2390,6 +2393,7 @@
             qty: Number(formData.qty) || 0,
             adjQty: Number(formData.adjQty) || 0,
             qtyHistory: [],
+            unit: formData.unit || 'cases',
             priority: !!formData.priority,
             comments: (formData.comments || "").trim(),
             status: "pending",
@@ -2408,8 +2412,8 @@
           };
           await adapterRef.current.upsert(req);
           await loadAll();
-          showNotification("📦 Request Submitted", `${req.submittedBy} requested ${req.qty} ${req.item} for ${req.room}${req.priority ? " (HIGH)" : ""}`);
-          setSuccessMsg(`✅ Submitted: ${req.qty} ${req.item} → ${req.room}`);
+          showNotification("📦 Request Submitted", `${req.submittedBy} requested ${req.qty} ${req.unit} of ${req.item} for ${req.room}${req.priority ? " (HIGH)" : ""}`);
+          setSuccessMsg(`✅ Submitted: ${req.qty} ${req.unit} of ${req.item} → ${req.room}`);
           setTimeout(() => setSuccessMsg(""), 2500);
           setFormData(defaultForm());
         } catch (error) {
@@ -3897,7 +3901,7 @@ const all = [
                             <div key={req.id} style={{ padding:'0.7rem', border:'1px solid #334155', borderRadius:'12px', marginBottom:'0.6rem' }}>
                               <div style={{ display:'flex', gap:'0.6rem', alignItems:'center' }}>
                                 <div style={{ fontWeight:900, color:'#e2e8f0', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                                  {req.qty}× {req.item}
+                                  {req.qty} {req.unit || 'cases'}× {req.item}
                                 </div>
                                 {req.priority && <span style={{ marginLeft:'auto', padding:'0.2rem 0.5rem', background:'#ff4444', borderRadius:'8px', color:'#fff', fontWeight:900, fontSize:'0.72rem' }}>HIGH</span>}
                                 {req.isAiGenerated && <span style={{ marginLeft: req.priority ? '0.3rem' : 'auto', padding:'0.15rem 0.4rem', background:'rgba(167,139,250,0.2)', border:'1px solid #a78bfa', borderRadius:'8px', color:'#a78bfa', fontWeight:900, fontSize:'0.65rem' }}>🅰️ AI</span>}
@@ -6078,7 +6082,7 @@ const handleUpdateUser = (id) => {
                         {requests.map(req => (
                           <div key={req.id} style={{ padding:'0.85rem', background:'rgba(255,68,68,0.04)', border:'1px solid rgba(255,68,68,0.12)', borderRadius:'8px', display:'flex', justifyContent:'space-between', alignItems:'center', gap:'1rem', flexWrap:'wrap' }}>
                             <div style={{ flex:'1 1 200px' }}>
-                              <div style={{ fontWeight:900, color:'#e2e8f0' }}>{req.qty}× {req.item}</div>
+                              <div style={{ fontWeight:900, color:'#e2e8f0' }}>{req.qty} {req.unit || 'cases'}× {req.item}</div>
                               <div style={{ fontSize:'0.78rem', color:'#8b9dc3', display:'flex', gap:'0.5rem', flexWrap:'wrap', marginTop:'0.2rem' }}>
                                 <span style={{ color:CONFIG.ROOM_COLORS[req.room]||'#8b9dc3' }}>{req.room}</span>
                                 <span>•</span>
@@ -6928,7 +6932,7 @@ ${filteredArchive.map(r => `<tr>
                 </div>
               )}
 
-              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'1rem', marginBottom:'1.1rem' }}>
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'1rem', marginBottom:'1.1rem' }}>
                 <div>
                   <label style={{ display:'block', color:'#e2e8f0', fontSize:'0.85rem', fontWeight:900, marginBottom:'0.5rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>
                     Qty <span style={{ color:'#00ff88' }}>*</span>
@@ -6943,6 +6947,25 @@ ${filteredArchive.map(r => `<tr>
                     placeholder="0"
                   />
                   {errors.qty && <div style={{ marginTop:'0.35rem', color:'#ff4444', fontSize:'0.78rem', display:'flex', gap:'0.35rem', alignItems:'center' }}><AlertCircle size={12} /> {errors.qty}</div>}
+                </div>
+
+                <div>
+                  <label style={{ display:'block', color:'#e2e8f0', fontSize:'0.85rem', fontWeight:900, marginBottom:'0.5rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>
+                    Unit
+                  </label>
+                  <div style={{ display:'flex', gap:'0.5rem', height:'calc(100% - 1.85rem)' }}>
+                    {[
+                      { key:'cases', label:'Cases' },
+                      { key:'pallet', label:'Pallet' }
+                    ].map(opt => (
+                      <button key={opt.key} type="button"
+                        onClick={()=> setFormData({ ...formData, unit: opt.key })}
+                        style={{ flex:1, padding:'0.875rem 0.25rem', borderRadius:'10px', background: formData.unit === opt.key ? 'linear-gradient(135deg,#0ea5e9 0%,#0284c7 100%)' : '#1e293b', border: formData.unit === opt.key ? '2px solid #0ea5e9' : '2px solid #334155', color: formData.unit === opt.key ? '#fff' : '#e2e8f0', fontWeight:900, cursor:'pointer', textTransform:'uppercase', letterSpacing:'0.06em', fontSize:'0.78rem' }}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
                 <div>
