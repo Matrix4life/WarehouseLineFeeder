@@ -6963,12 +6963,12 @@ ${filteredArchive.map(r => `<tr>
                   </label>
                   <div style={{ display:'flex', gap:'0.5rem', height:'calc(100% - 1.85rem)' }}>
                     {[
-                      { key:'cases', label:'Cases' },
-                      { key:'pallet', label:'Pallet' }
+                      { key:'pallet', label:'🪵 Pallet', activeBg:'linear-gradient(135deg,#f97316 0%,#c2410c 100%)', activeBorder:'#fb923c' },
+                      { key:'cases',  label:'📦 Cases',  activeBg:'linear-gradient(135deg,#0ea5e9 0%,#0284c7 100%)', activeBorder:'#38bdf8' }
                     ].map(opt => (
                       <button key={opt.key} type="button"
                         onClick={()=> setFormData({ ...formData, unit: opt.key })}
-                        style={{ flex:1, padding:'0.875rem 0.25rem', borderRadius:'10px', background: formData.unit === opt.key ? 'linear-gradient(135deg,#0ea5e9 0%,#0284c7 100%)' : '#1e293b', border: formData.unit === opt.key ? '2px solid #0ea5e9' : '2px solid #334155', color: formData.unit === opt.key ? '#fff' : '#e2e8f0', fontWeight:900, cursor:'pointer', textTransform:'uppercase', letterSpacing:'0.06em', fontSize:'0.78rem' }}
+                        style={{ flex:1, padding:'0.875rem 0.25rem', borderRadius:'10px', background: formData.unit === opt.key ? opt.activeBg : '#1e293b', border: formData.unit === opt.key ? `2px solid ${opt.activeBorder}` : '2px solid #334155', color: formData.unit === opt.key ? '#fff' : '#e2e8f0', fontWeight:900, cursor:'pointer', textTransform:'uppercase', letterSpacing:'0.06em', fontSize:'0.78rem' }}
                       >
                         {opt.label}
                       </button>
