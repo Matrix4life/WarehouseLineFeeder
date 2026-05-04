@@ -2330,10 +2330,11 @@
       const slaBadge = (req)=> {
         const submittedAt = req.submittedAt || req.submitted_at || nowIso();
         const mins = msToMins(Date.now() - new Date(submittedAt).getTime());
-        let bg = "#1e293b", fg="#8b9dc3", label=`${mins}m`;
-        if (mins >= SLA_CRIT) { bg="#ff4444"; fg="#fff"; label=`${mins}m 🔥`; }
-        else if (mins >= SLA_BAD) { bg="#fbbf24"; fg="#0a0e1a"; label=`${mins}m`; }
-        else if (mins >= SLA_WARN) { bg="#22c55e"; fg="#0a0e1a"; label=`${mins}m`; }
+        const fmtW = (m) => { if (m < 60) return `${m}m`; const h=Math.floor(m/60),r=m%60; return r>0?`${h}h ${r}m`:`${h}h`; };
+let bg = "#1e293b", fg="#8b9dc3", label=fmtW(mins);
+if (mins >= SLA_CRIT) { bg="#ff4444"; fg="#fff"; label=`${fmtW(mins)} 🔥`; }
+else if (mins >= SLA_BAD) { bg="#fbbf24"; fg="#0a0e1a"; label=fmtW(mins); }
+else if (mins >= SLA_WARN) { bg="#22c55e"; fg="#0a0e1a"; label=fmtW(mins); }
         return { bg, fg, label };
       };
       const validateForm = (formData) => {
