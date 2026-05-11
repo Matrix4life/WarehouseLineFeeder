@@ -258,7 +258,25 @@
   "Putaway": "#0ea5e9",         // Dark Blue
   "Receiving" : "#e9c80e"       // Yellow
       }
+,FIVE_S_ZONES: [
+        { id: "zone1", name: "Zone 1", desc: "Aisles 51 & 52" },
+        { id: "zone2", name: "Zone 2", desc: "Aisles 53 & 54" },
+        { id: "zone3", name: "Zone 3", desc: "Freezer" },
+        { id: "zone4", name: "Zone 4", desc: "Receiving + Forklift" },
+        { id: "zone5", name: "Zone 5", desc: "Maintenance Dock" },
+        { id: "zone6", name: "Zone 6", desc: "Pack-Out Area" },
+        { id: "zone7", name: "Zone 7", desc: "Doors 1-9" },
+        { id: "zone8", name: "Zone 8", desc: "Bistro" },
+        { id: "zone9", name: "Zone 9", desc: "Film/Labels" },
+        { id: "office", name: "Office", desc: "Office" }
+      ],
+      FIVE_S_PILLARS: ["sort", "set_in_order", "shine", "standardize", "sustain"],
+      FIVE_S_PILLAR_LABELS: {
+        sort: "Sort", set_in_order: "Set in Order", shine: "Shine",
+        standardize: "Standardize", sustain: "Sustain"
+      }
     };
+
     const Icon = ({ children, size=24, color="currentColor" }) => (
       <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         {children}
@@ -780,7 +798,10 @@
           if (error) throw error;
           return (data || []).map(a => ({
             id: a.id, userId: a.user_id, userName: a.user_name, userRole: a.user_role,
-            room: a.room, shift: a.shift || null, duration: a.duration,
+            room: a.room || null,
+fiveSZone: a.five_s_zone || null,
+shift: a.shift || null,
+duration: a.duration,
             startDate: a.start_date, expiresAt: a.expires_at,
             assignedBy: a.assigned_by, assignedAt: a.assigned_at
           }));
@@ -796,7 +817,10 @@
           }
           const { error } = await supabaseClient.from("warehouse_assignments").upsert({
             id: assignment.id, user_id: assignment.userId, user_name: assignment.userName,
-            user_role: assignment.userRole, room: assignment.room, shift: assignment.shift || null,
+            user_role: assignment.userRole,
+room: assignment.room || null,
+five_s_zone: assignment.fiveSZone || null,
+shift: assignment.shift || null,
             duration: assignment.duration, start_date: assignment.startDate,
             expires_at: assignment.expiresAt, assigned_by: assignment.assignedBy,
             assigned_at: assignment.assignedAt
@@ -1066,8 +1090,83 @@
             console.error("saveDashboardLayout error:", e);
             throw e;
           }
-        }
-      };
+        },
+      
+// ── 5S Audits ──
+async loadFiveSAudits(zone, dateFrom, dateTo) {
+  if (!useSupabase) return [];
+  try {
+    let q = supabaseClient.from('five_s_audits').select('*').order('audit_date', { ascending: false });
+    if (zone) q = q.eq('zone', zone);
+    if (dateFrom) q = q.gte('audit_date', dateFrom);
+    if (dateTo) q = q.lte('audit_date', dateTo);
+    const { data, error } = await q;
+    if (error) throw error;
+    return data || [];
+  } catch (err) { console.error('loadFiveSAudits error:', err); return []; }
+},
+
+async saveFiveSAudit(audit) {
+  if (!useSupabase) return null;
+  try {
+    const { data, error } = await supabaseClient.from('five_s_audits').insert(audit).select().single();
+    if (error) throw error;
+    return data;
+  } catch (err) { console.error('saveFiveSAudit error:', err); return null; }
+},
+
+async deleteFiveSAudit(id) {
+  if (!useSupabase) return false;
+  try {
+    const { error } = await supabaseClient.from('five_s_audits').delete().eq('id', id);
+    if (error) throw error;
+    return true;
+  } catch (err) { console.error('deleteFiveSAudit error:', err); return false; }
+},
+
+// ── 5S Tasks ──
+async loadFiveSTasks(filters) {
+  if (!useSupabase) return [];
+  try {
+    let q = supabaseClient.from('five_s_tasks').select('*').order('created_at', { ascending: false });
+    if (filters?.zone) q = q.eq('zone', filters.zone);
+    if (filters?.status) q = q.eq('status', filters.status);
+    if (filters?.assigned_to) q = q.eq('assigned_to', filters.assigned_to);
+    if (filters?.pillar) q = q.eq('pillar', filters.pillar);
+    if (filters?.audit_id) q = q.eq('audit_id', filters.audit_id);
+    const { data, error } = await q;
+    if (error) throw error;
+    return data || [];
+  } catch (err) { console.error('loadFiveSTasks error:', err); return []; }
+},
+
+async saveFiveSTask(task) {
+  if (!useSupabase) return null;
+  try {
+    const { data, error } = await supabaseClient.from('five_s_tasks').insert(task).select().single();
+    if (error) throw error;
+    return data;
+  } catch (err) { console.error('saveFiveSTask error:', err); return null; }
+},
+
+async updateFiveSTask(id, updates) {
+  if (!useSupabase) return null;
+  try {
+    const { data, error } = await supabaseClient.from('five_s_tasks').update(updates).eq('id', id).select().single();
+    if (error) throw error;
+    return data;
+  } catch (err) { console.error('updateFiveSTask error:', err); return null; }
+},
+
+async deleteFiveSTask(id) {
+  if (!useSupabase) return false;
+  try {
+    const { error } = await supabaseClient.from('five_s_tasks').delete().eq('id', id);
+    if (error) throw error;
+    return true;
+  } catch (err) { console.error('deleteFiveSTask error:', err); return false; }
+},
+};
       return adapter;
     }
     function BreakCountdown({ startedAt, breakMins, onEnd }) {
@@ -1317,11 +1416,26 @@
       const [prepListError, setPrepListError] = useState(null);
       const [editingPrepList, setEditingPrepList] = useState(null);
       const [prepListAddItem, setPrepListAddItem] = useState({ room: '', item: '', qty: '', priority: 'normal' });
+// ── 5S Program State ──
+      const [fiveSAudits, setFiveSAudits] = useState([]);
+      const [fiveSTasks, setFiveSTasks] = useState([]);
+      const [fiveSLoading, setFiveSLoading] = useState(false);
+      const [fiveSTab, setFiveSTab] = useState("audit"); // "audit" | "tasks" | "history"
+      const [fiveSAuditZone, setFiveSAuditZone] = useState("");
+      const [fiveSAuditScores, setFiveSAuditScores] = useState({ sort: 3, set_in_order: 3, shine: 3, standardize: 3, sustain: 3 });
+      const [fiveSAuditNotes, setFiveSAuditNotes] = useState("");
+      const [fiveSAuditFindings, setFiveSAuditFindings] = useState([]);
+      const [fiveSNewTasks, setFiveSNewTasks] = useState([]);
+const [fiveSIssuePhotos, setFiveSIssuePhotos] = useState([]);
+const [fiveSFixPhotos, setFiveSFixPhotos] = useState([]);
+      const [fiveSTaskFilter, setFiveSTaskFilter] = useState({ zone: "", status: "", pillar: "" });
+      const [fiveSHistoryFilter, setFiveSHistoryFilter] = useState({ zone: "", from: "", to: "" });
       const [dashboardLayout, setDashboardLayout] = useState({
-        order: ["total_requests", "completed", "archive_age", "room_wait_time", "warehouse_pick_time", "work_progress", "sla_compliance", "requests_by_status", "top_rooms", "staff_performance", "room_analytics"],
+        order: ["total_requests", "completed", "five_s_overall", "archive_age", "room_wait_time", "warehouse_pick_time", "work_progress", "sla_compliance", "requests_by_status", "top_rooms", "staff_performance", "room_analytics"],
         visibility: {
           total_requests: true,
           completed: true,
+five_s_overall: true,
           archive_age: true,
           room_wait_time: true,
           warehouse_pick_time: true,
@@ -1330,7 +1444,8 @@
           requests_by_status: true,
           top_rooms: true,
           staff_performance: true,
-          room_analytics: true
+          room_analytics: true,
+          five_s_overall: true
         }
       }); // dashboard widget visibility & order
       const [draggedWidget, setDraggedWidget] = useState(null);
@@ -1344,7 +1459,7 @@
               setDashboardLayout(layout);
             } else if (typeof layout === 'object' && !Array.isArray(layout)) {
               setDashboardLayout({
-                order: ["total_requests", "completed", "archive_age", "room_wait_time", "warehouse_pick_time", "work_progress", "sla_compliance", "requests_by_status", "top_rooms", "staff_performance", "room_analytics"],
+                order: ["total_requests", "completed", "five_s_overall", "archive_age", "room_wait_time", "warehouse_pick_time", "work_progress", "sla_compliance", "requests_by_status", "top_rooms", "staff_performance", "room_analytics"],
                 visibility: layout
               });
             }
@@ -1424,6 +1539,7 @@
       const [editUserRole, setEditUserRole] = useState("");
       const [assignPerson, setAssignPerson] = useState("");
       const [assignRoom, setAssignRoom] = useState("");
+const [assignFiveSZone, setAssignFiveSZone] = useState("");
       const [assignDuration, setAssignDuration] = useState("day");
       const [shiftFilter, setShiftFilter] = useState("all"); // all | 1st | 2nd
       const [dashRoomFilter, setDashRoomFilter] = useState("all"); // all | specific room
@@ -1730,6 +1846,170 @@
           await loadPrepLists();
         } catch (err) {
           console.error('deletePrepList error:', err);
+        }
+      };
+// ── 5S Program Functions ──
+      const loadFiveSAudits = async (zone, from, to) => {
+        try {
+          const data = await adapterRef.current.loadFiveSAudits(zone || null, from || null, to || null);
+          setFiveSAudits(data);
+        } catch (err) { console.error('loadFiveSAudits error:', err); }
+      };
+
+      const loadFiveSTasks = async (filters) => {
+        try {
+          const data = await adapterRef.current.loadFiveSTasks(filters || {});
+          setFiveSTasks(data);
+        } catch (err) { console.error('loadFiveSTasks error:', err); }
+      };
+
+      const submitFiveSAudit = async () => {
+        if (!fiveSAuditZone) { _showToast("⚠️", "Select Zone", "Pick a zone to audit", "#ff9f43"); return; }
+        setFiveSLoading(true);
+        try {
+          const audit = await adapterRef.current.saveFiveSAudit({
+            zone: fiveSAuditZone,
+            audited_by: userName,
+            sort_score: fiveSAuditScores.sort,
+            set_in_order_score: fiveSAuditScores.set_in_order,
+            shine_score: fiveSAuditScores.shine,
+            standardize_score: fiveSAuditScores.standardize,
+            sustain_score: fiveSAuditScores.sustain,
+            notes: fiveSAuditNotes,
+            findings: fiveSAuditFindings
+          });
+          if (audit && fiveSNewTasks.length > 0) {
+            for (const t of fiveSNewTasks) {
+              await adapterRef.current.saveFiveSTask({
+                audit_id: audit.id, zone: fiveSAuditZone,
+                pillar: t.pillar, description: t.description,
+                assigned_to: t.assigned_to || null, assigned_by: userName,
+                priority: t.priority || 'normal',
+                due_date: t.due_date || null
+              });
+            }
+          }
+          _showToast("✅", "Audit Saved", `${fiveSAuditZone} scored ${audit.total_score}/25`, "#00ff88");
+const fiveSAdminTargets = (Array.isArray(users) ? users : [])
+  .filter(u =>
+    !u.archivedAt &&
+    (u.role === "admin" || u.role === "supervisor" || u.role === "superuser")
+  )
+  .map(u => u.name);
+
+_sendPush({
+  title: "🧹 5S Audit Complete",
+  body: `${userName} completed ${fiveSAuditZone}: ${audit.total_score}/25`,
+  type: "completed",
+  targetUsers: fiveSAdminTargets
+});
+          setFiveSAuditZone(""); setFiveSAuditScores({ sort:3, set_in_order:3, shine:3, standardize:3, sustain:3 });
+          setFiveSAuditNotes(""); setFiveSAuditFindings([]); setFiveSNewTasks([]);
+          setFiveSIssuePhotos([]); setFiveSFixPhotos([]);
+          await loadFiveSAudits(); await loadFiveSTasks();
+        } catch (err) {
+          _showToast("❌", "Error", err.message, "#ff4444");
+        }
+        setFiveSLoading(false);
+      };
+
+      const updateFiveSTaskStatus = async (taskId, status, extras = {}) => {
+        try {
+          const updates = { status, ...extras };
+          if (status === 'completed') updates.completed_at = new Date().toISOString();
+          if (status === 'verified') { updates.verified_by = userName; updates.verified_at = new Date().toISOString(); }
+          await adapterRef.current.updateFiveSTask(taskId, updates);
+          await loadFiveSTasks();
+          _showToast("✅", "Task Updated", `Status → ${status}`, "#00ff88");
+        } catch (err) { _showToast("❌", "Error", err.message, "#ff4444"); }
+      };
+const handleFiveSFindingPhoto = (index, file) => {
+  if (!file) return;
+
+  const reader = new FileReader();
+
+  reader.onload = () => {
+    const next = [...fiveSAuditFindings];
+
+    next[index] = {
+      ...next[index],
+      photo: reader.result,
+      photoName: file.name || "5s-photo.jpg",
+      photoTakenAt: new Date().toISOString()
+    };
+
+    setFiveSAuditFindings(next);
+  };
+
+  reader.readAsDataURL(file);
+};
+
+const removeFiveSFindingPhoto = (index) => {
+  const next = [...fiveSAuditFindings];
+
+  next[index] = {
+    ...next[index],
+    photo: null,
+    photoName: null,
+    photoTakenAt: null
+  };
+
+  setFiveSAuditFindings(next);
+};
+
+      const deleteFiveSAudit = async (id) => {
+        if (!confirm('Delete this audit and its tasks?')) return;
+        try {
+          await adapterRef.current.deleteFiveSAudit(id);
+          await loadFiveSAudits(); await loadFiveSTasks();
+          _showToast("🗑️", "Deleted", "Audit removed", "#ff9f43");
+        } catch (err) { _showToast("❌", "Error", err.message, "#ff4444"); }
+      };
+
+      // ── 5S Photo Utilities ──
+      const compressFiveSPhoto = (file) => new Promise((resolve, reject) => {
+        const MAX_SIZE = 1024;
+        const QUALITY = 0.70;
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const img = new Image();
+          img.onload = () => {
+            const canvas = document.createElement('canvas');
+            let w = img.width, h = img.height;
+            if (w > MAX_SIZE || h > MAX_SIZE) {
+              if (w > h) { h = Math.round(h * MAX_SIZE / w); w = MAX_SIZE; }
+              else { w = Math.round(w * MAX_SIZE / h); h = MAX_SIZE; }
+            }
+            canvas.width = w; canvas.height = h;
+            canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+            canvas.toBlob(blob => {
+              if (!blob) { reject(new Error('Compression failed')); return; }
+              resolve(blob);
+            }, 'image/jpeg', QUALITY);
+          };
+          img.onerror = reject;
+          img.src = e.target.result;
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+
+      const uploadFiveSPhoto = async (file, context) => {
+        try {
+          const blob = await compressFiveSPhoto(file);
+          const path = `${context}/${Date.now()}_${Math.random().toString(36).slice(2)}.jpg`;
+          const { data, error } = await adapterRef.current.client.storage
+            .from('five-s-photos')
+            .upload(path, blob, { contentType: 'image/jpeg', upsert: false });
+          if (error) throw error;
+          const { data: urlData } = adapterRef.current.client.storage
+            .from('five-s-photos')
+            .getPublicUrl(data.path);
+          return urlData.publicUrl;
+        } catch (err) {
+          console.error('uploadFiveSPhoto error:', err);
+          _showToast("❌", "Upload Failed", err.message, "#ff4444");
+          return null;
         }
       };
 
@@ -2779,6 +3059,15 @@ const all = [
           else if (matchedUser.role === "admin") setRoute("admin");
           else if (matchedUser.role === "room") setRoute("form");
           else setRoute("picklist");
+// Show user their 5S zone assignments after login
+          setTimeout(() => {
+            const myZones = (Array.isArray(activeAssignments) ? activeAssignments : [])
+              .filter(a => a.userName === matchedUser.name && a.fiveSZone)
+              .map(a => a.fiveSZone);
+            if (myZones.length > 0) {
+              _showToast("🧹", "5S Assignment", "You are assigned to: " + myZones.join(", "), "#00ff88");
+            }
+          }, 1500);
         };
         return (
           <div style={{ minHeight:'100vh', ...bg, padding:'2rem', position:'relative', overflow:'hidden', display:'flex', alignItems:'center', justifyContent:'center' }}>
@@ -3503,7 +3792,7 @@ const all = [
                   style={{background:'transparent',border:'1px solid rgba(0,255,136,0.25)',color:'#8b9dc3'}}>
                   Board
                 </button>
-                {(userRole==="supervisor"||userRole==="admin"||userRole==="superuser") && (
+                {(userRole==="warehouse"||userRole==="supervisor"||userRole==="admin"||userRole==="superuser") && (
                   <button className="wd-nav-btn" onClick={()=>setRoute("dashboard")}
                     style={{background:'transparent',border:'1px solid rgba(0,255,136,0.25)',color:'#00ff88'}}>
                     Dashboard
@@ -3525,6 +3814,13 @@ const all = [
                     🅰️ Prep List
                   </button>
                 )}
+{(userRole==="warehouse"||userRole==="supervisor"||userRole==="admin"||userRole==="superuser") && (
+                  <button className="wd-nav-btn" onClick={()=>{loadFiveSAudits();loadFiveSTasks();setRoute("fives")}}
+                    style={{background:'transparent',border:'1px solid rgba(0,255,136,0.5)',color:'#00ff88'}}>
+                    🧹 5S
+                  </button>
+                )}
+
                 {canAdmin && (
                   <button className="wd-nav-btn" onClick={()=>setRoute("admin")}
                     style={{background:'transparent',border:'1px solid rgba(255,68,68,0.5)',color:'#ff4444'}}>
@@ -3735,6 +4031,12 @@ const all = [
                     🅰️ Prep List
                   </button>
                 )}
+                  {(userRole==="warehouse"||userRole==="supervisor"||userRole==="admin"||userRole==="superuser") && (
+                  <button className="wd-nav-btn" onClick={()=>{loadFiveSAudits();loadFiveSTasks();setRoute("fives")}}
+                    style={{background:'transparent',border:'1px solid rgba(0,255,136,0.5)',color:'#00ff88'}}>
+                    🧹 5S
+                  </button>
+ )}
                 {(userRole==="admin"||userRole==="superuser") && (
                   <button className="wd-nav-btn" onClick={()=>setRoute("admin")}
                     style={{background:'transparent',border:'1px solid rgba(255,68,68,0.5)',color:'#ff4444'}}>
@@ -4050,9 +4352,49 @@ const all = [
           })).sort((a,b) => b.total - a.total);
         })();
         const maxDashRoomTotal = dashRoomStats.length > 0 ? dashRoomStats[0].total : 1;
-        const visibleWidgetsInOrder = (Array.isArray(dashboardLayout.order) ? dashboardLayout.order : []).filter(id => {
+const dashboardFiveSZoneAverages = {};
+fiveSAudits.forEach(a => {
+  const zone = a.zone;
+  const score = Number(a.total_score) || 0;
+  if (!dashboardFiveSZoneAverages[zone]) {
+    dashboardFiveSZoneAverages[zone] = { total: 0, count: 0 };
+  }
+  dashboardFiveSZoneAverages[zone].total += score;
+  dashboardFiveSZoneAverages[zone].count += 1;
+});
+
+const dashboardFiveSZoneScores = Object.values(dashboardFiveSZoneAverages)
+  .filter(z => z.count > 0)
+  .map(z => z.total / z.count);
+
+const overallFiveSScoreRaw = dashboardFiveSZoneScores.length > 0
+  ? dashboardFiveSZoneScores.reduce((sum, score) => sum + score, 0) / dashboardFiveSZoneScores.length
+  : 0;
+
+const overallFiveSPercent = dashboardFiveSZoneScores.length > 0
+  ? Math.round((overallFiveSScoreRaw / 25) * 100)
+  : 0;
+
+const fiveSScoreColor = overallFiveSPercent >= 85
+  ? "#00ff88"
+  : overallFiveSPercent >= 70
+    ? "#fbbf24"
+    : "#ff4444";
+const latestFiveSByZone = {};
+fiveSAudits.forEach(a => {
+  if (!latestFiveSByZone[a.zone] || a.audit_date > latestFiveSByZone[a.zone].audit_date) {
+    latestFiveSByZone[a.zone] = a;
+  }
+});
+
+        const dashboardOrderWithFiveS = Array.isArray(dashboardLayout.order) ? [...dashboardLayout.order] : [];
+if (!dashboardOrderWithFiveS.includes("five_s_overall")) {
+  dashboardOrderWithFiveS.splice(2, 0, "five_s_overall");
+}
+
+const visibleWidgetsInOrder = dashboardOrderWithFiveS.filter(id => {
           if (id === 'total_requests') return dashboardLayout.visibility.total_requests;
-          if (id === 'completed') return dashboardLayout.visibility.completed;
+          if (id === 'five_s_overall') return dashboardLayout.visibility.five_s_overall;
           if (id === 'room_wait_time') return dashboardLayout.visibility.room_wait_time;
           if (id === 'warehouse_pick_time') return dashboardLayout.visibility.warehouse_pick_time;
           if (id === 'work_progress') return dashboardLayout.visibility.work_progress;
@@ -4079,7 +4421,35 @@ const all = [
                     <div style={{ color:'#00ff88', fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>{total}</div>
                   </div>
                 );
-              case 'completed':
+case 'five_s_overall':
+  return (
+    <div key="five_s_overall" draggable onDragStart={() => handleWidgetDragStart('five_s_overall')}
+      onDragOver={(e) => handleWidgetDragOver('five_s_overall', e)}
+      onDrop={() => handleWidgetDrop('five_s_overall')}
+      onDragEnd={handleWidgetDragEnd}
+      style={{
+        background:'rgba(15,23,42,0.85)',
+        border: dragOverWidget==='five_s_overall' ? '2px solid #a78bfa' : '1px solid rgba(0,255,136,0.2)',
+        borderRadius:'14px',
+        padding:'1.5rem',
+        cursor: draggedWidget==='five_s_overall'?'grabbing':'grab',
+        opacity: draggedWidget==='five_s_overall'?0.7:1,
+        transition:'all 0.2s'
+      }}>
+      <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>
+        {draggedWidget==='five_s_overall'?'👆':'🧹'} Overall 5S Avg
+      </div>
+      <div style={{ color: fiveSScoreColor, fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>
+        {dashboardFiveSZoneScores.length > 0 ? overallFiveSPercent + "%" : "—"}
+      </div>
+      <div style={{ color:'#64748b', fontSize:'0.8rem', marginTop:'0.3rem' }}>
+        {dashboardFiveSZoneScores.length > 0
+          ? dashboardFiveSZoneScores.length + " zone" + (dashboardFiveSZoneScores.length !== 1 ? "s" : "") + " averaged"
+          : "No 5S audits yet"}
+      </div>
+    </div>
+  );              
+case 'completed':
                 return (
                   <div key="completed" draggable onDragStart={() => handleWidgetDragStart('completed')}
                     onDragOver={(e) => handleWidgetDragOver('completed', e)}
@@ -4292,6 +4662,31 @@ const all = [
               </div>
             );
           }
+if (widgetId === 'five_s_overall' && dashboardLayout.visibility.five_s_overall !== false) {
+  return (
+    <div key="five_s_overall" {...commonDragProps} style={{
+      background:'rgba(15,23,42,0.85)',
+      border: dragOverWidget==='five_s_overall' ? '2px solid #a78bfa' : '1px solid rgba(0,255,136,0.2)',
+      borderRadius:'14px',
+      padding:'1.5rem',
+      cursor: draggedWidget==='five_s_overall'?'grabbing':'grab',
+      opacity: draggedWidget==='five_s_overall'?0.7:1,
+      transition:'all 0.2s'
+    }}>
+      <div style={{ color:'#8b9dc3', fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:'0.05em' }}>
+        {draggedWidget==='five_s_overall'?'👆':'🧹'} Overall 5S Avg
+      </div>
+      <div style={{ color: fiveSScoreColor, fontSize:'2.5rem', fontWeight:900, marginTop:'0.5rem' }}>
+        {dashboardFiveSZoneScores.length > 0 ? overallFiveSPercent + "%" : "—"}
+      </div>
+      <div style={{ color:'#64748b', fontSize:'0.8rem', marginTop:'0.3rem' }}>
+        {dashboardFiveSZoneScores.length > 0
+          ? dashboardFiveSZoneScores.length + " zone" + (dashboardFiveSZoneScores.length !== 1 ? "s" : "") + " averaged"
+          : "No 5S audits yet"}
+      </div>
+    </div>
+  );
+}
           if (widgetId === 'completed' && dashboardLayout.visibility.completed) {
             return (
               <div key="completed" {...commonDragProps} style={{ background:'rgba(15,23,42,0.85)', border: dragOverWidget==='completed' ? '2px solid #a78bfa' : '1px solid rgba(0,255,136,0.2)', borderRadius:'14px', padding:'1.5rem', cursor: draggedWidget==='completed'?'grabbing':'grab', opacity: draggedWidget==='completed'?0.7:1, transition:'all 0.2s' }}>
@@ -4422,6 +4817,7 @@ const all = [
                   const WIDGET_LABELS = {
                     total_requests: '📊 Total Requests',
                     completed: '✅ Completed',
+                    five_s_overall: '🧹 Overall 5S Avg',
                     archive_age: '🗂️ Archive Age',
                     room_wait_time: '🏭 Room Wait Time',
                     warehouse_pick_time: '⚡ Warehouse Pick Time',
@@ -4525,7 +4921,7 @@ const all = [
               </div>
 
               <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(200px, 1fr))', gap:'1rem', marginBottom:'1.5rem' }}>
-                {(Array.isArray(dashboardLayout.order) ? dashboardLayout.order : []).filter(id => ['total_requests', 'completed', 'room_wait_time', 'warehouse_pick_time', 'work_progress', 'sla_compliance'].includes(id) && dashboardLayout.visibility?.[id]).map(widgetId => renderWidget(widgetId))}
+                {(Array.isArray(dashboardLayout.order) ? dashboardLayout.order : []).filter(id => ['total_requests', 'completed', 'five_s_overall', 'room_wait_time', 'warehouse_pick_time', 'work_progress', 'sla_compliance'].includes(id) && dashboardLayout.visibility?.[id]).map(widgetId => renderWidget(widgetId))}
               </div>
 
               {(() => {
@@ -5575,6 +5971,694 @@ ${sortedCompleted.map(r => {
           </div>
         );
       }
+// ═══════════════════════════════════════════════════════════════════
+// 5S PROGRAM SCREEN
+// INSERT THIS BLOCK before:  if (screen === "admin") {
+// ═══════════════════════════════════════════════════════════════════
+
+if (screen === "fives") {
+ if (!(userRole==="warehouse" || userRole==="supervisor" || userRole==="admin" || userRole==="superuser")) {
+    return (
+      <div style={{ minHeight:'100vh', ...bg, padding:'1.5rem', display:'flex', alignItems:'center', justifyContent:'center' }}>
+        <div style={{ textAlign:'center', color:'#ff4444' }}>
+          <h2>⚠️ 5S Access Required</h2>
+          <button onClick={()=> setRoute("login")} style={{ padding:'0.7rem 1.5rem', background:'#ff4444', border:'none', borderRadius:'8px', color:'#fff', fontWeight:900, cursor:'pointer', marginTop:'1rem' }}>Go to Login</button>
+        </div>
+      </div>
+    );
+  }
+
+  const PILLARS = CONFIG.FIVE_S_PILLARS;
+  const P_LABELS = CONFIG.FIVE_S_PILLAR_LABELS;
+  const ZONES = CONFIG.FIVE_S_ZONES;
+const myFiveSZones = (Array.isArray(activeAssignments) ? activeAssignments : [])
+  .filter(a => a.userName === userName && a.fiveSZone)
+  .map(a => a.fiveSZone);
+
+const uniqueMyFiveSZones = [...new Set(myFiveSZones)];
+const myActiveFiveSAssignments = (Array.isArray(activeAssignments) ? activeAssignments : [])
+  .filter(a => a.userName === userName && a.fiveSZone);
+
+const getMyFiveSAssignmentForZone = (zoneName) => {
+  return myActiveFiveSAssignments
+    .filter(a => a.fiveSZone === zoneName)
+    .sort((a, b) =>
+      new Date(b.assignedAt || b.startDate || 0) -
+      new Date(a.assignedAt || a.startDate || 0)
+    )[0] || null;
+};
+
+const isMyAssignedZoneCompleted = (zoneName) => {
+  const assignment = getMyFiveSAssignmentForZone(zoneName);
+  if (!assignment) return false;
+
+  const assignedAt = new Date(assignment.assignedAt || assignment.startDate || 0).getTime();
+
+  return (Array.isArray(fiveSAudits) ? fiveSAudits : []).some(a =>
+    a.zone === zoneName &&
+    a.audited_by === userName &&
+    new Date(a.audit_date || a.created_at || 0).getTime() >= assignedAt
+  );
+};
+
+const incompleteMyFiveSZones = uniqueMyFiveSZones.filter(zone => !isMyAssignedZoneCompleted(zone));
+
+const currentMyFiveSZone = incompleteMyFiveSZones.length > 0
+  ? incompleteMyFiveSZones[0]
+  : "";
+
+const selectedFiveSZoneCompleted = fiveSAuditZone ? isMyAssignedZoneCompleted(fiveSAuditZone) : false;
+if (!canSupervisor && fiveSTab === "history") {
+  setFiveSTab("audit");
+}
+const warehouseWorkers = (Array.isArray(users) ? users : []).filter(u => !u.archivedAt && (u.role === 'warehouse' || u.role === 'supervisor' || u.role === 'admin'));
+  const zoneAssignedWorkers = (zone) => {
+    const assigned = (Array.isArray(activeAssignments) ? activeAssignments : [])
+  .filter(a => a.fiveSZone === zone)
+  .map(a => a.userName);
+    return warehouseWorkers.sort((a, b) => {
+      const aAssigned = assigned.includes(a.name) ? 0 : 1;
+      const bAssigned = assigned.includes(b.name) ? 0 : 1;
+      return aAssigned - bAssigned;
+    });
+  };
+
+  // ── History filtering ──
+  const filteredAudits = fiveSAudits.filter(a => {
+    if (fiveSHistoryFilter.zone && a.zone !== fiveSHistoryFilter.zone) return false;
+    if (fiveSHistoryFilter.from && a.audit_date < fiveSHistoryFilter.from) return false;
+    if (fiveSHistoryFilter.to && a.audit_date > fiveSHistoryFilter.to + 'T23:59:59') return false;
+    return true;
+  });
+
+  // ── Task filtering ──
+  const filteredTasks = fiveSTasks.filter(t => {
+    if (fiveSTaskFilter.zone && t.zone !== fiveSTaskFilter.zone) return false;
+    if (fiveSTaskFilter.status && t.status !== fiveSTaskFilter.status) return false;
+    if (fiveSTaskFilter.pillar && t.pillar !== fiveSTaskFilter.pillar) return false;
+    return true;
+  });
+
+  // ── Score color helper ──
+  const scoreColor = (score, max) => {
+    const pct = score / max;
+    if (pct >= 0.8) return '#00ff88';
+    if (pct >= 0.6) return '#ff9f43';
+    return '#ff4444';
+  };
+
+  const scoreBg = (score, max) => {
+    const pct = score / max;
+    if (pct >= 0.8) return 'rgba(0,255,136,0.1)';
+    if (pct >= 0.6) return 'rgba(255,159,67,0.1)';
+    return 'rgba(255,68,68,0.1)';
+  };
+
+  const scoreBorder = (score, max) => {
+    const pct = score / max;
+    if (pct >= 0.8) return 'rgba(0,255,136,0.3)';
+    if (pct >= 0.6) return 'rgba(255,159,67,0.3)';
+    return 'rgba(255,68,68,0.3)';
+  };
+
+  const priorityColor = { low:'#8b9dc3', normal:'#38bdf8', high:'#ff9f43', critical:'#ff4444' };
+  const statusColor = { open:'#8b9dc3', in_progress:'#38bdf8', completed:'#00ff88', verified:'#a78bfa' };
+  const statusLabel = { open:'Open', in_progress:'In Progress', completed:'Completed', verified:'Verified' };
+
+  // ── Zone score summary (latest audit per zone) ──
+  const latestByZone = {};
+  fiveSAudits.forEach(a => {
+    if (!latestByZone[a.zone] || a.audit_date > latestByZone[a.zone].audit_date) {
+      latestByZone[a.zone] = a;
+    }
+  });
+// ── Zone score summary (average audit score per zone) ──
+const avgByZone = {};
+fiveSAudits.forEach(a => {
+  const zone = a.zone;
+  const score = Number(a.total_score) || 0;
+  if (!avgByZone[zone]) {
+    avgByZone[zone] = { total: 0, count: 0 };
+  }
+  avgByZone[zone].total += score;
+  avgByZone[zone].count += 1;
+});
+
+  const openTasksByZone = {};
+  fiveSTasks.forEach(t => {
+    if (t.status !== 'completed' && t.status !== 'verified') {
+      openTasksByZone[t.zone] = (openTasksByZone[t.zone] || 0) + 1;
+    }
+  });
+
+  // ── Export CSV ──
+  const exportFiveSCSV = () => {
+    const headers = ['Date', 'Zone', 'Audited By', 'Sort', 'Set in Order', 'Shine', 'Standardize', 'Sustain', 'Total', 'Notes'];
+    const rows = filteredAudits.map(a => [
+      new Date(a.audit_date).toLocaleDateString(), a.zone, a.audited_by,
+      a.sort_score, a.set_in_order_score, a.shine_score, a.standardize_score, a.sustain_score,
+      a.total_score, (a.notes || '').replace(/"/g, '""')
+    ]);
+    const csv = [headers.join(','), ...rows.map(r => r.map(c => `"${c}"`).join(','))].join('\n');
+    const blob = new Blob([csv], { type:'text/csv;charset=utf-8;' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `5s-audits-${new Date().toISOString().split('T')[0]}.csv`;
+    a.click();
+  };
+
+  // ── Tab styles ──
+  const tabBtn = (id, label) => (
+    <button onClick={() => setFiveSTab(id)}
+      style={{ padding:'0.6rem 1.2rem', background: fiveSTab === id ? 'rgba(0,255,136,0.15)' : 'transparent',
+        border: fiveSTab === id ? '1px solid rgba(0,255,136,0.5)' : '1px solid #334155',
+        borderRadius:'10px', color: fiveSTab === id ? '#00ff88' : '#8b9dc3', fontWeight:900, fontSize:'0.8rem',
+        cursor:'pointer', transition:'all 0.15s' }}>
+      {label}
+    </button>
+  );
+
+  return (
+    <div style={{ minHeight:'100vh', ...bg, padding:'1.5rem', position:'relative', overflow:'hidden' }}>
+      <div style={gridOverlay} />
+      <div style={{ maxWidth:'1200px', margin:'0 auto', position:'relative', zIndex:1 }}>
+        <EnhancedHeader title="🧹 5S Program" description="Zone audits, corrective actions & compliance tracking" />
+    <div style={{
+  marginBottom:'1rem',
+  padding:'1rem',
+  background:'rgba(0,255,136,0.08)',
+  border:'1px solid rgba(0,255,136,0.35)',
+  borderRadius:'14px'
+}}>
+  <div style={{
+    color:'#00ff88',
+    fontWeight:900,
+    fontSize:'0.85rem',
+    textTransform:'uppercase',
+    marginBottom:'0.5rem'
+  }}>
+    🧹 My 5S Assignment
+  </div>
+
+  <div style={{ color:'#e2e8f0', fontWeight:900, fontSize:'1rem' }}>
+   {currentMyFiveSZone ? currentMyFiveSZone : "No current 5S zone assigned"}
+  </div>
+</div>
+
+        {/* Tabs */}
+        <div style={{ display:'flex', gap:'0.5rem', marginBottom:'1.5rem', flexWrap:'wrap' }}>
+          {tabBtn("audit", "🔍 Run Audit")}
+          {tabBtn("tasks", "📋 Tasks (" + fiveSTasks.filter(t=>t.status!=='completed'&&t.status!=='verified').length + ")")}
+          {canSupervisor && tabBtn("history", "📊 History")}
+        </div>
+
+        {/* ═══════════════════════════════════════════════ */}
+        {/* TAB A — RUN AUDIT                              */}
+        {/* ═══════════════════════════════════════════════ */}
+        {fiveSTab === "audit" && (
+          <div>
+            {/* Zone Scoreboard */}
+            <div style={{ marginBottom:'1.5rem', padding:'1rem', background:'rgba(0,255,136,0.05)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'14px' }}>
+              <div style={{ color:'#00ff88', fontWeight:900, fontSize:'0.8rem', marginBottom:'0.75rem', textTransform:'uppercase', letterSpacing:'0.06em' }}>
+                Zone Overview — Latest Scores
+              </div>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(140px, 1fr))', gap:'0.5rem' }}>
+                {ZONES.map(z => {
+                  const latest = latestByZone[z.name];
+                  const avgInfo = avgByZone[z.name];
+const score = avgInfo ? Math.round(avgInfo.total / avgInfo.count) : null;
+                  return (
+                    <div key={z.id} onClick={() => {
+  setFiveSAuditZone(z.name);
+  setFiveSAuditScores({ sort: 3, set_in_order: 3, shine: 3, standardize: 3, sustain: 3 });
+  setFiveSAuditNotes("");
+  setFiveSAuditFindings([]);
+  setFiveSNewTasks([]);
+}}
+                      style={{ padding:'0.6rem', background: fiveSAuditZone === z.name ? 'rgba(0,255,136,0.12)' : 'rgba(15,23,42,0.6)',
+                        border: fiveSAuditZone === z.name ? '2px solid #00ff88' : '1px solid #334155',
+                        borderRadius:'10px', cursor:'pointer', transition:'all 0.15s', textAlign:'center' }}>
+                      <div style={{ color:'#e2e8f0', fontWeight:900, fontSize:'0.75rem' }}>{z.name}</div>
+                      <div style={{ color:'#8b9dc3', fontSize:'0.65rem', marginBottom:'0.3rem' }}>{z.desc}</div>
+                      {score !== null ? (
+                        <div style={{ fontSize:'1.1rem', fontWeight:900, color: scoreColor(score, 25) }}>{score}/25</div>
+                      ) : (
+                        <div style={{ fontSize:'0.7rem', color:'#475569' }}>No audit</div>
+                      )}
+                     {fiveSTasks.filter(t =>
+  t.zone === z.name &&
+  t.status !== "completed" &&
+  t.status !== "verified"
+).length > 0 && (
+  <div style={{ fontSize:'0.6rem', color:'#ff9f43', marginTop:'0.15rem' }}>
+    {fiveSTasks.filter(t =>
+      t.zone === z.name &&
+      t.status !== "completed" &&
+      t.status !== "verified"
+    ).length} open task{fiveSTasks.filter(t =>
+      t.zone === z.name &&
+      t.status !== "completed" &&
+      t.status !== "verified"
+    ).length > 1 ? "s" : ""}
+  </div>
+)}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Audit Form */}
+            <div style={{ padding:'1.25rem', background:'rgba(15,23,42,0.7)', border:'1px solid #334155', borderRadius:'14px', marginBottom:'1.5rem' }}>
+              <div style={{ color:'#00ff88', fontWeight:900, fontSize:'0.85rem', marginBottom:'1rem', textTransform:'uppercase', letterSpacing:'0.06em' }}>
+                {fiveSAuditZone ? `Audit: ${fiveSAuditZone}` : 'Select a zone above to begin'}
+              </div>
+
+              {fiveSAuditZone && (
+                <div>
+                  {/* Pillar Scores */}
+                  <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(180px, 1fr))', gap:'0.75rem', marginBottom:'1rem' }}>
+                    {PILLARS.map(p => (
+                      <div key={p} style={{ padding:'0.75rem', background:'rgba(10,14,26,0.6)', border:'1px solid #1e293b', borderRadius:'10px' }}>
+                        <div style={{ color:'#e2e8f0', fontWeight:900, fontSize:'0.75rem', marginBottom:'0.5rem' }}>{P_LABELS[p]}</div>
+                        <div style={{ display:'flex', gap:'0.3rem', alignItems:'center' }}>
+                          {[1,2,3,4,5].map(n => (
+                            <button key={n} onClick={() => setFiveSAuditScores(prev => ({...prev, [p]: n}))}
+                              style={{ width:'32px', height:'32px', borderRadius:'8px', border:'none', fontWeight:900, fontSize:'0.8rem', cursor:'pointer',
+                                background: fiveSAuditScores[p] >= n ? scoreColor(n, 5) : 'rgba(51,65,85,0.5)',
+                                color: fiveSAuditScores[p] >= n ? '#0a0e1a' : '#475569', transition:'all 0.1s' }}>
+                              {n}
+                            </button>
+                          ))}
+                        </div>
+                        <div style={{ fontSize:'0.65rem', color: scoreColor(fiveSAuditScores[p], 5), marginTop:'0.3rem', fontWeight:700 }}>
+                          {fiveSAuditScores[p] <= 2 ? '🔴 Needs work' : fiveSAuditScores[p] <= 3 ? '🟡 Fair' : fiveSAuditScores[p] <= 4 ? '🟢 Good' : '⭐ Excellent'}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Total preview */}
+                  <div style={{ display:'flex', alignItems:'center', gap:'1rem', marginBottom:'1rem', padding:'0.75rem', borderRadius:'10px',
+                    background: scoreBg(Object.values(fiveSAuditScores).reduce((a,b)=>a+b,0), 25),
+                    border: `1px solid ${scoreBorder(Object.values(fiveSAuditScores).reduce((a,b)=>a+b,0), 25)}` }}>
+                    <span style={{ fontSize:'1.5rem', fontWeight:900, color: scoreColor(Object.values(fiveSAuditScores).reduce((a,b)=>a+b,0), 25) }}>
+                      {Object.values(fiveSAuditScores).reduce((a,b)=>a+b,0)}/25
+                    </span>
+                    <span style={{ color:'#8b9dc3', fontSize:'0.8rem' }}>Total Score</span>
+                  </div>
+
+                  {/* Notes */}
+                  <textarea value={fiveSAuditNotes} onChange={(e) => setFiveSAuditNotes(e.target.value)}
+                    placeholder="General audit notes (optional)..."
+                    style={{ width:'100%', minHeight:'60px', background:'rgba(10,14,26,0.6)', border:'1px solid #334155', borderRadius:'8px',
+                      color:'#e2e8f0', padding:'0.6rem', fontSize:'0.8rem', resize:'vertical', marginBottom:'1rem',
+                      fontFamily:"'Space Mono','Courier New',monospace", boxSizing:'border-box' }} />
+
+                  {/* Findings */}
+                  <div style={{ marginBottom:'1rem' }}>
+                    <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'0.5rem' }}>
+                      <div style={{ color:'#8b9dc3', fontWeight:900, fontSize:'0.75rem' }}>Findings / Observations</div>
+                      <label style={{ display:'inline-flex', alignItems:'center', gap:'0.3rem', padding:'0.3rem 0.7rem', background:'rgba(255,68,68,0.12)', border:'1px solid rgba(255,68,68,0.4)', borderRadius:'8px', color:'#ff4444', fontSize:'0.7rem', cursor:'pointer', fontWeight:700 }}>
+                        📷 Photo of Issue
+                        <input type="file" accept="image/*" capture="environment" style={{ display:'none' }} onChange={async (e) => {
+                          const file = e.target.files[0];
+                          if (!file) return;
+                          const url = await uploadFiveSPhoto(file, 'audits');
+                          if (url) setFiveSIssuePhotos(prev => [...prev, url]);
+                          e.target.value = '';
+                        }} />
+                      </label>
+                    </div>
+                    {fiveSIssuePhotos.length > 0 && (
+                      <div style={{ display:'flex', gap:'0.5rem', flexWrap:'wrap', marginBottom:'0.65rem' }}>
+                        {fiveSIssuePhotos.map((url, i) => (
+                          <div key={i} style={{ position:'relative' }}>
+                            <img src={url} alt="issue" onClick={() => window.open(url, '_blank')}
+                              style={{ height:'72px', width:'72px', objectFit:'cover', borderRadius:'8px', border:'2px solid rgba(255,68,68,0.4)', cursor:'pointer' }} />
+                            <button onClick={() => setFiveSIssuePhotos(prev => prev.filter((_,j) => j !== i))}
+                              style={{ position:'absolute', top:-6, right:-6, width:18, height:18, borderRadius:'50%', background:'#ff4444', border:'none', color:'#fff', fontSize:'0.6rem', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900 }}>✕</button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {fiveSAuditFindings.map((f, i) => (
+                      <div key={i} style={{ marginBottom:'0.5rem' }}>
+                        <div style={{ display:'flex', gap:'0.4rem', marginBottom:'0.25rem', alignItems:'center' }}>
+                          <select value={f.pillar} onChange={(e) => { const next = [...fiveSAuditFindings]; next[i].pillar = e.target.value; setFiveSAuditFindings(next); }}
+                            style={{ background:'#0a0e1a', border:'1px solid #334155', borderRadius:'6px', color:'#e2e8f0', padding:'0.4rem', fontSize:'0.7rem' }}>
+                            {PILLARS.map(p => <option key={p} value={p}>{P_LABELS[p]}</option>)}
+                          </select>
+                          <select value={f.severity} onChange={(e) => { const next = [...fiveSAuditFindings]; next[i].severity = e.target.value; setFiveSAuditFindings(next); }}
+                            style={{ background:'#0a0e1a', border:'1px solid #334155', borderRadius:'6px', color:'#e2e8f0', padding:'0.4rem', fontSize:'0.7rem' }}>
+                            <option value="good">✅ Good</option>
+                            <option value="needs_work">⚠️ Needs Work</option>
+                            <option value="fail">🔴 Fail</option>
+                          </select>
+                          <input value={f.note} onChange={(e) => { const next = [...fiveSAuditFindings]; next[i].note = e.target.value; setFiveSAuditFindings(next); }}
+                            placeholder="Observation..."
+                            style={{ flex:1, background:'#0a0e1a', border:'1px solid #334155', borderRadius:'6px', color:'#e2e8f0', padding:'0.4rem', fontSize:'0.7rem' }} />
+                          <label style={{ padding:'0.3rem 0.5rem', background:'rgba(167,139,250,0.15)', border:'1px solid rgba(167,139,250,0.35)', borderRadius:'6px', color:'#a78bfa', fontSize:'0.65rem', cursor:'pointer', whiteSpace:'nowrap', flexShrink:0 }}>
+                            📷
+                            <input type="file" accept="image/*" capture="environment" style={{ display:'none' }} onChange={async (e) => {
+                              const file = e.target.files[0];
+                              if (!file) return;
+                              const url = await uploadFiveSPhoto(file, 'audits');
+                              if (url) { const next = [...fiveSAuditFindings]; next[i].photo_url = url; setFiveSAuditFindings(next); }
+                              e.target.value = '';
+                            }} />
+                          </label>
+                          <button onClick={() => setFiveSAuditFindings(prev => prev.filter((_,j) => j !== i))}
+                            style={{ background:'rgba(255,68,68,0.15)', border:'1px solid rgba(255,68,68,0.3)', borderRadius:'6px', color:'#ff4444', padding:'0.3rem 0.5rem', cursor:'pointer', fontSize:'0.7rem' }}>✕</button>
+                        </div>
+                        {f.photo_url && (
+                          <div style={{ paddingLeft:'0.25rem' }}>
+                            <img src={f.photo_url} alt="finding" onClick={() => window.open(f.photo_url, '_blank')}
+                              style={{ height:'60px', borderRadius:'6px', border:'1px solid #334155', cursor:'pointer', objectFit:'cover' }} />
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                    <button onClick={() => setFiveSAuditFindings(prev => [...prev, { pillar:'sort', severity:'needs_work', note:'', photo_url:'' }])}
+                      style={{ padding:'0.4rem 0.8rem', background:'rgba(56,189,248,0.1)', border:'1px solid rgba(56,189,248,0.3)', borderRadius:'8px', color:'#38bdf8', fontSize:'0.7rem', cursor:'pointer', fontWeight:700 }}>
+                      + Add Finding
+                    </button>
+                  </div>
+
+                 {/* Corrective Tasks (created with this audit) */}
+                  <div style={{ marginBottom:'1rem' }}>
+                    <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'0.5rem' }}>
+                      <div style={{ color:'#8b9dc3', fontWeight:900, fontSize:'0.75rem' }}>Corrective Action Tasks (optional)</div>
+                      <label style={{ display:'inline-flex', alignItems:'center', gap:'0.3rem', padding:'0.3rem 0.7rem', background:'rgba(0,255,136,0.1)', border:'1px solid rgba(0,255,136,0.35)', borderRadius:'8px', color:'#00ff88', fontSize:'0.7rem', cursor:'pointer', fontWeight:700 }}>
+                        📷 Photo of Fix
+                        <input type="file" accept="image/*" capture="environment" style={{ display:'none' }} onChange={async (e) => {
+                          const file = e.target.files[0];
+                          if (!file) return;
+                          const url = await uploadFiveSPhoto(file, 'tasks');
+                          if (url) setFiveSFixPhotos(prev => [...prev, url]);
+                          e.target.value = '';
+                        }} />
+                      </label>
+                    </div>
+                    {fiveSFixPhotos.length > 0 && (
+                      <div style={{ display:'flex', gap:'0.5rem', flexWrap:'wrap', marginBottom:'0.65rem' }}>
+                        {fiveSFixPhotos.map((url, i) => (
+                          <div key={i} style={{ position:'relative' }}>
+                            <img src={url} alt="fix" onClick={() => window.open(url, '_blank')}
+                              style={{ height:'72px', width:'72px', objectFit:'cover', borderRadius:'8px', border:'2px solid rgba(0,255,136,0.4)', cursor:'pointer' }} />
+                            <button onClick={() => setFiveSFixPhotos(prev => prev.filter((_,j) => j !== i))}
+                              style={{ position:'absolute', top:-6, right:-6, width:18, height:18, borderRadius:'50%', background:'#ff4444', border:'none', color:'#fff', fontSize:'0.6rem', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900 }}>✕</button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {fiveSNewTasks.map((t, i) => (
+                      <div key={i} style={{ display:'flex', gap:'0.4rem', marginBottom:'0.4rem', alignItems:'center', flexWrap:'wrap' }}>
+                        <select value={t.pillar} onChange={(e) => { const next = [...fiveSNewTasks]; next[i].pillar = e.target.value; setFiveSNewTasks(next); }}
+                          style={{ background:'#0a0e1a', border:'1px solid #334155', borderRadius:'6px', color:'#e2e8f0', padding:'0.4rem', fontSize:'0.7rem' }}>
+                          {PILLARS.map(p => <option key={p} value={p}>{P_LABELS[p]}</option>)}
+                        </select>
+                        <input value={t.description} onChange={(e) => { const next = [...fiveSNewTasks]; next[i].description = e.target.value; setFiveSNewTasks(next); }}
+                          placeholder="Task description..."
+                          style={{ flex:1, minWidth:'120px', background:'#0a0e1a', border:'1px solid #334155', borderRadius:'6px', color:'#e2e8f0', padding:'0.4rem', fontSize:'0.7rem' }} />
+                        <select value={t.assigned_to || ''} onChange={(e) => { const next = [...fiveSNewTasks]; next[i].assigned_to = e.target.value; setFiveSNewTasks(next); }}
+                          style={{ background:'#0a0e1a', border:'1px solid #334155', borderRadius:'6px', color:'#e2e8f0', padding:'0.4rem', fontSize:'0.7rem' }}>
+                         <option value="">Unassigned</option>
+                          {zoneAssignedWorkers(fiveSAuditZone).map(u => {
+                            const isAssigned = (Array.isArray(activeAssignments) ? activeAssignments : []).some(a => a.room === fiveSAuditZone && a.userName === u.name);
+                            return <option key={u.name} value={u.name}>{u.name}{isAssigned ? ' ★' : ''}</option>;
+                          })}
+                          {warehouseWorkers.map(u => <option key={u.name} value={u.name}>{u.name}</option>)}
+                        </select>
+                        <select value={t.priority} onChange={(e) => { const next = [...fiveSNewTasks]; next[i].priority = e.target.value; setFiveSNewTasks(next); }}
+                          style={{ background:'#0a0e1a', border:'1px solid #334155', borderRadius:'6px', color:'#e2e8f0', padding:'0.4rem', fontSize:'0.7rem' }}>
+                          <option value="low">Low</option>
+                          <option value="normal">Normal</option>
+                          <option value="high">High</option>
+                          <option value="critical">Critical</option>
+                        </select>
+                        <button onClick={() => setFiveSNewTasks(prev => prev.filter((_,j) => j !== i))}
+                          style={{ background:'rgba(255,68,68,0.15)', border:'1px solid rgba(255,68,68,0.3)', borderRadius:'6px', color:'#ff4444', padding:'0.3rem 0.5rem', cursor:'pointer', fontSize:'0.7rem' }}>✕</button>
+                      </div>
+                    ))}
+                    <button onClick={() => setFiveSNewTasks(prev => [...prev, { pillar:'sort', description:'', assigned_to:'', priority:'normal' }])}
+                      style={{ padding:'0.4rem 0.8rem', background:'rgba(56,189,248,0.1)', border:'1px solid rgba(56,189,248,0.3)', borderRadius:'8px', color:'#38bdf8', fontSize:'0.7rem', cursor:'pointer', fontWeight:700 }}>
+                      + Add Task
+                    </button>
+                  </div>
+
+                  {/* Submit */}
+{selectedFiveSZoneCompleted && (
+  <div style={{
+    marginBottom:'0.75rem',
+    padding:'0.75rem',
+    background:'rgba(0,255,136,0.08)',
+    border:'1px solid rgba(0,255,136,0.25)',
+    borderRadius:'10px',
+    color:'#00ff88',
+    fontWeight:900,
+    fontSize:'0.8rem'
+  }}>
+    ✅ This assigned zone audit is complete. The submit button will unlock when this zone is assigned again.
+  </div>
+)}
+                  <button onClick={submitFiveSAudit} disabled={fiveSLoading || selectedFiveSZoneCompleted}
+                    style={{
+  padding:'0.8rem 2rem',
+  background: selectedFiveSZoneCompleted
+    ? 'linear-gradient(135deg, #334155 0%, #1e293b 100%)'
+    : 'linear-gradient(135deg, #00ff88 0%, #00cc6f 100%)',
+  border:'none',
+  borderRadius:'12px',
+  color: selectedFiveSZoneCompleted ? '#94a3b8' : '#0a0e1a',
+  fontWeight:900,
+  fontSize:'0.9rem',
+  cursor: fiveSLoading ? 'wait' : selectedFiveSZoneCompleted ? 'not-allowed' : 'pointer',
+  opacity: fiveSLoading || selectedFiveSZoneCompleted ? 0.6 : 1
+}}>
+                    {fiveSLoading ? '⏳ Saving...' : selectedFiveSZoneCompleted ? '✅ Audit Completed' : '✅ Submit Audit'}
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ═══════════════════════════════════════════════ */}
+        {/* TAB B — TASKS                                  */}
+        {/* ═══════════════════════════════════════════════ */}
+        {fiveSTab === "tasks" && (
+          <div>
+            {/* Filters */}
+            <div style={{ display:'flex', gap:'0.5rem', marginBottom:'1rem', flexWrap:'wrap' }}>
+              <select value={fiveSTaskFilter.zone} onChange={(e) => setFiveSTaskFilter(prev => ({...prev, zone: e.target.value}))}
+                style={{ background:'#0a0e1a', border:'1px solid #334155', borderRadius:'8px', color:'#e2e8f0', padding:'0.5rem', fontSize:'0.75rem' }}>
+                <option value="">All Zones</option>
+                {ZONES.map(z => <option key={z.id} value={z.name}>{z.name}</option>)}
+              </select>
+              <select value={fiveSTaskFilter.status} onChange={(e) => setFiveSTaskFilter(prev => ({...prev, status: e.target.value}))}
+                style={{ background:'#0a0e1a', border:'1px solid #334155', borderRadius:'8px', color:'#e2e8f0', padding:'0.5rem', fontSize:'0.75rem' }}>
+                <option value="">All Statuses</option>
+                <option value="open">Open</option>
+                <option value="in_progress">In Progress</option>
+                <option value="completed">Completed</option>
+                <option value="verified">Verified</option>
+              </select>
+              <select value={fiveSTaskFilter.pillar} onChange={(e) => setFiveSTaskFilter(prev => ({...prev, pillar: e.target.value}))}
+                style={{ background:'#0a0e1a', border:'1px solid #334155', borderRadius:'8px', color:'#e2e8f0', padding:'0.5rem', fontSize:'0.75rem' }}>
+                <option value="">All Pillars</option>
+                {PILLARS.map(p => <option key={p} value={p}>{P_LABELS[p]}</option>)}
+              </select>
+            </div>
+
+            {/* Task List */}
+            {filteredTasks.length === 0 ? (
+              <div style={{ textAlign:'center', padding:'3rem', color:'#475569' }}>
+                <div style={{ fontSize:'2.5rem', marginBottom:'0.5rem' }}>📋</div>
+                <div>No tasks match the current filters</div>
+              </div>
+            ) : (
+              <div style={{ display:'flex', flexDirection:'column', gap:'0.5rem' }}>
+                {filteredTasks.map(t => (
+                  <div key={t.id} style={{ padding:'0.8rem 1rem', background:'rgba(15,23,42,0.7)', border:'1px solid #334155', borderRadius:'10px' }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'0.5rem', marginBottom:'0.4rem', flexWrap:'wrap' }}>
+                      <div style={{ flex:1 }}>
+                        <span style={{ color:'#e2e8f0', fontWeight:700, fontSize:'0.8rem' }}>{t.description}</span>
+                      </div>
+                      <div style={{ display:'flex', gap:'0.3rem', flexShrink:0 }}>
+                        <span style={{ padding:'0.15rem 0.5rem', borderRadius:'6px', fontSize:'0.6rem', fontWeight:900,
+                          background: `${statusColor[t.status]}22`, color: statusColor[t.status], border:`1px solid ${statusColor[t.status]}44` }}>
+                          {statusLabel[t.status]}
+                        </span>
+                        <span style={{ padding:'0.15rem 0.5rem', borderRadius:'6px', fontSize:'0.6rem', fontWeight:900,
+                          background: `${priorityColor[t.priority]}22`, color: priorityColor[t.priority], border:`1px solid ${priorityColor[t.priority]}44` }}>
+                          {t.priority}
+                        </span>
+                      </div>
+                    </div>
+                    <div style={{ display:'flex', gap:'1rem', fontSize:'0.65rem', color:'#8b9dc3', flexWrap:'wrap', marginBottom:'0.4rem' }}>
+                      <span>📍 {t.zone}</span>
+                      <span>🏷️ {P_LABELS[t.pillar] || t.pillar}</span>
+                      {t.assigned_to && <span>👤 {t.assigned_to}</span>}
+                      {t.due_date && <span>📅 {t.due_date}</span>}
+                      <span>📝 {niceTime(t.created_at)}</span>
+                    </div>
+                    {t.notes && <div style={{ fontSize:'0.7rem', color:'#8b9dc3', fontStyle:'italic', marginBottom:'0.4rem' }}>Note: {t.notes}</div>}
+                    {t.verified_by && <div style={{ fontSize:'0.65rem', color:'#a78bfa' }}>✔ Verified by {t.verified_by} — {niceTime(t.verified_at)}</div>}
+                    {t.photo_url && (
+                      <img src={t.photo_url} alt="task photo" onClick={() => window.open(t.photo_url, '_blank')}
+                        style={{ marginTop:'0.35rem', height:'70px', borderRadius:'6px', border:'1px solid #334155', cursor:'pointer', objectFit:'cover', display:'block' }} />
+                    )}
+                    <label style={{ display:'inline-flex', alignItems:'center', gap:'0.3rem', marginTop:'0.35rem', padding:'0.3rem 0.6rem', background:'rgba(167,139,250,0.1)', border:'1px solid rgba(167,139,250,0.3)', borderRadius:'6px', color:'#a78bfa', fontSize:'0.65rem', cursor:'pointer' }}>
+                      📷 {t.photo_url ? 'Replace Photo' : 'Add Photo'}
+                      <input type="file" accept="image/*" capture="environment" style={{ display:'none' }} onChange={async (e) => {
+                        const file = e.target.files[0];
+                        if (!file) return;
+                        const url = await uploadFiveSPhoto(file, 'tasks');
+                        if (url) await updateFiveSTaskStatus(t.id, t.status, { photo_url: url });
+                        e.target.value = '';
+                      }} />
+                    </label>
+                    <div style={{ display:'flex', gap:'0.3rem', marginTop:'0.3rem' }}>
+                      {t.status === 'open' && (
+                        <button onClick={() => updateFiveSTaskStatus(t.id, 'in_progress')}
+                          style={{ padding:'0.3rem 0.6rem', background:'rgba(56,189,248,0.15)', border:'1px solid rgba(56,189,248,0.3)', borderRadius:'6px', color:'#38bdf8', fontSize:'0.65rem', cursor:'pointer', fontWeight:700 }}>
+                          ▶ Start
+                        </button>
+                      )}
+                      {t.status === 'in_progress' && (
+                        <button onClick={() => updateFiveSTaskStatus(t.id, 'completed')}
+                          style={{ padding:'0.3rem 0.6rem', background:'rgba(0,255,136,0.15)', border:'1px solid rgba(0,255,136,0.3)', borderRadius:'6px', color:'#00ff88', fontSize:'0.65rem', cursor:'pointer', fontWeight:700 }}>
+                          ✅ Complete
+                        </button>
+                      )}
+                      {t.status === 'completed' && canSupervisor && (
+                        <button onClick={() => updateFiveSTaskStatus(t.id, 'verified')}
+                          style={{ padding:'0.3rem 0.6rem', background:'rgba(167,139,250,0.15)', border:'1px solid rgba(167,139,250,0.3)', borderRadius:'6px', color:'#a78bfa', fontSize:'0.65rem', cursor:'pointer', fontWeight:700 }}>
+                          ✔ Verify
+                        </button>
+                      )}
+                      {(t.status === 'open' || t.status === 'in_progress') && canAdmin && (
+                        <button onClick={async () => { if(confirm('Delete this task?')){ await adapterRef.current.deleteFiveSTask(t.id); await loadFiveSTasks(); }}}
+                          style={{ padding:'0.3rem 0.6rem', background:'rgba(255,68,68,0.1)', border:'1px solid rgba(255,68,68,0.3)', borderRadius:'6px', color:'#ff4444', fontSize:'0.65rem', cursor:'pointer', fontWeight:700 }}>
+                          🗑️
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ═══════════════════════════════════════════════ */}
+        {/* TAB C — HISTORY & TRENDS                       */}
+        {/* ═══════════════════════════════════════════════ */}
+        {fiveSTab === "history" && (
+          <div>
+            {/* Filters */}
+            <div style={{ display:'flex', gap:'0.5rem', marginBottom:'1rem', flexWrap:'wrap', alignItems:'center' }}>
+              <select value={fiveSHistoryFilter.zone} onChange={(e) => setFiveSHistoryFilter(prev => ({...prev, zone: e.target.value}))}
+                style={{ background:'#0a0e1a', border:'1px solid #334155', borderRadius:'8px', color:'#e2e8f0', padding:'0.5rem', fontSize:'0.75rem' }}>
+                <option value="">All Zones</option>
+                {ZONES.map(z => <option key={z.id} value={z.name}>{z.name}</option>)}
+              </select>
+              <input type="date" value={fiveSHistoryFilter.from} onChange={(e) => setFiveSHistoryFilter(prev => ({...prev, from: e.target.value}))}
+                style={{ background:'#0a0e1a', border:'1px solid #334155', borderRadius:'8px', color:'#e2e8f0', padding:'0.5rem', fontSize:'0.75rem' }} />
+              <input type="date" value={fiveSHistoryFilter.to} onChange={(e) => setFiveSHistoryFilter(prev => ({...prev, to: e.target.value}))}
+                style={{ background:'#0a0e1a', border:'1px solid #334155', borderRadius:'8px', color:'#e2e8f0', padding:'0.5rem', fontSize:'0.75rem' }} />
+              <button onClick={exportFiveSCSV} disabled={filteredAudits.length === 0}
+                style={{ padding:'0.5rem 1rem', background:'rgba(0,255,136,0.1)', border:'1px solid rgba(0,255,136,0.3)', borderRadius:'8px',
+                  color:'#00ff88', fontSize:'0.75rem', cursor: filteredAudits.length ? 'pointer' : 'not-allowed', fontWeight:700,
+                  opacity: filteredAudits.length ? 1 : 0.4 }}>
+                📥 CSV ({filteredAudits.length})
+              </button>
+            </div>
+
+            {/* Zone Comparison — latest score per zone bar chart */}
+            <div style={{ marginBottom:'1.5rem', padding:'1rem', background:'rgba(15,23,42,0.7)', border:'1px solid #334155', borderRadius:'14px' }}>
+              <div style={{ color:'#00ff88', fontWeight:900, fontSize:'0.8rem', marginBottom:'0.75rem', textTransform:'uppercase', letterSpacing:'0.06em' }}>
+                Zone Comparison — Average Scores
+              </div>
+              {ZONES.map(z => {
+  const avgInfo = avgByZone[z.name];
+  const score = avgInfo ? Math.round(avgInfo.total / avgInfo.count) : 0;
+  const pct = (score / 25) * 100;
+  return (
+                  <div key={z.id} style={{ display:'flex', alignItems:'center', gap:'0.5rem', marginBottom:'0.35rem' }}>
+                    <div style={{ width:'90px', fontSize:'0.7rem', color:'#8b9dc3', fontWeight:700, flexShrink:0, textAlign:'right' }}>{z.name}</div>
+                    <div style={{ flex:1, height:'18px', background:'rgba(51,65,85,0.4)', borderRadius:'4px', overflow:'hidden', position:'relative' }}>
+                      <div style={{ height:'100%', width:`${pct}%`, background: scoreColor(score, 25), borderRadius:'4px', transition:'width 0.4s' }} />
+                    </div>
+                    <div style={{ width:'40px', fontSize:'0.7rem', fontWeight:900, color: score ? scoreColor(score, 25) : '#475569', textAlign:'right' }}>
+                      {score ? `${score}/25` : '—'}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Audit History List */}
+            {filteredAudits.length === 0 ? (
+              <div style={{ textAlign:'center', padding:'3rem', color:'#475569' }}>
+                <div style={{ fontSize:'2.5rem', marginBottom:'0.5rem' }}>📊</div>
+                <div>No audits found for the selected filters</div>
+              </div>
+            ) : (
+              <div style={{ display:'flex', flexDirection:'column', gap:'0.5rem' }}>
+                {filteredAudits.map(a => (
+                  <div key={a.id} style={{ padding:'0.8rem 1rem', background:'rgba(15,23,42,0.7)', border:`1px solid ${scoreBorder(a.total_score, 25)}`,
+                    borderRadius:'10px', borderLeft:`4px solid ${scoreColor(a.total_score, 25)}` }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'0.4rem' }}>
+                      <div>
+                        <span style={{ color:'#e2e8f0', fontWeight:900, fontSize:'0.85rem' }}>{a.zone}</span>
+                        <span style={{ color:'#8b9dc3', fontSize:'0.7rem', marginLeft:'0.5rem' }}>by {a.audited_by}</span>
+                      </div>
+                      <div style={{ display:'flex', alignItems:'center', gap:'0.5rem' }}>
+                        <span style={{ fontSize:'1.1rem', fontWeight:900, color: scoreColor(a.total_score, 25) }}>{a.total_score}/25</span>
+                        {canAdmin && (
+                          <button onClick={() => deleteFiveSAudit(a.id)}
+                            style={{ background:'rgba(255,68,68,0.1)', border:'1px solid rgba(255,68,68,0.3)', borderRadius:'6px', color:'#ff4444',
+                              padding:'0.2rem 0.4rem', cursor:'pointer', fontSize:'0.6rem' }}>🗑️</button>
+                        )}
+                      </div>
+                    </div>
+                    <div style={{ display:'flex', gap:'0.5rem', marginBottom:'0.3rem', flexWrap:'wrap' }}>
+                      {PILLARS.map(p => (
+                        <span key={p} style={{ padding:'0.15rem 0.4rem', borderRadius:'6px', fontSize:'0.6rem', fontWeight:900,
+                          background: scoreBg(a[p === 'set_in_order' ? 'set_in_order_score' : p + '_score'], 5),
+                          color: scoreColor(a[p === 'set_in_order' ? 'set_in_order_score' : p + '_score'], 5) }}>
+                          {P_LABELS[p]}: {a[p === 'set_in_order' ? 'set_in_order_score' : p + '_score']}
+                        </span>
+                      ))}
+                    </div>
+                    <div style={{ fontSize:'0.65rem', color:'#8b9dc3' }}>{niceTime(a.audit_date)}</div>
+                    {a.notes && <div style={{ fontSize:'0.7rem', color:'#8b9dc3', marginTop:'0.2rem', fontStyle:'italic' }}>{a.notes}</div>}
+                    {Array.isArray(a.findings) && a.findings.length > 0 && (
+                      <div style={{ marginTop:'0.3rem' }}>
+                        {a.findings.map((f, i) => (
+                          <div key={i} style={{ fontSize:'0.65rem', color:'#8b9dc3', paddingLeft:'0.5rem', borderLeft:'2px solid #334155', marginTop:'0.2rem' }}>
+                            {f.severity === 'good' ? '✅' : f.severity === 'fail' ? '🔴' : '⚠️'} <strong>{P_LABELS[f.pillar] || f.pillar}:</strong> {f.note}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+      </div>
+
+      {_breakPanelJsx}
+      {_chatUI}
+      {_chatFab}
+    </div>
+  );
+}
 
 if (screen === "admin") {
         if (!canAdmin) {
@@ -6292,38 +7376,83 @@ ${filteredArchive.map(r => `<tr>
         const durationColor = { day:'#38bdf8', week:'#a78bfa', month:'#fbbf24', year:'#00ff88' };
         const roleColors2 = { room:'#8b9dc3', warehouse:'#fbbf24', supervisor:'#a78bfa', admin:'#ff4444' };
         const handleAssign = () => {
-          if (!assignPerson) { alert("Select a person"); return; }
-          if (!assignRoom)   { alert("Select a room");   return; }
-          const person = users.find(u => u.id === assignPerson);
-          if (!person) return;
-          const personShift = person.shift || "1st";
-          const existing = activeAssignments.find(a => a.userId === assignPerson && a.room === assignRoom);
-          if (existing) {
-            if (!confirm(`${person.name} is already assigned to ${assignRoom}. Replace?`)) return;
-            adapterRef.current.deleteAssignment(existing.id);
-          }
-          const newA = {
-            id: genId(), userId: person.id, userName: person.name, userRole: person.role,
-            room: assignRoom, shift: personShift, duration: assignDuration,
-            startDate: new Date().toISOString(), expiresAt: expiryDate(assignDuration),
-            assignedBy: userName, assignedAt: new Date().toISOString()
-          };
-          adapterRef.current.saveAssignment(newA).then(() => loadAll());
-          setSuccessMsg(`${person.name} → ${assignRoom} · ${personShift} Shift · ${assignDuration}`);
-          setTimeout(() => setSuccessMsg(""), 3000);
-          setAssignPerson(""); setAssignRoom("");
-        };
+  if (!assignPerson) { alert("Select a person"); return; }
+  if (!assignRoom && !assignFiveSZone) { alert("Select a room, a 5S zone, or both"); return; }
+
+  const person = users.find(u => u.id === assignPerson);
+  if (!person) return;
+
+  const personShift = person.shift || "1st";
+
+  const existing = activeAssignments.find(a =>
+    a.userId === assignPerson &&
+    (a.room || "") === (assignRoom || "") &&
+    (a.fiveSZone || "") === (assignFiveSZone || "")
+  );
+
+  if (existing) {
+    if (!confirm(`${person.name} already has this assignment. Replace?`)) return;
+    adapterRef.current.deleteAssignment(existing.id);
+  }
+
+  const newA = {
+    id: genId(),
+    userId: person.id,
+    userName: person.name,
+    userRole: person.role,
+    room: assignRoom || null,
+    fiveSZone: assignFiveSZone || null,
+    shift: personShift,
+    duration: assignDuration,
+    startDate: new Date().toISOString(),
+    expiresAt: expiryDate(assignDuration),
+    assignedBy: userName,
+    assignedAt: new Date().toISOString()
+  };
+
+  adapterRef.current.saveAssignment(newA)
+    .then(() => loadUsersAndAssignments())
+    .catch(err => {
+      console.error("Assignment save failed:", err);
+      alert("Assignment did not save. Check Supabase column five_s_zone and RLS policy.");
+    });
+
+  const roomText = assignRoom ? assignRoom : "No room";
+  const zoneText = assignFiveSZone ? assignFiveSZone : "No 5S zone";
+
+  setSuccessMsg(`${person.name} → ${roomText} + ${zoneText} · ${personShift} Shift · ${assignDuration}`);
+  setTimeout(() => setSuccessMsg(""), 3000);
+
+  setAssignPerson("");
+  setAssignRoom("");
+  setAssignFiveSZone("");
+};
         const removeAssignment = (id, name, room) => {
           if (!confirm(`Remove ${name}'s assignment from ${room}?`)) return;
-          adapterRef.current.deleteAssignment(id).then(() => loadAll());
+          adapterRef.current.deleteAssignment(id).then(() => loadUsersAndAssignments());
         };
         const visibleAssignments = activeAssignments
-          .filter(a => shiftFilter === "all" ? true : a.shift === shiftFilter)
-          .sort((a, b) => {
-            if (assignSort === "shift") return (a.shift||"").localeCompare(b.shift||"") || a.room.localeCompare(b.room);
-            if (assignSort === "room")  return a.room.localeCompare(b.room) || (a.shift||"").localeCompare(b.shift||"");
-            return a.userName.localeCompare(b.userName);
-          });
+  .filter(a => shiftFilter === "all" ? true : a.shift === shiftFilter)
+  .sort((a, b) => {
+    const aRoom = a.room || "";
+    const bRoom = b.room || "";
+    const aZone = a.fiveSZone || "";
+    const bZone = b.fiveSZone || "";
+
+    if (assignSort === "shift") {
+      return (a.shift || "").localeCompare(b.shift || "") ||
+        aRoom.localeCompare(bRoom) ||
+        aZone.localeCompare(bZone);
+    }
+
+    if (assignSort === "room") {
+      return aRoom.localeCompare(bRoom) ||
+        aZone.localeCompare(bZone) ||
+        (a.shift || "").localeCompare(b.shift || "");
+    }
+
+    return (a.userName || "").localeCompare(b.userName || "");
+  });
         const first  = activeAssignments.filter(a => a.shift === "1st").length;
         const second = activeAssignments.filter(a => a.shift === "2nd").length;
         const roomsUsed = new Set(visibleAssignments.map(a => a.room)).size;
@@ -6360,9 +7489,24 @@ ${filteredArchive.map(r => `<tr>
                       <select value={assignRoom} onChange={e => setAssignRoom(e.target.value)}
                         style={{ width:'100%', padding:'0.75rem', background:'#1e293b', border:'1px solid #334155', borderRadius:'8px', color: assignRoom ? '#e2e8f0' : '#64748b', fontSize:'0.95rem' }}>
                         <option value="">— Select room —</option>
-                        {rooms.map(r => <option key={r} value={r}>{r}</option>)}
+                        <optgroup label="Rooms">
+                          {rooms.map(r => <option key={r} value={r}>{r}</option>)}
+                        </optgroup>
+                        <optgroup label="5S Zones">
+                          {CONFIG.FIVE_S_ZONES.map(z => <option key={z.id} value={z.name}>{z.name} ({z.desc})</option>)}
+                        </optgroup>
                       </select>
                     </div>
+<div>
+  <div style={{ color:'#8b9dc3', fontSize:'0.75rem', fontWeight:700, textTransform:'uppercase', marginBottom:'0.4rem' }}>5S Zone</div>
+  <select value={assignFiveSZone} onChange={e => setAssignFiveSZone(e.target.value)}
+    style={{ width:'100%', padding:'0.75rem', background:'#1e293b', border:'1px solid #334155', borderRadius:'8px', color: assignFiveSZone ? '#e2e8f0' : '#64748b', fontSize:'0.95rem' }}>
+    <option value="">— Select 5S zone —</option>
+    {CONFIG.FIVE_S_ZONES.map(z => (
+      <option key={z.id} value={z.name}>{z.name} ({z.desc})</option>
+    ))}
+  </select>
+</div>
                   </div>
 
                   {assignPerson && (() => {
@@ -6459,12 +7603,12 @@ ${filteredArchive.map(r => `<tr>
                   <div style={{ overflowX:'auto' }}>
                     <table style={{ width:'100%', borderCollapse:'collapse', minWidth:'800px' }}>
                       <thead>
-                        <tr style={{ background:'rgba(56,189,248,0.05)' }}>
-                          {["Person","Role","Shift","Room","Duration","Assigned By","Expires",""].map(h => (
-                            <th key={h} style={headerStyle}>{h}</th>
-                          ))}
-                        </tr>
-                      </thead>
+  <tr>
+    {["Person","Role","Shift","Room","5S Zone","Duration","Assigned By","Expires",""].map(h => (
+      <th key={h} style={headerStyle}>{h}</th>
+    ))}
+  </tr>
+</thead>
                       <tbody>
                         {visibleAssignments.map((a, idx) => {
                             const expires  = new Date(a.expiresAt);
@@ -6480,7 +7624,29 @@ ${filteredArchive.map(r => `<tr>
                                     {shift.label}
                                   </span>
                                 </td>
-                                <td style={cellStyle}><div style={{ display:'flex', alignItems:'center', gap:'0.4rem' }}><MapPin size={13} color="#38bdf8" />{a.room}</div></td>
+                                <td style={cellStyle}>
+  <div style={{ display:'flex', alignItems:'center', gap:'0.4rem' }}>
+    <MapPin size={13} color="#38bdf8" />
+    {a.room || "—"}
+  </div>
+</td>
+<td style={cellStyle}>
+  {a.fiveSZone ? (
+    <span style={{
+      padding:'0.3rem 0.75rem',
+      borderRadius:'999px',
+      background:'rgba(0,255,136,0.12)',
+      border:'1px solid rgba(0,255,136,0.4)',
+      color:'#00ff88',
+      fontWeight:900,
+      fontSize:'0.78rem'
+    }}>
+      {a.fiveSZone}
+    </span>
+  ) : (
+    <span style={{ color:'#475569', fontSize:'0.78rem' }}>—</span>
+  )}
+</td>
                                 <td style={cellStyle}>
                                   <span style={{ padding:'0.25rem 0.6rem', borderRadius:'6px', background:`${durationColor[a.duration]}22`, color:durationColor[a.duration], fontWeight:900, fontSize:'0.78rem', textTransform:'uppercase' }}>
                                     {a.duration}
@@ -6542,6 +7708,20 @@ ${filteredArchive.map(r => `<tr>
               <div style={{ marginBottom:'0.9rem', padding:'0.6rem 0.9rem', background:'rgba(0,255,136,0.1)', border:'1px solid rgba(0,255,136,0.2)', borderRadius:'10px', color:'#00ff88', fontSize:'0.75rem', textAlign:'center', letterSpacing:'0.05em' }}>
                 ✅ Claim → Start → Done • Tap ↩ to undo any step • Multi-user safe
               </div>
+{(() => {
+                const myZones = (Array.isArray(activeAssignments) ? activeAssignments : [])
+                  .filter(a => a.userName === userName && CONFIG.FIVE_S_ZONES.some(z => z.name === a.room))
+                  .map(a => a.room);
+                if (myZones.length === 0) return null;
+                return (
+                  <div style={{ marginBottom:'0.9rem', padding:'0.5rem 0.9rem', background:'rgba(0,255,136,0.05)', border:'1px solid rgba(0,255,136,0.15)', borderRadius:'10px', display:'flex', alignItems:'center', gap:'0.5rem', flexWrap:'wrap' }}>
+                    <span style={{ color:'#00ff88', fontSize:'0.75rem', fontWeight:900 }}>🧹 My Zones:</span>
+                    {myZones.map(z => (
+                      <span key={z} style={{ padding:'0.2rem 0.5rem', background:'rgba(0,255,136,0.12)', border:'1px solid rgba(0,255,136,0.3)', borderRadius:'6px', color:'#00ff88', fontSize:'0.7rem', fontWeight:700 }}>{z}</span>
+                    ))}
+                  </div>
+                );
+              })()}
 
               <div style={{ display:'flex', gap:'0.75rem', flexWrap:'wrap', alignItems:'center', marginBottom:'0.9rem' }}>
                 <div style={{ color:'#64748b', fontSize:'0.75rem' }}>Group:</div>
