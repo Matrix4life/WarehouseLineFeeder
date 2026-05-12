@@ -217,6 +217,13 @@
     const { useEffect, useMemo, useRef, useState } = React;
 
     /* CONFIG: set ENABLE_SUPABASE, SUPABASE_URL, SUPABASE_ANON_KEY below. Run DB migrations from the README. */
+    const DEFAULT_ROLE_PERMISSIONS = {
+      room:       { new_request:true,  board:true, completed:true, chat:true, breaks:false, picklist:false, dashboard:false, assignments:false, preplist:false, fives:false },
+      warehouse:  { new_request:false, board:true, completed:true, chat:true, breaks:true,  picklist:true,  dashboard:false, assignments:false, preplist:false, fives:false },
+      supervisor: { new_request:true,  board:true, completed:true, chat:true, breaks:true,  picklist:true,  dashboard:true,  assignments:true,  preplist:true,  fives:true  },
+      admin:      { new_request:true,  board:true, completed:true, chat:true, breaks:true,  picklist:true,  dashboard:true,  assignments:true,  preplist:true,  fives:true  },
+    };
+
     const DEFAULT_PERFORMANCE_WEIGHTS = {
       items: 0.5,        // 50% weight: Items Completed
       roomWait: 0.25,    // 25% weight: Room Wait time (lower is better)
@@ -1416,7 +1423,14 @@ async deleteFiveSTask(id) {
       const [prepListError, setPrepListError] = useState(null);
       const [editingPrepList, setEditingPrepList] = useState(null);
       const [prepListAddItem, setPrepListAddItem] = useState({ room: '', item: '', qty: '', priority: 'normal' });
-// ── 5S Program State ──
+      const [oorItems, setOorItems] = useState([]);
+      const [oorLoading, setOorLoading] = useState(false);
+      const [oorMessage, setOorMessage] = useState(null);
+      const [oorLocationFilter, setOorLocationFilter] = useState('all');
+      const [accessTab, setAccessTab] = useState('role');
+      const [selectedUser, setSelectedUser] = useState('');
+      const [pendingUserPerms, setPendingUserPerms] = useState(null);
+      const [userPermsSaved, setUserPermsSaved] = useState(false);// ── 5S Program State ──
       const [fiveSAudits, setFiveSAudits] = useState([]);
       const [fiveSTasks, setFiveSTasks] = useState([]);
       const [fiveSLoading, setFiveSLoading] = useState(false);
@@ -1848,6 +1862,254 @@ const [assignFiveSZone, setAssignFiveSZone] = useState("");
           console.error('deletePrepList error:', err);
         }
       };
+
+      // ── FIFO OOR Analyzer ──
+      const DELIVERY_LOCATIONS = new Set(['PREPWIP', 'PRECLAM', 'PREBISTRO', 'PREAPPLE', 'PREPACK', 'MASTERPKS']);
+      const LOCATION_MAPPING = {
+        'PREPWIP': 'Bistro',
+        'PRECLAM': 'Salad',
+        'PREBISTRO': 'Bistro',
+        'PREAPPLE': 'Apple',
+        'PREPACK': 'MasterPacks',
+        'MASTERPKS': 'MasterPacks'
+      };
+
+      const analyzeFIFOOOR = async (csvFile) => {
+        setOorLoading(true);
+        setOorMessage(null);
+        try {
+          const text = await csvFile.text();
+          const lines = text.split('\n');
+          const oorItems = [];
+          const uniqueKeys = new Set(); // Prevent duplicates
+
+          // Helper function to run FIFO analysis on a specific date column
+          const runFIFOAnalysis = (dateSource) => {
+            const dataByItem = {};
+            
+            // Parse CSV (skip first 5 header rows)
+            for (let i = 5; i < lines.length; i++) {
+              const line = lines[i].trim();
+              if (!line || line.includes('ITEM TOTAL')) continue;
+
+              const cols = line.split(',').map(c => c.trim());
+              if (cols.length < 11) continue;
+
+              const itemNum = cols[0];
+              const description = cols[1];
+              const poNum = cols[4];
+              const lotNum = cols[5];
+              const location = cols[7];
+              const harvestDate = cols[9];  // Column J
+              const expireDate = cols[10];  // Column K
+
+              // Skip invalid entries
+              if (!itemNum || !itemNum.match(/^\d+$/) || !location) continue;
+
+              // Mark HOLD locations - include in date calculation but never report as OOR
+              const isHold = location === 'HOLD';
+
+              // Select date based on dateSource parameter
+              let dateToUse = null;
+              if (dateSource === 'harvest') {
+                dateToUse = (harvestDate && harvestDate !== 'NA') ? harvestDate : null;
+              } else if (dateSource === 'expiration') {
+                dateToUse = (expireDate && expireDate !== 'NA') ? expireDate : null;
+              }
+
+              if (!dateToUse) continue;
+
+              // Initialize item object
+              if (!dataByItem[itemNum]) {
+                dataByItem[itemNum] = { description, dates: {} };
+              }
+
+              // Store entry by date
+              if (!dataByItem[itemNum].dates[dateToUse]) {
+                dataByItem[itemNum].dates[dateToUse] = [];
+              }
+
+              dataByItem[itemNum].dates[dateToUse].push({
+                item: itemNum,
+                description,
+                po: poNum,
+                lot: lotNum,
+                location,
+                harvestDate,
+                expireDate,
+                dateKey: dateToUse,
+                isDelivery: DELIVERY_LOCATIONS.has(location),
+                isHold: location === 'HOLD',
+                isExpired: (() => {
+                  const today = new Date().toISOString().split('T')[0];
+                  const parts = expireDate.split('/');
+                  if (parts.length !== 3) return false;
+                  const expFormatted = `${parts[2]}-${parts[0].padStart(2,'0')}-${parts[1].padStart(2,'0')}`;
+                  return expFormatted < today;
+                })(),
+                dateSource: dateSource
+              });
+            }
+
+            // Analyze each item for OOR
+            const results = [];
+
+            // Helper: convert MM/DD/YYYY to YYYY-MM-DD for proper date sorting
+            const toSortable = (d) => {
+              const parts = d.split('/');
+              if (parts.length !== 3) return d;
+              return `${parts[2]}-${parts[0].padStart(2,'0')}-${parts[1].padStart(2,'0')}`;
+            };
+
+            for (const itemNum in dataByItem) {
+              const itemData = dataByItem[itemNum];
+
+              // Sort dates chronologically (convert MM/DD/YYYY → YYYY-MM-DD for sort)
+              const datesSorted = Object.keys(itemData.dates).sort((a, b) => toSortable(a).localeCompare(toSortable(b)));
+
+              if (datesSorted.length < 2) continue;
+
+              // Check if item has ANY delivery locations - if not, skip entirely
+              let hasDeliveryLocation = false;
+              for (const date of datesSorted) {
+                for (const entry of itemData.dates[date]) {
+                  if (entry.isDelivery) {
+                    hasDeliveryLocation = true;
+                    break;
+                  }
+                }
+                if (hasDeliveryLocation) break;
+              }
+              
+              if (!hasDeliveryLocation) continue; // Skip items with NO delivery locations
+
+              // FIFO OOR Logic:
+              // 1. Find OLDEST warehouse date (including HOLD - so true oldest is known)
+              // 2. Check if any delivery date is NEWER than that oldest warehouse date
+              // 3. If YES → oldest warehouse items are OOR (HOLD items are never reported)
+
+              let oldestWarehouseDate = null;
+              for (const date of datesSorted) {
+                for (const entry of itemData.dates[date]) {
+                  // Include HOLD in date calculation (so we know the true oldest date)
+                  if (!entry.isDelivery) {
+                    if (!oldestWarehouseDate || toSortable(date) < toSortable(oldestWarehouseDate)) {
+                      oldestWarehouseDate = date;
+                    }
+                  }
+                }
+              }
+
+              if (!oldestWarehouseDate) continue;
+
+              // Check if ANY delivery date is NEWER than oldest warehouse date
+              let hasNewerDeliveryDate = false;
+              for (const date of datesSorted) {
+                for (const entry of itemData.dates[date]) {
+                  if (entry.isDelivery && toSortable(date) > toSortable(oldestWarehouseDate)) {
+                    hasNewerDeliveryDate = true;
+                    break;
+                  }
+                }
+                if (hasNewerDeliveryDate) break;
+              }
+
+              // If newer delivery dates exist, oldest warehouse items are OOR
+              // But NEVER report HOLD items - they are included in date math only
+              if (hasNewerDeliveryDate) {
+                // Collect which delivery rooms triggered the OOR
+                const triggeringRooms = new Set();
+                for (const date of datesSorted) {
+                  for (const entry of itemData.dates[date]) {
+                    if (entry.isDelivery && toSortable(date) > toSortable(oldestWarehouseDate)) {
+                      triggeringRooms.add(entry.location);
+                    }
+                  }
+                }
+
+                for (const entry of itemData.dates[oldestWarehouseDate]) {
+                  // Skip delivery locations AND skip HOLD locations from reporting
+                  if (!entry.isDelivery && !entry.isHold) {
+                    results.push({ ...entry, deliveryRooms: Array.from(triggeringRooms) });
+                  }
+                }
+              }
+            }
+            
+            return results;
+          };
+
+          // Run analysis on Harvest Dates
+          const harvestOORItems = runFIFOAnalysis('harvest');
+          for (const item of harvestOORItems) {
+            const uniqueKey = `${item.item}_${item.lot}_${item.location}`;
+            if (!uniqueKeys.has(uniqueKey)) {
+              oorItems.push(item);
+              uniqueKeys.add(uniqueKey);
+            }
+          }
+
+          // Run analysis on Expiration Dates
+          const expirationOORItems = runFIFOAnalysis('expiration');
+          for (const item of expirationOORItems) {
+            const uniqueKey = `${item.item}_${item.lot}_${item.location}`;
+            if (!uniqueKeys.has(uniqueKey)) {
+              oorItems.push(item);
+              uniqueKeys.add(uniqueKey);
+            }
+          }
+
+          setOorItems(oorItems.sort((a, b) => a.item === b.item ? a.dateKey.localeCompare(b.dateKey) : a.item.localeCompare(b.item)));
+          setOorMessage(`✅ Analysis Complete: ${oorItems.length} Out of Rotation items found (Harvest + Expiration)`);
+          setTimeout(() => setOorMessage(null), 4000);
+        } catch (err) {
+          setOorMessage(`❌ Error: ${err.message}`);
+          console.error('FIFO OOR analysis error:', err);
+        } finally {
+          setOorLoading(false);
+        }
+      };
+
+      const filterOORByLocation = (room) => {
+        if (room === 'all') return oorItems;
+        return oorItems.filter(item => item.deliveryRooms && item.deliveryRooms.includes(room));
+      };
+
+      const exportOORAsCSV = () => {
+        if (oorItems.length === 0) {
+          alert('No OOR items to export');
+          return;
+        }
+
+        const headers = ['Item#', 'Description', 'PO#', 'Lot#', 'Location', 'Harvest Date', 'Expiration Date', 'Delivery Room'];
+        const rows = oorItems.map(item => [
+          item.item,
+          item.description,
+          item.po,
+          item.lot,
+          item.location,
+          item.harvestDate,
+          item.expireDate,
+          item.deliveryRooms ? item.deliveryRooms.join(', ') : ''
+        ]);
+
+        const csvContent = [headers, ...rows].map(row => row.map(cell => `"${cell}"`).join(',')).join('\n');
+        const blob = new Blob([csvContent], { type: 'text/csv' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `OOR_Report_${new Date().toISOString().split('T')[0]}.csv`;
+        a.click();
+        window.URL.revokeObjectURL(url);
+      };
+
+      const clearOORItems = () => {
+        if (confirm('Clear all Out of Rotation items?')) {
+          setOorItems([]);
+          setOorMessage('✅ OOR list cleared');
+          setTimeout(() => setOorMessage(null), 2000);
+        }
+      };
 // ── 5S Program Functions ──
       const loadFiveSAudits = async (zone, from, to) => {
         try {
@@ -1876,7 +2138,9 @@ const [assignFiveSZone, setAssignFiveSZone] = useState("");
             standardize_score: fiveSAuditScores.standardize,
             sustain_score: fiveSAuditScores.sustain,
             notes: fiveSAuditNotes,
-            findings: fiveSAuditFindings
+            findings: fiveSAuditFindings,
+            issue_photos: fiveSIssuePhotos,
+            fix_photos: fiveSFixPhotos
           });
           if (audit && fiveSNewTasks.length > 0) {
             for (const t of fiveSNewTasks) {
@@ -1898,7 +2162,7 @@ const fiveSAdminTargets = (Array.isArray(users) ? users : [])
   .map(u => u.name);
 
 _sendPush({
-  title: "🧹 5S Audit Complete",
+  title: "5S Audit Complete",
   body: `${userName} completed ${fiveSAuditZone}: ${audit.total_score}/25`,
   type: "completed",
   targetUsers: fiveSAdminTargets
@@ -2062,6 +2326,9 @@ const removeFiveSFindingPhoto = (index) => {
             adapterRef.current = adapter;
             setConnectionMode(adapter.kind);
             await adapter.init();
+            // Load settings on startup so permissions are available immediately
+            const initSettings = await adapter.loadSettings();
+            _updateSysSettings(initSettings);
             await loadAll();
             await loadUsersAndAssignments();
             await loadBreaks().catch(console.error);
@@ -2597,6 +2864,23 @@ const removeFiveSFindingPhoto = (index) => {
         return () => { clearTimeout(initTimer); clearInterval(hourTimer); };
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [sysSettings]);
+      const _rolePerms = useMemo(() => {
+        const saved = safeJsonParse(sysSettings.role_permissions, null);
+        return saved || DEFAULT_ROLE_PERMISSIONS;
+      }, [sysSettings]);
+
+      const hasFeature = (feature) => {
+        if (canSuperuser) return true;
+        // Check user-level permissions first (overrides role)
+        const userPerms = safeJsonParse(sysSettings.user_permissions, null);
+        if (userPerms && userPerms[userName] && userPerms[userName][feature] !== undefined) {
+          return !!userPerms[userName][feature];
+        }
+        // Fall back to role permissions
+        const perms = _rolePerms[userRole] || {};
+        return !!perms[feature];
+      };
+
       const canWarehouseAct = userRole === "warehouse" || userRole === "supervisor" || userRole === "admin" || userRole === "superuser";
       const canSupervisor = userRole === "supervisor" || userRole === "admin" || userRole === "superuser";
       const canAdmin = userRole === "admin" || userRole === "superuser";
@@ -3776,7 +4060,7 @@ const all = [
               </div>
 
               <div className="wd-nav">
-                {(userRole==="room"||userRole==="supervisor"||userRole==="admin"||userRole==="superuser") && (
+                {hasFeature("new_request") && (
                   <button className="wd-nav-btn" onClick={()=>setRoute("form")}
                     style={{background:'linear-gradient(135deg,#00ff88,#00cc6f)',border:'none',color:'#0a0e1a'}}>
                     + New
@@ -3792,7 +4076,7 @@ const all = [
                   style={{background:'transparent',border:'1px solid rgba(0,255,136,0.25)',color:'#8b9dc3'}}>
                   Board
                 </button>
-                {(userRole==="warehouse"||userRole==="supervisor"||userRole==="admin"||userRole==="superuser") && (
+                {hasFeature("dashboard") && (
                   <button className="wd-nav-btn" onClick={()=>setRoute("dashboard")}
                     style={{background:'transparent',border:'1px solid rgba(0,255,136,0.25)',color:'#00ff88'}}>
                     Dashboard
@@ -3802,25 +4086,24 @@ const all = [
                   style={{background:'transparent',border:'1px solid rgba(0,255,136,0.25)',color:'#00ff88'}}>
                   Completed
                 </button>
-                {canSupervisor && (
+                {hasFeature("assignments") && (
                   <button className="wd-nav-btn" onClick={()=>setRoute("assignments")}
                     style={{background:'transparent',border:'1px solid rgba(56,189,248,0.35)',color:'#38bdf8'}}>
                     Assignments
                   </button>
                 )}
-                {canSupervisor && (
+                {hasFeature("preplist") && (
                   <button className="wd-nav-btn" onClick={()=>{loadPrepLists();setRoute("preplist")}}
                     style={{background:'transparent',border:'1px solid rgba(167,139,250,0.5)',color:'#a78bfa'}}>
-                    🅰️ Prep List
+                    Operations
                   </button>
                 )}
-{(userRole==="warehouse"||userRole==="supervisor"||userRole==="admin"||userRole==="superuser") && (
+                {hasFeature("fives") && (
                   <button className="wd-nav-btn" onClick={()=>{loadFiveSAudits();loadFiveSTasks();setRoute("fives")}}
                     style={{background:'transparent',border:'1px solid rgba(0,255,136,0.5)',color:'#00ff88'}}>
-                    🧹 5S
+                    5S
                   </button>
                 )}
-
                 {canAdmin && (
                   <button className="wd-nav-btn" onClick={()=>setRoute("admin")}
                     style={{background:'transparent',border:'1px solid rgba(255,68,68,0.5)',color:'#ff4444'}}>
@@ -3999,7 +4282,7 @@ const all = [
                     + NEW
                   </button>
                 )}
-                {(userRole==="warehouse"||userRole==="supervisor"||userRole==="admin"||userRole==="superuser") && (
+                {hasFeature("picklist") && (
                   <button className="wd-nav-btn" onClick={()=>setRoute("picklist")}
                     style={{background:'transparent',border:'1px solid rgba(0,255,136,0.4)',color:'#00ff88'}}>
                     Pick List
@@ -4009,7 +4292,7 @@ const all = [
                   style={{background:'transparent',border:'1px solid rgba(0,255,136,0.25)',color:'#8b9dc3'}}>
                   Board
                 </button>
-                {(userRole==="supervisor"||userRole==="admin"||userRole==="superuser") && (
+                {hasFeature("dashboard") && (
                   <button className="wd-nav-btn" onClick={()=>setRoute("dashboard")}
                     style={{background:'transparent',border:'1px solid rgba(0,255,136,0.25)',color:'#00ff88'}}>
                     Dashboard
@@ -4019,8 +4302,8 @@ const all = [
                   style={{background:'transparent',border:'1px solid rgba(0,255,136,0.25)',color:'#00ff88'}}>
                   Completed
                 </button>
-                {(userRole==="supervisor"||userRole==="admin"||userRole==="superuser") && (
-                  <button className="wd-nav-btn" onClick={()=>setRoute("assignments")}
+               {hasFeature("preplist") && (
+                  <button className="wd-nav-btn" onClick={()=>{loadPrepLists();setRoute("preplist")}}
                     style={{background:'transparent',border:'1px solid rgba(56,189,248,0.35)',color:'#38bdf8'}}>
                     Assignments
                   </button>
@@ -4028,13 +4311,13 @@ const all = [
                 {(userRole==="supervisor"||userRole==="admin"||userRole==="superuser") && (
                   <button className="wd-nav-btn" onClick={()=>{loadPrepLists();setRoute("preplist")}}
                     style={{background:'transparent',border:'1px solid rgba(167,139,250,0.5)',color:'#a78bfa'}}>
-                    🅰️ Prep List
+                    Operations
                   </button>
                 )}
                   {(userRole==="warehouse"||userRole==="supervisor"||userRole==="admin"||userRole==="superuser") && (
                   <button className="wd-nav-btn" onClick={()=>{loadFiveSAudits();loadFiveSTasks();setRoute("fives")}}
                     style={{background:'transparent',border:'1px solid rgba(0,255,136,0.5)',color:'#00ff88'}}>
-                    🧹 5S
+                    5S
                   </button>
  )}
                 {(userRole==="admin"||userRole==="superuser") && (
@@ -5452,6 +5735,9 @@ ${sortedCompleted.map(r => {
               { key:"shift_2_start", label:"2nd Shift Start", unit:"", desc:"When second shift begins", type:"time" },
               { key:"shift_2_end", label:"2nd Shift End", unit:"", desc:"When second shift ends", type:"time" },
             ]},
+          { id:"access", title:"Access Control", icon:"🔐", color:"#38bdf8",
+            desc:"Control which features each role can access. Superuser always has full access.",
+            items:[] },
           { id:"sounds", title:"Notification Sounds", icon:"🔊", color:"#a78bfa",
             desc:"Upload custom sounds for each notification type. Stored in Supabase — applies instantly to all devices.",
             items:[] },
@@ -5637,6 +5923,242 @@ ${sortedCompleted.map(r => {
                     </div>
                   )}
 
+                  {activeSettingsTab==="access" && (() => {
+                    const FEATURES = [
+                      { key:"new_request", label:"New Request",   icon:"➕" },
+                      { key:"picklist",    label:"Pick List",     icon:"📋" },
+                      { key:"board",       label:"Board",         icon:"📌" },
+                      { key:"dashboard",   label:"Dashboard",     icon:"📊" },
+                      { key:"completed",   label:"Completed",     icon:"✅" },
+                      { key:"assignments", label:"Assignments",   icon:"🗂️" },
+                      { key:"preplist",    label:"Operations",    icon:"⚙️" },
+                      { key:"fives",       label:"5S Program",    icon:"🧹" },
+                      { key:"breaks",      label:"Break Tracking",icon:"🍵" },
+                      { key:"chat",        label:"Chat",          icon:"💬" },
+                    ];
+                    const ROLES = ["room","warehouse","supervisor","admin"];
+                    const ROLE_COLORS = { room:"#8b9dc3", warehouse:"#fbbf24", supervisor:"#a78bfa", admin:"#ff4444" };
+                    const ROLE_EMOJIS = { room:"🍽️", warehouse:"📦", supervisor:"🧭", admin:"🔧" };
+                    const currentPerms = safeJsonParse(sysSettings.role_permissions, null) || DEFAULT_ROLE_PERMISSIONS;
+                    const currentUserPerms = safeJsonParse(sysSettings.user_permissions, null) || {};
+                    const activeUserPerms = pendingUserPerms || currentUserPerms;
+                    const hasPendingChanges = pendingUserPerms !== null;
+
+                    const togglePerm = async (role, feature) => {
+                      const next = JSON.parse(JSON.stringify(currentPerms));
+                      if (!next[role]) next[role] = {};
+                      next[role][feature] = !next[role][feature];
+                      await adapterRef.current.saveSetting('role_permissions', JSON.stringify(next), userName);
+                      const fresh = await adapterRef.current.loadSettings();
+                      _updateSysSettings(fresh);
+                    };
+
+                    const toggleUserPerm = (targetUser, feature) => {
+                      const base = pendingUserPerms || JSON.parse(JSON.stringify(currentUserPerms));
+                      const next = JSON.parse(JSON.stringify(base));
+                      if (!next[targetUser]) next[targetUser] = {};
+                      const targetUserObj = users.find(u => u.name === targetUser);
+                      const roleDefault = !!(currentPerms[targetUserObj?.role]?.[feature]);
+                      const current = next[targetUser][feature] !== undefined ? next[targetUser][feature] : roleDefault;
+                      next[targetUser][feature] = !current;
+                      setPendingUserPerms(next);
+                      setUserPermsSaved(false);
+                    };
+
+                    const saveUserPerms = async () => {
+                      const toSave = pendingUserPerms || currentUserPerms;
+                      await adapterRef.current.saveSetting('user_permissions', JSON.stringify(toSave), userName);
+                      const fresh = await adapterRef.current.loadSettings();
+                      _updateSysSettings(fresh);
+                      setPendingUserPerms(null);
+                      setUserPermsSaved(true);
+                      setTimeout(() => setUserPermsSaved(false), 2000);
+                    };
+
+                    const clearUserPerms = async (targetUser) => {
+                      if (!confirm(`Reset ${targetUser} to their role defaults?`)) return;
+                      const base = pendingUserPerms || JSON.parse(JSON.stringify(currentUserPerms));
+                      const next = JSON.parse(JSON.stringify(base));
+                      delete next[targetUser];
+                      await adapterRef.current.saveSetting('user_permissions', JSON.stringify(next), userName);
+                      const fresh = await adapterRef.current.loadSettings();
+                      _updateSysSettings(fresh);
+                      setPendingUserPerms(null);
+                    };
+
+                    const resetPerms = async () => {
+                      if (!confirm('Reset all role permissions to defaults?')) return;
+                      await adapterRef.current.saveSetting('role_permissions', JSON.stringify(DEFAULT_ROLE_PERMISSIONS), userName);
+                      const fresh = await adapterRef.current.loadSettings();
+                      _updateSysSettings(fresh);
+                    };
+
+                    const nonSuperUsers = users.filter(u => u.role !== 'superuser');
+                    const selectedUserObj = nonSuperUsers.find(u => u.name === selectedUser);
+
+                    return (
+                      <div>
+                        {/* Sub-tabs: By Role / By User */}
+                        <div style={{ display:'flex', gap:'0.5rem', marginBottom:'1.25rem' }}>
+                          {['role','user'].map(t => (
+                            <button key={t} onClick={() => setAccessTab(t)}
+                              style={{ padding:'0.5rem 1.25rem', borderRadius:'8px', border:'none', cursor:'pointer', fontWeight:900, fontSize:'0.8rem', textTransform:'uppercase',
+                                background: accessTab===t ? '#38bdf8' : 'rgba(56,189,248,0.08)',
+                                color: accessTab===t ? '#0f172a' : '#38bdf8' }}>
+                              {t === 'role' ? '👥 By Role' : '👤 By User'}
+                            </button>
+                          ))}
+                        </div>
+
+                        {/* BY ROLE TAB */}
+                        {accessTab === 'role' && (
+                          <div>
+                            <div style={{ overflowX:'auto' }}>
+                              <table style={{ width:'100%', borderCollapse:'collapse', minWidth:'500px' }}>
+                                <thead>
+                                  <tr>
+                                    <th style={{ padding:'0.6rem 0.75rem', textAlign:'left', color:'#64748b', fontSize:'0.7rem', textTransform:'uppercase', letterSpacing:'0.05em', fontWeight:900, borderBottom:'2px solid #1e293b' }}>Feature</th>
+                                    {ROLES.map(role => (
+                                      <th key={role} style={{ padding:'0.6rem 0.75rem', textAlign:'center', color:ROLE_COLORS[role], fontSize:'0.7rem', textTransform:'uppercase', letterSpacing:'0.05em', fontWeight:900, borderBottom:'2px solid #1e293b', whiteSpace:'nowrap' }}>
+                                        {ROLE_EMOJIS[role]} {role}
+                                      </th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {FEATURES.map((f, idx) => (
+                                    <tr key={f.key} style={{ background: idx%2===0 ? 'transparent' : 'rgba(56,189,248,0.02)', borderBottom:'1px solid #1e293b' }}>
+                                      <td style={{ padding:'0.7rem 0.75rem', color:'#e2e8f0', fontSize:'0.82rem', fontWeight:700 }}>
+                                        {f.icon} {f.label}
+                                      </td>
+                                      {ROLES.map(role => {
+                                        const enabled = !!(currentPerms[role]?.[f.key]);
+                                        return (
+                                          <td key={role} style={{ padding:'0.7rem 0.75rem', textAlign:'center' }}>
+                                            <button onClick={() => togglePerm(role, f.key)}
+                                              style={{ width:36, height:36, borderRadius:'8px', border:'none', cursor:'pointer', fontSize:'1rem',
+                                                background: enabled ? `${ROLE_COLORS[role]}22` : 'rgba(51,65,85,0.4)',
+                                                boxShadow: enabled ? `0 0 0 2px ${ROLE_COLORS[role]}` : '0 0 0 1px #334155',
+                                                transition:'all 0.15s' }}>
+                                              {enabled ? '✓' : ''}
+                                            </button>
+                                          </td>
+                                        );
+                                      })}
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                            <div style={{ marginTop:'1rem', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                              <div style={{ color:'#475569', fontSize:'0.72rem' }}>Superuser always has full access regardless of settings.</div>
+                              <button onClick={resetPerms}
+                                style={{ padding:'0.5rem 1rem', background:'transparent', border:'1px solid #ff4444', borderRadius:'8px', color:'#ff4444', fontWeight:900, cursor:'pointer', fontSize:'0.75rem' }}>
+                                Reset Defaults
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* BY USER TAB */}
+                        {accessTab === 'user' && (
+                          <div>
+                            {/* User Selector */}
+                            <div style={{ display:'flex', gap:'0.75rem', alignItems:'center', marginBottom:'1.25rem', flexWrap:'wrap' }}>
+                              <select value={selectedUser} onChange={e => setSelectedUser(e.target.value)}
+                                style={{ padding:'0.6rem 1rem', background:'#1e293b', border:'1px solid #334155', borderRadius:'8px', color:'#e2e8f0', fontSize:'0.85rem', cursor:'pointer', minWidth:'200px' }}>
+                                <option value="">— Select a user —</option>
+                                {nonSuperUsers.map(u => (
+                                  <option key={u.id} value={u.name}>
+                                    {u.name} ({u.role})
+                                  </option>
+                                ))}
+                              </select>
+                              {selectedUser && currentUserPerms[selectedUser] && (
+                                <button onClick={() => clearUserPerms(selectedUser)}
+                                  style={{ padding:'0.5rem 1rem', background:'transparent', border:'1px solid #ff4444', borderRadius:'8px', color:'#ff4444', fontWeight:900, cursor:'pointer', fontSize:'0.75rem' }}>
+                                  Reset to Role Defaults
+                                </button>
+                              )}
+                              {hasPendingChanges && (
+                                <button onClick={saveUserPerms}
+                                  style={{ padding:'0.5rem 1.25rem', background:'linear-gradient(135deg,#00ff88,#00cc66)', border:'none', borderRadius:'8px', color:'#0f172a', fontWeight:900, cursor:'pointer', fontSize:'0.75rem' }}>
+                                  💾 Save Changes
+                                </button>
+                              )}
+                              {userPermsSaved && (
+                                <span style={{ color:'#00ff88', fontWeight:900, fontSize:'0.8rem' }}>✅ Saved!</span>
+                              )}
+                            </div>
+
+                            {!selectedUser && (
+                              <div style={{ textAlign:'center', color:'#475569', padding:'2rem', border:'1px dashed #1e293b', borderRadius:'12px' }}>
+                                Select a user above to manage their individual feature access
+                              </div>
+                            )}
+
+                            {selectedUser && selectedUserObj && (
+                              <div>
+                                <div style={{ marginBottom:'0.75rem', fontSize:'0.75rem', color:'#64748b' }}>
+                                  Showing permissions for <span style={{ color: ROLE_COLORS[selectedUserObj.role] || '#e2e8f0', fontWeight:900 }}>
+                                    {ROLE_EMOJIS[selectedUserObj.role] || ''} {selectedUser}
+                                  </span> — role: <span style={{ color: ROLE_COLORS[selectedUserObj.role] || '#e2e8f0', fontWeight:900 }}>{selectedUserObj.role}</span>.
+                                  {currentUserPerms[selectedUser] || hasPendingChanges ? ' (Has custom overrides)' : ' (Using role defaults)'}
+                                </div>
+                                <div style={{ overflowX:'auto' }}>
+                                  <table style={{ width:'100%', borderCollapse:'collapse' }}>
+                                    <thead>
+                                      <tr>
+                                        <th style={{ padding:'0.6rem 0.75rem', textAlign:'left', color:'#64748b', fontSize:'0.7rem', textTransform:'uppercase', fontWeight:900, borderBottom:'2px solid #1e293b' }}>Feature</th>
+                                        <th style={{ padding:'0.6rem 0.75rem', textAlign:'center', color:'#64748b', fontSize:'0.7rem', textTransform:'uppercase', fontWeight:900, borderBottom:'2px solid #1e293b' }}>Role Default</th>
+                                        <th style={{ padding:'0.6rem 0.75rem', textAlign:'center', color:'#38bdf8', fontSize:'0.7rem', textTransform:'uppercase', fontWeight:900, borderBottom:'2px solid #1e293b' }}>User Override</th>
+                                        <th style={{ padding:'0.6rem 0.75rem', textAlign:'center', color:'#00ff88', fontSize:'0.7rem', textTransform:'uppercase', fontWeight:900, borderBottom:'2px solid #1e293b' }}>Effective</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {FEATURES.map((f, idx) => {
+                                        const roleDefault = !!(currentPerms[selectedUserObj.role]?.[f.key]);
+                                        const hasOverride = activeUserPerms[selectedUser]?.[f.key] !== undefined;
+                                        const overrideVal = hasOverride ? !!activeUserPerms[selectedUser][f.key] : null;
+                                        const effective = overrideVal !== null ? overrideVal : roleDefault;
+                                        return (
+                                          <tr key={f.key} style={{ background: idx%2===0 ? 'transparent' : 'rgba(56,189,248,0.02)', borderBottom:'1px solid #1e293b' }}>
+                                            <td style={{ padding:'0.7rem 0.75rem', color:'#e2e8f0', fontSize:'0.82rem', fontWeight:700 }}>
+                                              {f.icon} {f.label}
+                                            </td>
+                                            <td style={{ padding:'0.7rem 0.75rem', textAlign:'center', color: roleDefault ? '#00ff88' : '#475569', fontSize:'0.85rem' }}>
+                                              {roleDefault ? '✓' : '✗'}
+                                            </td>
+                                            <td style={{ padding:'0.7rem 0.75rem', textAlign:'center' }}>
+                                              <button onClick={() => toggleUserPerm(selectedUser, f.key)}
+                                                style={{ width:36, height:36, borderRadius:'8px', border:'none', cursor:'pointer', fontSize:'0.85rem', fontWeight:900,
+                                                  background: hasOverride ? (overrideVal ? 'rgba(56,189,248,0.15)' : 'rgba(239,68,68,0.15)') : 'rgba(51,65,85,0.3)',
+                                                  boxShadow: hasOverride ? (overrideVal ? '0 0 0 2px #38bdf8' : '0 0 0 2px #ef4444') : '0 0 0 1px #334155',
+                                                  color: hasOverride ? (overrideVal ? '#38bdf8' : '#ef4444') : '#475569',
+                                                  transition:'all 0.15s' }}>
+                                                {hasOverride ? (overrideVal ? '✓' : '✗') : '—'}
+                                              </button>
+                                            </td>
+                                            <td style={{ padding:'0.7rem 0.75rem', textAlign:'center', color: effective ? '#00ff88' : '#ef4444', fontWeight:900, fontSize:'0.85rem' }}>
+                                              {effective ? '✓' : '✗'}
+                                            </td>
+                                          </tr>
+                                        );
+                                      })}
+                                    </tbody>
+                                  </table>
+                                </div>
+                                <div style={{ marginTop:'0.75rem', color:'#475569', fontSize:'0.72rem' }}>
+                                  — = using role default &nbsp;|&nbsp; ✓/✗ = custom override set &nbsp;|&nbsp; Effective = what the user actually sees
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+
                   {activeSettingsTab==="sounds" && (() => {
                     const SOUND_TYPES = [
                       { key:"new_request",   label:"New Request",    icon:"📦", desc:"Warehouse gets a new delivery request" },
@@ -5750,13 +6272,13 @@ ${sortedCompleted.map(r => {
           <div style={{ minHeight:'100vh', ...bg, padding:'1.5rem', position:'relative', overflow:'hidden' }}>
             <div style={gridOverlay} />
             <div style={{ maxWidth:'1200px', margin:'0 auto', position:'relative', zIndex:1 }}>
-              <EnhancedHeader title="🅰️ AI Prep List" description="Generate prep lists from historical data" />
+              <EnhancedHeader title="Operations" description="Prep lists, current demand, and out of rotation analysis" />
 
               {/* Generate Buttons */}
               {!editingPrepList && (
                 <div style={{ marginBottom:'1.5rem', padding:'1.25rem', background:'rgba(167,139,250,0.08)', border:'1px solid rgba(167,139,250,0.3)', borderRadius:'14px' }}>
                   <div style={{ color:'#a78bfa', fontWeight:900, fontSize:'0.9rem', marginBottom:'1rem', textTransform:'uppercase', letterSpacing:'0.06em' }}>
-                    Generate Prep List / Current Demand
+                    OPERATIONS
                   </div>
                   <div style={{ display:'flex', gap:'1rem', flexWrap:'wrap' }}>
                     <button onClick={() => generatePrepList('1st')} disabled={prepListLoading}
@@ -5771,12 +6293,94 @@ ${sortedCompleted.map(r => {
                       style={{ padding:'1rem 1.5rem', background:'linear-gradient(135deg, #38bdf8 0%, #0ea5e9 100%)', border:'none', borderRadius:'12px', color:'#fff', fontWeight:900, fontSize:'0.95rem', cursor: prepListLoading ? 'wait' : 'pointer', opacity: prepListLoading ? 0.6 : 1 }}>
                       {prepListLoading ? '⏳ Analyzing...' : '📊 Current Demand'}
                     </button>
+                    <input type="file" accept=".csv" id="oor-csv-input" style={{ display:'none' }} onChange={(e) => {
+                      if (e.target.files[0]) analyzeFIFOOOR(e.target.files[0]);
+                      e.target.value = '';
+                    }} />
+                    <button onClick={() => document.getElementById('oor-csv-input').click()} disabled={oorLoading}
+                      style={{ padding:'1rem 1.5rem', background:'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)', border:'none', borderRadius:'12px', color:'#fff', fontWeight:900, fontSize:'0.95rem', cursor: oorLoading ? 'wait' : 'pointer', opacity: oorLoading ? 0.6 : 1 }}>
+                      {oorLoading ? '⏳ Loading...' : '🚫 Out of Rotation'}
+                    </button>
                   </div>
                   {prepListError && (
                     <div style={{ marginTop:'1rem', padding:'0.75rem', background:'rgba(255,68,68,0.1)', border:'1px solid #ff4444', borderRadius:'8px', color:'#ff4444', fontSize:'0.85rem' }}>
                       ⚠️ {prepListError}
                     </div>
                   )}
+                  {oorMessage && (
+                    <div style={{ marginTop:'1rem', padding:'0.75rem', background: oorMessage.includes('✅') ? 'rgba(16,185,129,0.1)' : 'rgba(255,68,68,0.1)', border: oorMessage.includes('✅') ? '1px solid #10b981' : '1px solid #ff4444', borderRadius:'8px', color: oorMessage.includes('✅') ? '#10b981' : '#ff4444', fontSize:'0.85rem' }}>
+                      {oorMessage}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Out of Rotation Items Display */}
+              {oorItems.length > 0 && !editingPrepList && (
+                <div style={{ marginBottom:'1.5rem', padding:'1.25rem', background:'rgba(239,68,68,0.08)', border:'1px solid rgba(239,68,68,0.3)', borderRadius:'14px' }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'1rem', flexWrap:'wrap', gap:'0.75rem' }}>
+                    <div style={{ color:'#ef4444', fontWeight:900, fontSize:'0.9rem', textTransform:'uppercase', letterSpacing:'0.06em' }}>
+                      🚫 Out of Rotation ({oorItems.length} items)
+                    </div>
+                    <div style={{ display:'flex', gap:'0.5rem', flexWrap:'wrap' }}>
+                      <select value={oorLocationFilter} onChange={(e) => setOorLocationFilter(e.target.value)}
+                        style={{ padding:'0.5rem', background:'#1e293b', border:'1px solid #334155', borderRadius:'8px', color:'#e2e8f0', fontSize:'0.8rem', cursor:'pointer' }}>
+                        <option value="all">All Rooms</option>
+                        <option value="PRECLAM">PRECLAM (Salad)</option>
+                        <option value="PREBISTRO">PREBISTRO (Bistro)</option>
+                        <option value="PREPWIP">PREPWIP (Bistro)</option>
+                        <option value="PREAPPLE">PREAPPLE (Apple)</option>
+                        <option value="PREPACK">PREPACK (MasterPacks)</option>
+                        <option value="MASTERPKS">MASTERPKS (MasterPacks)</option>
+                      </select>
+                      <button onClick={exportOORAsCSV} style={{ padding:'0.5rem 1rem', background:'#10b981', border:'none', borderRadius:'8px', color:'#fff', fontWeight:900, fontSize:'0.8rem', cursor:'pointer' }}>
+                        📥 Export CSV
+                      </button>
+                      <button onClick={clearOORItems} style={{ padding:'0.5rem 1rem', background:'rgba(239,68,68,0.2)', border:'1px solid #ef4444', borderRadius:'8px', color:'#ef4444', fontWeight:900, fontSize:'0.8rem', cursor:'pointer' }}>
+                        Clear List
+                      </button>
+                    </div>
+                  </div>
+
+                  <div style={{ overflowX:'auto', marginTop:'1rem' }}>
+                    <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'0.75rem', color:'#e2e8f0' }}>
+                      <thead>
+                        <tr style={{ background:'rgba(239,68,68,0.2)', borderBottom:'1px solid #ef4444' }}>
+                          <th style={{ padding:'0.5rem', textAlign:'left', fontWeight:900 }}>Item#</th>
+                          <th style={{ padding:'0.5rem', textAlign:'left', fontWeight:900 }}>Description</th>
+                          <th style={{ padding:'0.5rem', textAlign:'left', fontWeight:900 }}>PO#</th>
+                          <th style={{ padding:'0.5rem', textAlign:'left', fontWeight:900 }}>Lot#</th>
+                          <th style={{ padding:'0.5rem', textAlign:'left', fontWeight:900 }}>Location</th>
+                          <th style={{ padding:'0.5rem', textAlign:'left', fontWeight:900 }}>Harvest</th>
+                          <th style={{ padding:'0.5rem', textAlign:'left', fontWeight:900 }}>Expire</th>
+                          <th style={{ padding:'0.5rem', textAlign:'left', fontWeight:900 }}>Delivery Room</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filterOORByLocation(oorLocationFilter).length === 0 ? (
+                          <tr><td colSpan="8" style={{ padding:'1rem', textAlign:'center', color:'#94a3b8' }}>No items in selected room</td></tr>
+                        ) : (
+                          filterOORByLocation(oorLocationFilter).map((item, idx) => (
+                            <tr key={idx} style={{ borderBottom:'1px solid #1e293b', background: idx % 2 === 0 ? 'rgba(15,23,42,0.3)' : 'transparent' }}>
+                              <td style={{ padding:'0.4rem 0.5rem', fontWeight:900, color:'#fbbf24' }}>{item.item}</td>
+                              <td style={{ padding:'0.4rem 0.5rem' }}>{item.description}</td>
+                              <td style={{ padding:'0.4rem 0.5rem' }}>{item.po}</td>
+                              <td style={{ padding:'0.4rem 0.5rem' }}>{item.lot}</td>
+                              <td style={{ padding:'0.4rem 0.5rem', color:'#fbbf24', fontWeight:900 }}>{item.location}</td>
+                              <td style={{ padding:'0.4rem 0.5rem' }}>{item.harvestDate}</td>
+                              <td style={{ padding:'0.4rem 0.5rem', color: item.isExpired ? '#ef4444' : '#e2e8f0', fontWeight: item.isExpired ? 900 : 400 }}>
+                                {item.expireDate}
+                                {item.isExpired && <span style={{ marginLeft:'0.5rem', color:'#ef4444' }}>⚠️ EXPIRED</span>}
+                              </td>
+                              <td style={{ padding:'0.4rem 0.5rem', color:'#a78bfa', fontWeight:900 }}>
+                                {item.deliveryRooms ? item.deliveryRooms.join(', ') : ''}
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )}
 
@@ -6142,7 +6746,7 @@ fiveSAudits.forEach(a => {
     <div style={{ minHeight:'100vh', ...bg, padding:'1.5rem', position:'relative', overflow:'hidden' }}>
       <div style={gridOverlay} />
       <div style={{ maxWidth:'1200px', margin:'0 auto', position:'relative', zIndex:1 }}>
-        <EnhancedHeader title="🧹 5S Program" description="Zone audits, corrective actions & compliance tracking" />
+        <EnhancedHeader title="5S Program" description="Zone audits, corrective actions & compliance tracking" />
     <div style={{
   marginBottom:'1rem',
   padding:'1rem',
@@ -6277,9 +6881,9 @@ const score = avgInfo ? Math.round(avgInfo.total / avgInfo.count) : null;
 
                   {/* Findings */}
                   <div style={{ marginBottom:'1rem' }}>
-                    <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'0.5rem' }}>
-                      <div style={{ color:'#8b9dc3', fontWeight:900, fontSize:'0.75rem' }}>Findings / Observations</div>
-                      <label style={{ display:'inline-flex', alignItems:'center', gap:'0.3rem', padding:'0.3rem 0.7rem', background:'rgba(255,68,68,0.12)', border:'1px solid rgba(255,68,68,0.4)', borderRadius:'8px', color:'#ff4444', fontSize:'0.7rem', cursor:'pointer', fontWeight:700 }}>
+                    <div style={{ marginBottom:'0.5rem' }}>
+                      <div style={{ color:'#8b9dc3', fontWeight:900, fontSize:'0.75rem', marginBottom:'0.4rem' }}>Findings / Observations</div>
+                      <label style={{ display:'inline-flex', alignItems:'center', gap:'0.3rem', padding:'0.35rem 0.75rem', background:'rgba(255,68,68,0.12)', border:'1px solid rgba(255,68,68,0.4)', borderRadius:'8px', color:'#ff4444', fontSize:'0.72rem', cursor:'pointer', fontWeight:700 }}>
                         📷 Photo of Issue
                         <input type="file" accept="image/*" capture="environment" style={{ display:'none' }} onChange={async (e) => {
                           const file = e.target.files[0];
@@ -6304,32 +6908,34 @@ const score = avgInfo ? Math.round(avgInfo.total / avgInfo.count) : null;
                     )}
                     {fiveSAuditFindings.map((f, i) => (
                       <div key={i} style={{ marginBottom:'0.5rem' }}>
-                        <div style={{ display:'flex', gap:'0.4rem', marginBottom:'0.25rem', alignItems:'center' }}>
-                          <select value={f.pillar} onChange={(e) => { const next = [...fiveSAuditFindings]; next[i].pillar = e.target.value; setFiveSAuditFindings(next); }}
-                            style={{ background:'#0a0e1a', border:'1px solid #334155', borderRadius:'6px', color:'#e2e8f0', padding:'0.4rem', fontSize:'0.7rem' }}>
-                            {PILLARS.map(p => <option key={p} value={p}>{P_LABELS[p]}</option>)}
-                          </select>
-                          <select value={f.severity} onChange={(e) => { const next = [...fiveSAuditFindings]; next[i].severity = e.target.value; setFiveSAuditFindings(next); }}
-                            style={{ background:'#0a0e1a', border:'1px solid #334155', borderRadius:'6px', color:'#e2e8f0', padding:'0.4rem', fontSize:'0.7rem' }}>
-                            <option value="good">✅ Good</option>
-                            <option value="needs_work">⚠️ Needs Work</option>
-                            <option value="fail">🔴 Fail</option>
-                          </select>
+                       <div key={i} style={{ marginBottom:'0.25rem' }}>
+                          <div style={{ display:'flex', gap:'0.4rem', alignItems:'center', marginBottom:'0.3rem', flexWrap:'wrap' }}>
+                            <select value={f.pillar} onChange={(e) => { const next = [...fiveSAuditFindings]; next[i].pillar = e.target.value; setFiveSAuditFindings(next); }}
+                              style={{ background:'#0a0e1a', border:'1px solid #334155', borderRadius:'6px', color:'#e2e8f0', padding:'0.4rem', fontSize:'0.7rem', flex:'1 1 100px' }}>
+                              {PILLARS.map(p => <option key={p} value={p}>{P_LABELS[p]}</option>)}
+                            </select>
+                            <select value={f.severity} onChange={(e) => { const next = [...fiveSAuditFindings]; next[i].severity = e.target.value; setFiveSAuditFindings(next); }}
+                              style={{ background:'#0a0e1a', border:'1px solid #334155', borderRadius:'6px', color:'#e2e8f0', padding:'0.4rem', fontSize:'0.7rem', flex:'1 1 110px' }}>
+                              <option value="good">✅ Good</option>
+                              <option value="needs_work">⚠️ Needs Work</option>
+                              <option value="fail">🔴 Fail</option>
+                            </select>
+                            <label style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', padding:'0.4rem 0.6rem', background:'rgba(167,139,250,0.15)', border:'1px solid rgba(167,139,250,0.35)', borderRadius:'6px', color:'#a78bfa', fontSize:'0.75rem', cursor:'pointer', flexShrink:0 }}>
+                              📷
+                              <input type="file" accept="image/*" capture="environment" style={{ display:'none' }} onChange={async (e) => {
+                                const file = e.target.files[0];
+                                if (!file) return;
+                                const url = await uploadFiveSPhoto(file, 'audits');
+                                if (url) { const next = [...fiveSAuditFindings]; next[i].photo_url = url; setFiveSAuditFindings(next); }
+                                e.target.value = '';
+                              }} />
+                            </label>
+                            <button onClick={() => setFiveSAuditFindings(prev => prev.filter((_,j) => j !== i))}
+                              style={{ background:'rgba(255,68,68,0.15)', border:'1px solid rgba(255,68,68,0.3)', borderRadius:'6px', color:'#ff4444', padding:'0.4rem 0.6rem', cursor:'pointer', fontSize:'0.75rem', flexShrink:0 }}>✕</button>
+                          </div>
                           <input value={f.note} onChange={(e) => { const next = [...fiveSAuditFindings]; next[i].note = e.target.value; setFiveSAuditFindings(next); }}
                             placeholder="Observation..."
-                            style={{ flex:1, background:'#0a0e1a', border:'1px solid #334155', borderRadius:'6px', color:'#e2e8f0', padding:'0.4rem', fontSize:'0.7rem' }} />
-                          <label style={{ padding:'0.3rem 0.5rem', background:'rgba(167,139,250,0.15)', border:'1px solid rgba(167,139,250,0.35)', borderRadius:'6px', color:'#a78bfa', fontSize:'0.65rem', cursor:'pointer', whiteSpace:'nowrap', flexShrink:0 }}>
-                            📷
-                            <input type="file" accept="image/*" capture="environment" style={{ display:'none' }} onChange={async (e) => {
-                              const file = e.target.files[0];
-                              if (!file) return;
-                              const url = await uploadFiveSPhoto(file, 'audits');
-                              if (url) { const next = [...fiveSAuditFindings]; next[i].photo_url = url; setFiveSAuditFindings(next); }
-                              e.target.value = '';
-                            }} />
-                          </label>
-                          <button onClick={() => setFiveSAuditFindings(prev => prev.filter((_,j) => j !== i))}
-                            style={{ background:'rgba(255,68,68,0.15)', border:'1px solid rgba(255,68,68,0.3)', borderRadius:'6px', color:'#ff4444', padding:'0.3rem 0.5rem', cursor:'pointer', fontSize:'0.7rem' }}>✕</button>
+                            style={{ width:'100%', background:'#0a0e1a', border:'1px solid #334155', borderRadius:'6px', color:'#e2e8f0', padding:'0.4rem', fontSize:'0.7rem', boxSizing:'border-box' }} />
                         </div>
                         {f.photo_url && (
                           <div style={{ paddingLeft:'0.25rem' }}>
@@ -6347,9 +6953,9 @@ const score = avgInfo ? Math.round(avgInfo.total / avgInfo.count) : null;
 
                  {/* Corrective Tasks (created with this audit) */}
                   <div style={{ marginBottom:'1rem' }}>
-                    <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'0.5rem' }}>
-                      <div style={{ color:'#8b9dc3', fontWeight:900, fontSize:'0.75rem' }}>Corrective Action Tasks (optional)</div>
-                      <label style={{ display:'inline-flex', alignItems:'center', gap:'0.3rem', padding:'0.3rem 0.7rem', background:'rgba(0,255,136,0.1)', border:'1px solid rgba(0,255,136,0.35)', borderRadius:'8px', color:'#00ff88', fontSize:'0.7rem', cursor:'pointer', fontWeight:700 }}>
+                    <div style={{ marginBottom:'0.5rem' }}>
+                      <div style={{ color:'#8b9dc3', fontWeight:900, fontSize:'0.75rem', marginBottom:'0.4rem' }}>Corrective Action Tasks (optional)</div>
+                      <label style={{ display:'inline-flex', alignItems:'center', gap:'0.3rem', padding:'0.35rem 0.75rem', background:'rgba(0,255,136,0.1)', border:'1px solid rgba(0,255,136,0.35)', borderRadius:'8px', color:'#00ff88', fontSize:'0.72rem', cursor:'pointer', fontWeight:700 }}>
                         📷 Photo of Fix
                         <input type="file" accept="image/*" capture="environment" style={{ display:'none' }} onChange={async (e) => {
                           const file = e.target.files[0];
@@ -6634,7 +7240,29 @@ const score = avgInfo ? Math.round(avgInfo.total / avgInfo.count) : null;
                       ))}
                     </div>
                     <div style={{ fontSize:'0.65rem', color:'#8b9dc3' }}>{niceTime(a.audit_date)}</div>
-                    {a.notes && <div style={{ fontSize:'0.7rem', color:'#8b9dc3', marginTop:'0.2rem', fontStyle:'italic' }}>{a.notes}</div>}
+                   {a.notes && <div style={{ fontSize:'0.7rem', color:'#8b9dc3', marginTop:'0.2rem', fontStyle:'italic' }}>{a.notes}</div>}
+                    {Array.isArray(a.issue_photos) && a.issue_photos.length > 0 && (
+                      <div style={{ marginTop:'0.4rem' }}>
+                        <div style={{ fontSize:'0.6rem', color:'#ff4444', fontWeight:900, marginBottom:'0.25rem' }}>📷 ISSUE PHOTOS</div>
+                        <div style={{ display:'flex', gap:'0.4rem', flexWrap:'wrap' }}>
+                          {a.issue_photos.map((url, i) => (
+                            <img key={i} src={url} alt="issue" onClick={() => window.open(url, '_blank')}
+                              style={{ height:'64px', width:'64px', objectFit:'cover', borderRadius:'6px', border:'2px solid rgba(255,68,68,0.4)', cursor:'pointer' }} />
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {Array.isArray(a.fix_photos) && a.fix_photos.length > 0 && (
+                      <div style={{ marginTop:'0.4rem' }}>
+                        <div style={{ fontSize:'0.6rem', color:'#00ff88', fontWeight:900, marginBottom:'0.25rem' }}>📷 FIX PHOTOS</div>
+                        <div style={{ display:'flex', gap:'0.4rem', flexWrap:'wrap' }}>
+                          {a.fix_photos.map((url, i) => (
+                            <img key={i} src={url} alt="fix" onClick={() => window.open(url, '_blank')}
+                              style={{ height:'64px', width:'64px', objectFit:'cover', borderRadius:'6px', border:'2px solid rgba(0,255,136,0.4)', cursor:'pointer' }} />
+                          ))}
+                        </div>
+                      </div>
+                    )}
                     {Array.isArray(a.findings) && a.findings.length > 0 && (
                       <div style={{ marginTop:'0.3rem' }}>
                         {a.findings.map((f, i) => (
