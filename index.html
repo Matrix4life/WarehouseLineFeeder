@@ -4302,13 +4302,13 @@ const all = [
                   style={{background:'transparent',border:'1px solid rgba(0,255,136,0.25)',color:'#00ff88'}}>
                   Completed
                 </button>
-               {hasFeature("preplist") && (
-                  <button className="wd-nav-btn" onClick={()=>{loadPrepLists();setRoute("preplist")}}
-                    style={{background:'transparent',border:'1px solid rgba(56,189,248,0.35)',color:'#38bdf8'}}>
+               {hasFeature("assignments") && (
+                  <button className="wd-nav-btn" onClick={()=>setRoute("assignments")}
+                    style={{background:'transparent',border:'1px solid rgba(0,255,136,0.25)',color:'#00ff88'}}>
                     Assignments
                   </button>
                 )}
-                {(userRole==="supervisor"||userRole==="admin"||userRole==="superuser") && (
+                {hasFeature("preplist") && (
                   <button className="wd-nav-btn" onClick={()=>{loadPrepLists();setRoute("preplist")}}
                     style={{background:'transparent',border:'1px solid rgba(167,139,250,0.5)',color:'#a78bfa'}}>
                     Operations
