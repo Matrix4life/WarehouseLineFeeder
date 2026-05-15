@@ -1558,6 +1558,8 @@ const [assignFiveSZone, setAssignFiveSZone] = useState("");
       const [shiftFilter, setShiftFilter] = useState("all"); // all | 1st | 2nd
       const [dashRoomFilter, setDashRoomFilter] = useState("all"); // all | specific room
       const [assignSort, setAssignSort] = useState("shift"); // shift | room | name
+      const [cancelModalId, setCancelModalId] = useState(null);
+      const [cancelReason, setCancelReason] = useState("");
       const [loginError, setLoginError] = useState("");
       const [userSortBy, setUserSortBy] = useState("role"); // role | name | date
       const [userFilterRoles, setUserFilterRoles] = useState(["room", "warehouse", "supervisor", "admin"]);
@@ -3099,6 +3101,7 @@ else if (mins >= SLA_WARN) { bg="#22c55e"; fg="#0a0e1a"; label=fmtW(mins); }
               qty: totalTarget,
               adjQty: balanceQty,
               qtyHistory: inheritedHistory,
+              unit: completedRow.unit || 'cases',
               priority: completedRow.priority,
               comments: existingComments ? `${parentNote}\n${existingComments}` : parentNote,
               status: "pending",
@@ -3112,12 +3115,17 @@ else if (mins >= SLA_WARN) { bg="#22c55e"; fg="#0a0e1a"; label=fmtW(mins); }
               completedBy: null,
               cancelledAt: null,
               cancelledBy: null,
+              cancelReason: null,
               version: 1,
               lastUpdatedAt: nowIso()
             };
-            await adapterRef.current.upsert(balanceReq);
-            _notifyAV("new_request");
-            _showToast("🔄", `Balance created: ${balanceQty} × ${completedRow.item}`, `${completedRow.room} — from partial pick`, "#fbbf24", _onNotif);
+            try {
+              await adapterRef.current.upsert(balanceReq);
+              _notifyAV("new_request");
+              _showToast("🔄", `Balance created: ${balanceQty} × ${completedRow.item}`, `${completedRow.room} — from partial pick`, "#fbbf24", _onNotif);
+            } catch (balanceErr) {
+              console.error("Balance request creation failed:", balanceErr);
+            }
             }
           }
           await loadAll();
@@ -3126,7 +3134,7 @@ else if (mins >= SLA_WARN) { bg="#22c55e"; fg="#0a0e1a"; label=fmtW(mins); }
           console.error("Failed to complete request:", error);
         }
       };
-      const cancelRequest = async (id)=> {
+      const cancelRequest = async (id, reason)=> {
         if (!canWarehouseAct) return;
         try {
           await adapterRef.current.updatePartial(id, (r)=> {
@@ -3135,6 +3143,10 @@ else if (mins >= SLA_WARN) { bg="#22c55e"; fg="#0a0e1a"; label=fmtW(mins); }
             r.status = "cancelled";
             r.cancelledAt = nowIso();
             r.cancelledBy = userName;
+            r.cancelReason = reason || "";
+            if (reason) {
+              r.comments = (r.comments ? r.comments + " | " : "") + "Cancelled: " + reason;
+            }
             r.lastUpdatedAt = nowIso();
             return r;
           });
@@ -5330,7 +5342,7 @@ if (widgetId === 'five_s_overall' && dashboardLayout.visibility.five_s_overall !
                             <span style={{ color:'#ff9f43' }}>⚡ Pick Time</span> = claim → done &nbsp;·&nbsp; Top 5 per shift
                           </div>
                         </div>
-                        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(min(280px,100%),1fr))', gap:'1.5rem' }}>
+                        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(320px,1fr))', gap:'1.5rem' }}>
                           {topStaff1st.length > 0 && (
                             <div>
                               <div style={{ color:'#00ff88', fontWeight:900, fontSize:'0.82rem', textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:'0.75rem', paddingBottom:'0.4rem', borderBottom:'1px solid rgba(0,255,136,0.2)' }}>🟢 1st Shift</div>
@@ -5425,29 +5437,30 @@ if (widgetId === 'five_s_overall' && dashboardLayout.visibility.five_s_overall !
         const thisWeek = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
         const thisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
         const yesterday = getYesterday();
-        const completedReqs = [...requests, ...archivedRequests].filter(r => r.status === "completed");
+        const completedReqs = [...requests, ...archivedRequests].filter(r => r.status === "completed" || r.status === "cancelled");
         const filteredCompletedReqs = completedReqs.filter(r => {
-          const completed = new Date(r.completedAt);
-          if (timeFilter === "today")     return completed >= today;
-          if (timeFilter === "week")      return completed >= thisWeek;
-          if (timeFilter === "month")     return completed >= thisMonth;
-          if (timeFilter === "yesterday") return completed >= yesterday.start && completed <= yesterday.end;
+          const ts = new Date(r.completedAt || r.cancelledAt || r.submittedAt);
+          if (timeFilter === "today")     return ts >= today;
+          if (timeFilter === "week")      return ts >= thisWeek;
+          if (timeFilter === "month")     return ts >= thisMonth;
+          if (timeFilter === "yesterday") return ts >= yesterday.start && ts <= yesterday.end;
           if (timeFilter === "custom") {
-            if (exportDateFrom && completed < new Date(exportDateFrom)) return false;
-            if (exportDateTo && completed > new Date(exportDateTo + "T23:59:59")) return false;
+            if (exportDateFrom && ts < new Date(exportDateFrom)) return false;
+            if (exportDateTo && ts > new Date(exportDateTo + "T23:59:59")) return false;
             return true;
           }
           return true; // all
         }).filter(r => !exportRoom || r.room === exportRoom);
         const sortedCompleted = [...filteredCompletedReqs].sort((a, b) => {
-          return new Date(b.completedAt) - new Date(a.completedAt);
+          return new Date(b.completedAt || b.cancelledAt || 0) - new Date(a.completedAt || a.cancelledAt || 0);
         });
         const totalCompleted = sortedCompleted.length;
-        const avgTime = sortedCompleted.length > 0
-          ? Math.round(sortedCompleted.reduce((sum, r) =>
-              sum + (new Date(r.completedAt) - new Date(r.submittedAt)) / 60000, 0) / sortedCompleted.length)
+        const completedOnly = sortedCompleted.filter(r => r.status === "completed");
+        const avgTime = completedOnly.length > 0
+          ? Math.round(completedOnly.reduce((sum, r) =>
+              sum + (new Date(r.completedAt) - new Date(r.submittedAt)) / 60000, 0) / completedOnly.length)
           : 0;
-        const pickable = sortedCompleted.filter(r => r.claimedAt &&
+        const pickable = completedOnly.filter(r => r.claimedAt &&
           (new Date(r.completedAt) - new Date(r.claimedAt)) > 0);
         const avgPickTimeCompleted = pickable.length > 0
           ? Math.round(pickable.reduce((sum, r) =>
@@ -5601,7 +5614,7 @@ ${sortedCompleted.map(r => {
                           <th style={headerStyle}>Qty</th>
                           <th style={headerStyle}>Priority</th>
                           <th style={headerStyle}>Submitted</th>
-                          <th style={headerStyle}>Completed</th>
+                          <th style={headerStyle}>Completed / Cancelled</th>
                           <th style={headerStyle}>Time</th>
                           <th style={headerStyle}>By</th>
                           <th style={headerStyle}>Comments</th>
@@ -5609,16 +5622,24 @@ ${sortedCompleted.map(r => {
                       </thead>
                       <tbody>
                         {sortedCompleted.map((req, idx) => {
+                          const isCancelled = req.status === "cancelled";
                           const start = new Date(req.submittedAt);
-                          const end = new Date(req.completedAt);
-                          const timeMin = Math.round((end - start) / 60000);
-                          const timeColor = timeMin <= 5 ? '#00ff88' : timeMin <= 10 ? '#fbbf24' : '#ff4444';
-                          const pickMin = req.claimedAt ? Math.round((end - new Date(req.claimedAt)) / 60000) : null;
+                          const endTs = req.completedAt || req.cancelledAt;
+                          const end = endTs ? new Date(endTs) : null;
+                          const timeMin = end ? Math.round((end - start) / 60000) : null;
+                          const timeColor = timeMin === null ? '#64748b' : timeMin <= 5 ? '#00ff88' : timeMin <= 10 ? '#fbbf24' : '#ff4444';
+                          const pickMin = !isCancelled && req.claimedAt && end ? Math.round((end - new Date(req.claimedAt)) / 60000) : null;
                           const pickColor = pickMin === null ? '#64748b' : pickMin <= 3 ? '#00ff88' : pickMin <= 7 ? '#fbbf24' : '#ff4444';
+                          const rowBg = isCancelled
+                            ? (idx % 2 === 0 ? 'rgba(255,68,68,0.04)' : 'rgba(255,68,68,0.07)')
+                            : (idx % 2 === 0 ? 'transparent' : 'rgba(0,255,136,0.02)');
                           return (
-                            <tr key={req.id} style={{ borderBottom: idx < sortedCompleted.length - 1 ? '1px solid #334155' : 'none', background: idx % 2 === 0 ? 'transparent' : 'rgba(0,255,136,0.02)' }}>
+                            <tr key={req.id} style={{ borderBottom: idx < sortedCompleted.length - 1 ? '1px solid #334155' : 'none', background: rowBg }}>
                               <td style={cellStyle}>
-                                <div style={{ fontWeight:900 }}>{req.item}</div>
+                                <div style={{ fontWeight:900, display:'flex', alignItems:'center', gap:'0.4rem' }}>
+                                  {isCancelled && <span style={{ color:'#ff4444', fontSize:'0.75rem' }}>❌</span>}
+                                  {req.item}
+                                </div>
                               </td>
                               <td style={cellStyle}>
                                 <div style={{ display:'flex', alignItems:'center', gap:'0.4rem' }}>
@@ -5642,24 +5663,39 @@ ${sortedCompleted.map(r => {
                                 <div style={{ fontSize:'0.75rem', color:'#8b9dc3' }}>{req.submittedBy}</div>
                               </td>
                               <td style={cellStyle}>
-                                <div style={{ fontSize:'0.85rem' }}>{niceTime(req.completedAt)}</div>
-                                <div style={{ fontSize:'0.75rem', color:'#00ff88' }}>{req.completedBy}</div>
-                              </td>
-                              <td style={cellStyle}>
-                                <div style={{ fontWeight:900, color: timeColor, fontSize:'1rem' }}>
-                                  🏭 {fmtMins(timeMin)}
-                                </div>
-                                {pickMin !== null && (
-                                  <div style={{ fontWeight:900, color: pickColor, fontSize:'0.85rem', marginTop:'0.15rem' }}>
-                                    ⚡ {fmtMins(pickMin)}
-                                  </div>
+                                {isCancelled ? (
+                                  <span>
+                                    <div style={{ fontSize:'0.85rem', color:'#ff4444' }}>{req.cancelledAt ? niceTime(req.cancelledAt) : '—'}</div>
+                                    <div style={{ fontSize:'0.72rem', color:'#ff4444', fontWeight:700 }}>Cancelled</div>
+                                  </span>
+                                ) : (
+                                  <span>
+                                    <div style={{ fontSize:'0.85rem' }}>{niceTime(req.completedAt)}</div>
+                                    <div style={{ fontSize:'0.75rem', color:'#00ff88' }}>{req.completedBy}</div>
+                                  </span>
                                 )}
                               </td>
                               <td style={cellStyle}>
-                                <div style={{ fontSize:'0.85rem', color:'#8b9dc3' }}>{req.claimedBy || '—'}</div>
+                                {timeMin !== null ? (
+                                  <span>
+                                    <div style={{ fontWeight:900, color: timeColor, fontSize:'1rem' }}>
+                                      🏭 {fmtMins(timeMin)}
+                                    </div>
+                                    {pickMin !== null && (
+                                      <div style={{ fontWeight:900, color: pickColor, fontSize:'0.85rem', marginTop:'0.15rem' }}>
+                                        ⚡ {fmtMins(pickMin)}
+                                      </div>
+                                    )}
+                                  </span>
+                                ) : <span style={{ color:'#475569' }}>—</span>}
                               </td>
                               <td style={cellStyle}>
-                                <div style={{ fontSize:'0.85rem', color:'#8b9dc3', maxWidth:'200px', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                                <div style={{ fontSize:'0.85rem', color: isCancelled ? '#ff4444' : '#8b9dc3' }}>
+                                  {isCancelled ? (req.cancelledBy || '—') : (req.claimedBy || '—')}
+                                </div>
+                              </td>
+                              <td style={cellStyle}>
+                                <div style={{ fontSize:'0.85rem', color:'#8b9dc3', maxWidth:'200px', overflow: isCancelled ? 'visible' : 'hidden', textOverflow: isCancelled ? 'unset' : 'ellipsis', whiteSpace: isCancelled ? 'normal' : 'nowrap' }}>
                                   {req.comments || '—'}
                                 </div>
                               </td>
@@ -5672,6 +5708,7 @@ ${sortedCompleted.map(r => {
                 )}
               </div>
             </div>
+
             {_breakPanelJsx}
             {_chatUI}
             {_chatFab}
@@ -8094,7 +8131,7 @@ ${filteredArchive.map(r => `<tr>
                 <div style={{ padding:'1rem', background:'rgba(0,255,136,0.15)', border:'1px solid #00ff88', borderRadius:'10px', color:'#00ff88', marginBottom:'1rem', fontWeight:900 }}>✅ {successMsg}</div>
               )}
 
-              <div style={{ display:'flex', flexWrap:'wrap', gap:'1.5rem', marginBottom:'1.5rem', alignItems:'start' }}>
+              <div style={{ display:'grid', gridTemplateColumns:'1fr auto', gap:'1.5rem', marginBottom:'1.5rem', alignItems:'start' }}>
 
                 <div style={{ background:'rgba(15,23,42,0.85)', border:'1px solid rgba(56,189,248,0.3)', borderRadius:'14px', padding:'1.5rem' }}>
                   <div style={{ color:'#38bdf8', fontWeight:900, fontSize:'1.15rem', textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:'1.25rem' }}>➕ New Assignment</div>
@@ -8172,7 +8209,7 @@ ${filteredArchive.map(r => `<tr>
                   </button>
                 </div>
 
-                <div style={{ display:'flex', flexDirection:'row', flexWrap:'wrap', gap:'0.75rem', flex:'1 1 auto' }}>
+                <div style={{ display:'flex', flexDirection:'column', gap:'0.75rem', minWidth:'200px' }}>
                   <div style={{ background:'rgba(15,23,42,0.85)', border:`1px solid ${SHIFTS[0].color}44`, borderRadius:'14px', padding:'1.25rem' }}>
                     <div style={{ color:'#8b9dc3', fontSize:'0.75rem', textTransform:'uppercase', marginBottom:'0.4rem' }}>1st Shift</div>
                     <div style={{ color: SHIFTS[0].color, fontSize:'2.2rem', fontWeight:900 }}>{first}</div>
@@ -8621,7 +8658,7 @@ ${filteredArchive.map(r => `<tr>
                                       </button>
                                     )}
                                     {req.status !== "completed" && req.status !== "cancelled" && (
-                                      <button disabled={!canActThis} onClick={()=> cancelRequest(req.id)}
+                                      <button disabled={!canActThis} onClick={()=> { if(canActThis){ setCancelModalId(req.id); setCancelReason(""); } }}
                                         style={{ opacity: canActThis ? 1 : 0.45, padding:'0.45rem 0.6rem', background:'transparent', border:'1px solid #ff444466', borderRadius:'8px', cursor: canActThis ? 'pointer' : 'not-allowed' }}>
                                         <XCircle size={14} color={canActThis ? "#ff4444" : "#64748b"} />
                                       </button>
@@ -8642,6 +8679,33 @@ ${filteredArchive.map(r => `<tr>
                 </div>
               )}
             </div>
+            {cancelModalId && (
+              <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.75)', zIndex:9999, display:'flex', alignItems:'center', justifyContent:'center', padding:'1rem' }}>
+                <div style={{ background:'#0f172a', border:'1px solid rgba(255,68,68,0.4)', borderRadius:'16px', padding:'2rem', width:'100%', maxWidth:'380px' }}>
+                  <div style={{ color:'#ff4444', fontWeight:900, fontSize:'1.1rem', textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:'0.5rem' }}>❌ Cancel Request</div>
+                  <div style={{ color:'#8b9dc3', fontSize:'0.85rem', marginBottom:'1.5rem' }}>Select a reason to cancel this request:</div>
+                  <div style={{ display:'flex', flexDirection:'column', gap:'0.75rem', marginBottom:'1.75rem' }}>
+                    {["Wrong item", "Not in stock", "Duplicate"].map(reason => (
+                      <button key={reason} onClick={() => setCancelReason(reason)}
+                        style={{ padding:'0.85rem 1.25rem', borderRadius:'10px', textAlign:'left', fontWeight:700, fontSize:'0.95rem', cursor:'pointer', background: cancelReason === reason ? 'rgba(255,68,68,0.15)' : '#1e293b', border: cancelReason === reason ? '2px solid #ff4444' : '2px solid #334155', color: cancelReason === reason ? '#ff4444' : '#e2e8f0', transition:'all 0.15s' }}>
+                        {cancelReason === reason ? "● " : "○ "}{reason}
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{ display:'flex', gap:'0.75rem' }}>
+                    <button onClick={() => { setCancelModalId(null); setCancelReason(""); }}
+                      style={{ flex:1, padding:'0.8rem', borderRadius:'10px', background:'transparent', border:'1px solid #334155', color:'#8b9dc3', fontWeight:900, cursor:'pointer', fontSize:'0.9rem' }}>
+                      Back
+                    </button>
+                    <button disabled={!cancelReason}
+                      onClick={() => { cancelRequest(cancelModalId, cancelReason); setCancelModalId(null); setCancelReason(""); }}
+                      style={{ flex:2, padding:'0.8rem', borderRadius:'10px', background: cancelReason ? 'linear-gradient(135deg,#ff4444,#cc2222)' : '#334155', border:'none', color: cancelReason ? '#fff' : '#64748b', fontWeight:900, cursor: cancelReason ? 'pointer' : 'not-allowed', fontSize:'0.9rem', textTransform:'uppercase' }}>
+                      Confirm Cancel
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
             {_breakPanelJsx}
             {_chatUI}
             {_chatFab}
