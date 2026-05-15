@@ -2371,7 +2371,7 @@ const removeFiveSFindingPhoto = (index) => {
             //  • Skip loadBreaks if Realtime is healthy (breaks table has own RT sub)
             // On Supabase free tier: 39KB × every device × every 10s = egress overflow fast.
             const pollMs = adapter.kind === "supabase"
-              ? Math.max(Number(settingsVal("supabase_poll_ms", 60000)), 60000)
+              ? Math.max(Number(settingsVal("supabase_poll_ms", 30000)), 30000)
               : CONFIG.REFRESH_MS;
             const t = setInterval(() => {
               if (document.hidden) return; // tab backgrounded — skip entirely
@@ -2383,16 +2383,19 @@ const removeFiveSFindingPhoto = (index) => {
                 loadBreaks().catch(console.error);
               }
             }, pollMs);
-            return () => { clearInterval(t); adapter.destroy(); if (unsubChat) unsubChat(); if (unsubBreaks) unsubBreaks(); };
-          // Sync immediately when user returns to the tab after it was hidden.
-          // This replaces any polls that were skipped while backgrounded.
-          const onVisible = () => {
-            if (document.visibilityState === 'visible' && adapterRef.current) {
-              loadAll().catch(console.error);
-              loadBreaks().catch(console.error);
-            }
-          };
-          document.addEventListener('visibilitychange', onVisible);
+
+            // Sync immediately when user returns to the tab after it was hidden.
+            // Mobile browsers suspend the page + close WebSocket when backgrounded.
+            // This catches up on any missed updates when the user comes back.
+            const onVisible = () => {
+              if (document.visibilityState === 'visible' && adapterRef.current) {
+                loadAll().catch(console.error);
+                loadBreaks().catch(console.error);
+              }
+            };
+            document.addEventListener('visibilitychange', onVisible);
+
+            return () => { clearInterval(t); adapter.destroy(); if (unsubChat) unsubChat(); if (unsubBreaks) unsubBreaks(); document.removeEventListener('visibilitychange', onVisible); };
 
           } catch (error) {
             console.error("Failed to initialize app:", error);
