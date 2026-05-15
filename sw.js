@@ -2,7 +2,7 @@
 // Warehouse Delivery System — Service Worker
 // AUTO-UPDATE: bump CACHE_VERSION on every deploy to force immediate refresh
 // ─────────────────────────────────────────────────────────────────────────────
-const CACHE_VERSION = "wds-v2.8";
+const CACHE_VERSION = "wds-v2.9";
 const CACHE_NAME = `wds-cache-${CACHE_VERSION}`;
 const PRECACHE_URLS = [
   "./",
