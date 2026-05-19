@@ -1533,6 +1533,7 @@ five_s_overall: true,
       const [exportDateFrom, setExportDateFrom] = useState("");
       const [exportDateTo, setExportDateTo] = useState("");
       const [exportRoom, setExportRoom] = useState("");
+      const [completedSearch, setCompletedSearch] = useState("");
       const [lastArchiveDate, setLastArchiveDate] = useState(() => localStorage.getItem("wd_lastArchiveDate") || "");
       const [arcFrom, setArcFrom] = useState(() => {
         const d = new Date(Date.now() - 24 * 60 * 60 * 1000);
@@ -5562,6 +5563,21 @@ ${sortedCompleted.map(r => {
                       {CONFIG.ROOMS.map(r => <option key={r} value={r}>{r}</option>)}
                     </select>
                   </div>
+                  <div>
+                    <div style={{ color:'#8b9dc3', fontSize:'0.7rem', fontWeight:700, textTransform:'uppercase', marginBottom:'0.3rem' }}>Search Item #</div>
+                    <span style={{ position:'relative', display:'inline-flex', alignItems:'center' }}>
+                      <input
+                        type="text"
+                        placeholder="Type item #..."
+                        value={completedSearch}
+                        onChange={e => setCompletedSearch(e.target.value)}
+                        style={{ padding:'0.55rem 2rem 0.55rem 0.75rem', background:'#1e293b', border:'1px solid #334155', borderRadius:'8px', color:'#e2e8f0', fontSize:'0.88rem', width:'160px', outline:'none', fontFamily:'Space Mono,monospace' }}
+                      />
+                      {completedSearch && (
+                        <span onClick={() => setCompletedSearch('')} style={{ position:'absolute', right:'8px', cursor:'pointer', color:'#8b9dc3', fontSize:'0.9rem', lineHeight:1 }}>✕</span>
+                      )}
+                    </span>
+                  </div>
                   <div style={{ display:'flex', gap:'0.5rem', marginTop:'1.35rem' }}>
                     <button onClick={exportToCSV} disabled={sortedCompleted.length===0}
                       style={{ padding:'0.65rem 1.1rem', borderRadius:'10px', background: sortedCompleted.length>0?'linear-gradient(135deg,#38bdf8,#0ea5e9)':'#334155', border:'none', color:'#fff', fontWeight:900, cursor:sortedCompleted.length>0?'pointer':'not-allowed', textTransform:'uppercase', fontSize:'0.8rem', opacity:sortedCompleted.length>0?1:0.5 }}>
@@ -5598,14 +5614,19 @@ ${sortedCompleted.map(r => {
                 <div style={{ padding:'1.2rem 1.5rem', background:'linear-gradient(135deg, rgba(0,255,136,0.15) 0%, rgba(0,255,136,0.04) 100%)', borderBottom:'2px solid #00ff88' }}>
                   <div style={{ color:'#00ff88', fontWeight:900, fontSize:'1.1rem', textTransform:'uppercase', letterSpacing:'0.08em' }}>
                     ✅ Completed Requests {timeFilter !== "all" && `(${timeFilter === "today" ? "Today" : timeFilter === "week" ? "This Week" : timeFilter === "month" ? "This Month" : timeFilter === "yesterday" ? "Yesterday" : ""})`}
+                    {completedSearch && <span style={{ color:'#fbbf24', fontSize:'0.8rem', marginLeft:'0.75rem', fontWeight:700, textTransform:'none', letterSpacing:'normal' }}>· "{completedSearch}" — {sortedCompleted.filter(r => r.item && r.item.toLowerCase().includes(completedSearch.trim().toLowerCase())).length} match{sortedCompleted.filter(r => r.item && r.item.toLowerCase().includes(completedSearch.trim().toLowerCase())).length !== 1 ? 'es' : ''}</span>}
                   </div>
                 </div>
 
-                {sortedCompleted.length === 0 ? (
+                {(() => {
+                  const displayRows = completedSearch.trim()
+                    ? sortedCompleted.filter(r => r.item && r.item.toLowerCase().includes(completedSearch.trim().toLowerCase()))
+                    : sortedCompleted;
+                  return displayRows.length === 0 ? (
                   <div style={{ padding:'4rem 2rem', textAlign:'center', color:'#64748b' }}>
                     <CheckCircle size={64} color="#334155" />
-                    <h3 style={{ margin:'1rem 0 0 0' }}>No completed requests</h3>
-                    <p style={{ margin:'0.5rem 0 0 0', fontSize:'0.9rem' }}>Try changing the time filter</p>
+                    <h3 style={{ margin:'1rem 0 0 0' }}>{completedSearch ? `No results for "${completedSearch}"` : 'No completed requests'}</h3>
+                    <p style={{ margin:'0.5rem 0 0 0', fontSize:'0.9rem' }}>{completedSearch ? 'Try a different item number' : 'Try changing the time filter'}</p>
                   </div>
                 ) : (
                   <div style={{ overflowX:'auto' }}>
@@ -5624,7 +5645,7 @@ ${sortedCompleted.map(r => {
                         </tr>
                       </thead>
                       <tbody>
-                        {sortedCompleted.map((req, idx) => {
+                        {displayRows.map((req, idx) => {
                           const isCancelled = req.status === "cancelled";
                           const start = new Date(req.submittedAt);
                           const endTs = req.completedAt || req.cancelledAt;
@@ -5708,7 +5729,8 @@ ${sortedCompleted.map(r => {
                       </tbody>
                     </table>
                   </div>
-                )}
+                );
+                })()}
               </div>
             </div>
 
